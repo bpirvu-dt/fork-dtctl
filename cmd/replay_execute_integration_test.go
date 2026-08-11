@@ -26,6 +26,8 @@ func TestReplayExecuteHelper(t *testing.T) {
 		args = []string{"--no-agent", "--config", configPath, "ctx", "rm", "old-context"}
 	case "query":
 		args = []string{"--no-agent", "--config", configPath, "query", "fetch logs"}
+	case "exec-dql":
+		args = []string{"--no-agent", "--config", configPath, "exec", "dql", "fetch logs"}
 	case "plugin":
 		args = []string{"--no-agent", "--config", configPath, "definitely-no-replay-plugin"}
 	case "root-alias":
@@ -184,7 +186,8 @@ func TestReplayExecuteEnforcesGuardInRealRootPipeline(t *testing.T) {
 	}{
 		{"ctx-token", "ctx token"},
 		{"ctx-rm", "ctx delete"},
-		{"query", "replay query execution is not implemented yet"},
+		{"query", "no replay session is active"},
+		{"exec-dql", "replay query execution is not implemented yet"},
 		{"plugin", "plugin command"},
 		{"root-alias", "ctx delete"},
 		{"shell-alias", "shell alias"},

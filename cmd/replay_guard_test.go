@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -29,6 +30,20 @@ func newReplayGuardTestTree(counters *replayGuardCounters) *cobra.Command {
 	root.PersistentFlags().StringVar(&contextName, "context", "", "test context")
 
 	query := &cobra.Command{Use: "query [dql]", Args: cobra.MaximumNArgs(1), RunE: func(*cobra.Command, []string) error {
+		counters.network++
+		return nil
+	}}
+	waitCmd := &cobra.Command{Use: "wait"}
+	waitCmd.AddCommand(&cobra.Command{Use: "query [dql]", Args: cobra.MaximumNArgs(1), RunE: func(*cobra.Command, []string) error {
+		counters.network++
+		return nil
+	}})
+	execCmd := &cobra.Command{Use: "exec"}
+	execCmd.AddCommand(&cobra.Command{Use: "dql [query]", Args: cobra.MaximumNArgs(1), RunE: func(*cobra.Command, []string) error {
+		counters.network++
+		return nil
+	}})
+	inventory := &cobra.Command{Use: "inventory", RunE: func(*cobra.Command, []string) error {
 		counters.network++
 		return nil
 	}}
@@ -66,7 +81,7 @@ func newReplayGuardTestTree(counters *replayGuardCounters) *cobra.Command {
 	for _, name := range []string{"start", "advance", "status", "stop"} {
 		replay.AddCommand(&cobra.Command{Use: name, RunE: func(*cobra.Command, []string) error { return nil }})
 	}
-	root.AddCommand(query, deleteCmd, ctxCmd, replay)
+	root.AddCommand(query, waitCmd, execCmd, inventory, deleteCmd, ctxCmd, replay)
 	return root
 }
 
@@ -87,6 +102,22 @@ func configureReplayGuardTest(t *testing.T) (string, string, *replayCLIFakeClock
 	clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 17, 0, 0, 0, time.UTC)}
 	configureReplayCLI(t, path, filepath.Join(dir, "state"), clock)
 	return path, dir, clock
+}
+
+func configureRestrictedReplayGuardTest(t *testing.T, provenancePath string) (string, *replayCLIFakeClock) {
+	t.Helper()
+	dir := filepath.Dir(provenancePath)
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	raw := standardReplayBlock(session.ReplayClockManual)
+	raw.Disclosure = session.ReplayDisclosureRestricted
+	raw.ProvenancePath = provenancePath
+	writeReplayCLIConfig(t, path, replayCLIConfig(raw))
+	clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 17, 0, 0, 0, time.UTC)}
+	configureReplayCLI(t, path, filepath.Join(dir, "state"), clock)
+	return path, clock
 }
 
 func TestReplayHardGuardBlocksCanonicalCtxPathsBeforeSideEffects(t *testing.T) {
@@ -151,7 +182,7 @@ func TestReplayHardGuardAllowsCtxInspectionAndSwitchParent(t *testing.T) {
 	}
 }
 
-func TestReplayHardGuardAndInterimDQLBlockIgnoreFullProfileOverride(t *testing.T) {
+func TestReplayHardGuardOnlyRemovesInterimBlockForPhase4DQLPaths(t *testing.T) {
 	configureReplayGuardTest(t)
 	t.Setenv(config.ProfileEnvVar, config.ProfileFull)
 
@@ -161,16 +192,72 @@ func TestReplayHardGuardAndInterimDQLBlockIgnoreFullProfileOverride(t *testing.T
 		t.Fatalf("full profile bypassed hard guard: counters=%+v err=%v", counters, err)
 	}
 
-	counters, err = executeReplayGuardTree(t, "query", "fetch logs")
-	var unavailable *ReplayQueryUnavailableError
-	if !errors.As(err, &unavailable) {
-		t.Fatalf("query error = %v, want temporary replay implementation block", err)
+	for _, args := range [][]string{{"query", "fetch logs"}, {"wait", "query", "fetch logs"}} {
+		counters, err = executeReplayGuardTree(t, args...)
+		if err != nil || counters.network != 1 {
+			t.Fatalf("Phase 4 path %v stayed blocked: counters=%+v err=%v", args, counters, err)
+		}
 	}
-	if counters.network != 0 || !strings.Contains(err.Error(), "no network request was made") {
-		t.Fatalf("DQL path reached network or unclear error: counters=%+v err=%v", counters, err)
+	for _, args := range [][]string{{"exec", "dql", "fetch logs"}, {"inventory"}} {
+		counters, err = executeReplayGuardTree(t, args...)
+		var unavailable *ReplayQueryUnavailableError
+		if !errors.As(err, &unavailable) || counters.network != 0 || !strings.Contains(err.Error(), "no network request was made") {
+			t.Fatalf("Phase 5 path %v escaped interim block: counters=%+v err=%v", args, counters, err)
+		}
+		if got := exitCodeForError(err); got == 0 {
+			t.Fatalf("interim DQL block for %v must return non-zero", args)
+		}
 	}
-	if got := exitCodeForError(err); got == 0 {
-		t.Fatal("interim DQL block must return non-zero")
+}
+
+func TestRestrictedReplayGuardPreflightsRecordsAndUsesGenericErrors(t *testing.T) {
+	dir := t.TempDir()
+	provenancePath := filepath.Join(dir, "guard.provenance.jsonl")
+	configPath, _ := configureRestrictedReplayGuardTest(t, provenancePath)
+	t.Setenv(config.ProfileEnvVar, config.ProfileFull)
+
+	counters, err := executeReplayGuardTree(t, "delete", "workflows")
+	if err == nil || err.Error() != "this command is not available in this context" || counters.mutation != 0 {
+		t.Fatalf("restricted guard: counters=%+v err=%v detail=%v", counters, err, errors.Unwrap(err))
+	}
+	counters, err = executeReplayGuardTree(t, "exec", "dql", "fetch logs")
+	if err == nil || err.Error() != "The query could not be prepared. It was not executed." || counters.network != 0 {
+		t.Fatalf("restricted interim DQL guard: counters=%+v err=%v", counters, err)
+	}
+	if err := replayPluginDispatchGuard([]string{"--config", configPath}, []string{"synthetic-plugin"}); err == nil || err.Error() != "this command is not available in this context" {
+		t.Fatalf("restricted plugin guard error = %v", err)
+	}
+
+	raw, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("provenance records = %d, want 3: %q", len(lines), raw)
+	}
+	for index, line := range lines {
+		var record session.ReplayProvenanceRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("record %d: %v", index, err)
+		}
+		if record.Event != "command_guard" || record.Fields["detail"] == "" || record.Fields["command"] == "" {
+			t.Fatalf("record %d incomplete: %#v", index, record)
+		}
+	}
+}
+
+func TestRestrictedReplayGuardSinkFailureStopsBeforeSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	provenancePath := filepath.Join(dir, "unusable.provenance.jsonl")
+	if err := os.Mkdir(provenancePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configureRestrictedReplayGuardTest(t, provenancePath)
+	t.Setenv(config.ProfileEnvVar, config.ProfileFull)
+	counters, err := executeReplayGuardTree(t, "delete", "workflows")
+	if err == nil || err.Error() != "Required local recording is unavailable. The query was not executed." || counters.mutation != 0 {
+		t.Fatalf("restricted sink guard: counters=%+v err=%v", counters, err)
 	}
 }
 

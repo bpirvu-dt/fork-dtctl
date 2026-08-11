@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,9 +21,13 @@ type ReplayGuardError struct {
 	Command     string
 	ContextName string
 	Plugin      bool
+	Restricted  bool
 }
 
 func (e *ReplayGuardError) Error() string {
+	if e.Restricted {
+		return "this command is not available in this context"
+	}
 	target := fmt.Sprintf("command %q", e.Command)
 	if e.Plugin {
 		target = fmt.Sprintf("plugin command %q", e.Command)
@@ -41,20 +47,35 @@ func (e *ReplayGuardError) Suggestions() []string {
 	}
 }
 
-// ReplayQueryUnavailableError is the temporary Phase 1 boundary. It is removed
-// only when every DQL execution path uses the replay compiler in Phase 4.
+// ReplayQueryUnavailableError is the temporary fail-closed boundary retained
+// for DQL paths that Phase 5 has not yet wired through the replay preparer.
 type ReplayQueryUnavailableError struct {
 	Command     string
 	ContextName string
+	Restricted  bool
 }
 
 func (e *ReplayQueryUnavailableError) Error() string {
+	if e.Restricted {
+		return "The query could not be prepared. It was not executed."
+	}
 	return fmt.Sprintf("replay query execution is not implemented yet for command %q in context %q; no network request was made", e.Command, e.ContextName)
 }
 
+type replayGuardRecordingError struct{ detail error }
+
+func (e *replayGuardRecordingError) Error() string {
+	return "Required local recording is unavailable. The query was not executed."
+}
+
+func (e *replayGuardRecordingError) Unwrap() error { return e.detail }
+
 type replayActivation struct {
-	Active      bool
-	ContextName string
+	Active         bool
+	ContextName    string
+	Disclosure     string
+	ProvenancePath string
+	SessionID      string
 }
 
 func installReplayGuard(root *cobra.Command) {
@@ -121,10 +142,10 @@ func guardReplayResolvedCommand(cmd, root *cobra.Command) error {
 
 	path := commandPathRelative(cmd, root)
 	if !replayHardGuardAllows(path) {
-		return &ReplayGuardError{Command: path, ContextName: activation.ContextName}
+		return routeReplayGuardFailure(activation, &ReplayGuardError{Command: path, ContextName: activation.ContextName})
 	}
 	if replayDQLExecutionPath(path) {
-		return &ReplayQueryUnavailableError{Command: path, ContextName: activation.ContextName}
+		return routeReplayGuardFailure(activation, &ReplayQueryUnavailableError{Command: path, ContextName: activation.ContextName})
 	}
 	return nil
 }
@@ -147,16 +168,81 @@ func replayActivationForConfig(cfg *config.Config) (replayActivation, error) {
 	switch {
 	case stateErr == nil:
 		return replayActivation{
-			Active:      configured || session.ReplayGuardActive(state),
-			ContextName: cfg.CurrentContext,
+			Active: configured || session.ReplayGuardActive(state), ContextName: cfg.CurrentContext,
+			Disclosure: state.Disclosure, ProvenancePath: state.ProvenancePath, SessionID: state.SessionID,
 		}, nil
 	case errors.Is(stateErr, session.ErrReplaySessionNotFound):
-		return replayActivation{Active: configured, ContextName: cfg.CurrentContext}, nil
+		disclosure, path, routeErr := replayConfiguredRoute(ctx.Replay, locator)
+		if routeErr != nil {
+			return replayActivation{}, routeErr
+		}
+		return replayActivation{Active: configured, ContextName: cfg.CurrentContext, Disclosure: disclosure, ProvenancePath: path}, nil
 	default:
 		// A corrupt, unsafe, or unreadable state cannot be assumed inactive. Keep
 		// lifecycle recovery commands available, but activate the hard boundary.
-		return replayActivation{Active: true, ContextName: cfg.CurrentContext}, nil
+		disclosure, path, routeErr := replayConfiguredRoute(ctx.Replay, locator)
+		if routeErr != nil {
+			return replayActivation{}, routeErr
+		}
+		return replayActivation{Active: true, ContextName: cfg.CurrentContext, Disclosure: disclosure, ProvenancePath: path}, nil
 	}
+}
+
+func replayConfiguredRoute(raw *config.ReplayConfig, locator session.ReplayLocator) (string, string, error) {
+	disclosure := session.ReplayDisclosureFull
+	if raw != nil && raw.Disclosure != "" {
+		disclosure = raw.Disclosure
+	}
+	if disclosure != session.ReplayDisclosureFull && disclosure != session.ReplayDisclosureRestricted {
+		return "", "", fmt.Errorf("unknown replay disclosure %q: use %q or %q", disclosure, session.ReplayDisclosureFull, session.ReplayDisclosureRestricted)
+	}
+	if disclosure != session.ReplayDisclosureRestricted {
+		return disclosure, "", nil
+	}
+	path := ""
+	if raw != nil {
+		path = raw.ProvenancePath
+	}
+	if path == "" {
+		path = filepath.Join(replayStateDirectory, string(locator.ContextKey)+".provenance.jsonl")
+	}
+	return disclosure, path, nil
+}
+
+func routeReplayGuardFailure(activation replayActivation, detail error) error {
+	if activation.Disclosure != session.ReplayDisclosureRestricted {
+		return detail
+	}
+	if activation.ProvenancePath == "" {
+		return &replayGuardRecordingError{detail: fmt.Errorf("restricted command guard has no provenance path")}
+	}
+	sink := session.NewFileProvenanceSink(activation.ProvenancePath, replayStateDirectory)
+	ctx := context.Background()
+	if err := sink.Preflight(ctx); err != nil {
+		return &replayGuardRecordingError{detail: err}
+	}
+	record := session.ReplayProvenanceRecord{
+		SchemaVersion: session.ReplayProvenanceSchemaVersion,
+		RecordedAt:    replayClock.Now().UTC(),
+		Event:         "command_guard",
+		SessionID:     activation.SessionID,
+		Fields: map[string]any{
+			"outcome": "blocked",
+			"detail":  detail.Error(),
+		},
+	}
+	switch value := detail.(type) {
+	case *ReplayGuardError:
+		record.Fields["command"] = value.Command
+		value.Restricted = true
+	case *ReplayQueryUnavailableError:
+		record.Fields["command"] = value.Command
+		value.Restricted = true
+	}
+	if err := sink.Append(ctx, record); err != nil {
+		return &replayGuardRecordingError{detail: err}
+	}
+	return detail
 }
 
 // replayHardGuardAllows is exact for runnable leaves. Profile.Allows keeps its
@@ -168,7 +254,7 @@ func replayHardGuardAllows(path string) bool {
 
 func replayDQLExecutionPath(path string) bool {
 	switch path {
-	case "query", "wait query", "exec dql", "inventory":
+	case "exec dql", "inventory":
 		return true
 	default:
 		return false
@@ -187,11 +273,11 @@ func replayPluginDispatchGuard(leadingArgs, commandWords []string) error {
 	if err != nil || !activation.Active {
 		return err
 	}
-	return &ReplayGuardError{
+	return routeReplayGuardFailure(activation, &ReplayGuardError{
 		Command:     strings.Join(commandWords, " "),
 		ContextName: activation.ContextName,
 		Plugin:      true,
-	}
+	})
 }
 
 func replayConfigErrorMustBlock() bool {
