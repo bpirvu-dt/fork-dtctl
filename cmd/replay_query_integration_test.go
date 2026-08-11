@@ -462,6 +462,78 @@ func TestReplayQueryCLIRestrictedSinkFailureUsesGenericErrorBeforeParse(t *testi
 	}
 }
 
+func TestReplayQueryCLIRestrictedNoSessionPreflightsAndRecordsBeforeGenericReadiness(t *testing.T) {
+	api := &replayCLIQueryAPI{t: t}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	stateDir := filepath.Join(dir, "state", "replay")
+	raw := standardReplayBlock(session.ReplayClockManual)
+	raw.Disclosure = session.ReplayDisclosureRestricted
+	cfg := replayCLIConfig(raw)
+	cfg.Contexts[0].Context.Environment = server.URL
+	cfg.Tokens = []config.NamedToken{{Name: "synthetic-reader", Token: "dt0c01.synthetic"}}
+	writeReplayCLIConfig(t, configPath, cfg)
+	configureReplayCLI(t, configPath, stateDir, &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
+	setReplayQueryFlags(t, false, time.Minute, false)
+	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+	if err == nil || err.Error() != "this context is not ready for queries" {
+		t.Fatalf("error = %v", err)
+	}
+	if parses, executes := api.counts(); parses != 0 || executes != 0 {
+		t.Fatalf("parse=%d execute=%d, want zero", parses, executes)
+	}
+	paths, globErr := filepath.Glob(filepath.Join(stateDir, "*.provenance.jsonl"))
+	if globErr != nil || len(paths) != 1 {
+		t.Fatalf("provenance paths=%v err=%v", paths, globErr)
+	}
+	provenance, readErr := os.ReadFile(paths[0])
+	if readErr != nil || !strings.Contains(string(provenance), "no replay session is active") {
+		t.Fatalf("provenance=%q err=%v", provenance, readErr)
+	}
+}
+
+func TestReplayQueryCLIRestrictedAndNonReplayAgentResultsAreByteIdentical(t *testing.T) {
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var replayErr error
+	replayOutput := captureStdout(t, func() { replayErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal}) })
+	if replayErr != nil {
+		t.Fatal(replayErr)
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	cfg := replayCLIConfig(nil)
+	cfg.Contexts[0].Context.Environment = server.URL
+	cfg.Tokens = []config.NamedToken{{Name: "synthetic-reader", Token: "dt0c01.synthetic"}}
+	writeReplayCLIConfig(t, configPath, cfg)
+	configureReplayCLI(t, configPath, filepath.Join(dir, "state"), &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var plainErr error
+	plainOutput := captureStdout(t, func() { plainErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal}) })
+	if plainErr != nil {
+		t.Fatal(plainErr)
+	}
+	if replayOutput != plainOutput {
+		t.Fatalf("restricted and non-replay agent outputs differ:\nreplay=%s\nplain=%s", replayOutput, plainOutput)
+	}
+	if parses, executes := api.counts(); parses != 2 || executes != 2 {
+		t.Fatalf("parse=%d execute=%d, want replay original+effective parses and one execution on each path", parses, executes)
+	}
+}
+
 func replayCLIQueryFixtureBody(t *testing.T, relative string) json.RawMessage {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "sdk", "api", "query", "testdata", relative))
