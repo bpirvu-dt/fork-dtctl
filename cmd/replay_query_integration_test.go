@@ -25,14 +25,17 @@ const (
 )
 
 type replayCLIQueryAPI struct {
-	t              *testing.T
-	originalQuery  string
-	originalBody   json.RawMessage
-	validationBody json.RawMessage
+	t               *testing.T
+	originalQuery   string
+	originalBody    json.RawMessage
+	validationBody  json.RawMessage
+	executeFailures int
+	executeStatus   int
 
 	mu       sync.Mutex
 	parses   int
 	executes int
+	queries  []string
 }
 
 func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,9 +63,30 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 	case "/platform/storage/query/v1/query:execute":
+		var request sdkquery.ExecuteRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			a.t.Errorf("decode execute request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		a.mu.Lock()
 		a.executes++
+		a.queries = append(a.queries, request.Query)
+		shouldFail := a.executeFailures > 0
+		if shouldFail {
+			a.executeFailures--
+		}
+		status := a.executeStatus
 		a.mu.Unlock()
+		if shouldFail {
+			if status == 0 {
+				status = http.StatusServiceUnavailable
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(sdkquery.Response{
 			State: "SUCCEEDED", Result: &sdkquery.Result{Records: []map[string]interface{}{{"matched": float64(1)}}},
@@ -76,6 +100,12 @@ func (a *replayCLIQueryAPI) counts() (int, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.parses, a.executes
+}
+
+func (a *replayCLIQueryAPI) executedQueries() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.queries...)
 }
 
 type replayCLIQueryFixture struct {
@@ -373,6 +403,41 @@ func TestReplayQueryCLIRealtimeWaitAndLiveRetryTemporaryNonOverlap(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestReplayQueryCLIHTTPRetryReusesPreparationBeforeNextLiveExecution(t *testing.T) {
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal, executeFailures: 1,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockRealtime,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:00:02.718012207Z"))
+	replayQueryWaitFunc = func(_ context.Context, delay time.Duration) error {
+		fixture.clock.Add(delay)
+		return nil
+	}
+	setReplayQueryFlags(t, true, 5*time.Minute, false)
+	var runErr error
+	stdout, stderr := captureReplayQueryStreams(t, func() {
+		runErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+	})
+	if runErr != nil || stderr != "" || !strings.Contains(stdout, "Live mode completed.") {
+		t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+	}
+	if parses, executes := api.counts(); parses != 3 || executes != 3 {
+		t.Fatalf("parse=%d execute=%d, want one original parse, two effective parses, and one transport retry", parses, executes)
+	}
+	queries := api.executedQueries()
+	if len(queries) != 3 || queries[0] != queries[1] || queries[1] == queries[2] {
+		t.Fatalf("execute queries = %#v; transport retry must reuse text while the next live execution recomputes it", queries)
+	}
+	state, err := fixture.store.Status(fixture.locator)
+	if err != nil || state.Status != session.ReplayStatusCompleted {
+		t.Fatalf("state=%#v err=%v", state, err)
 	}
 }
 

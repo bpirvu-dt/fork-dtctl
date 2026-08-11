@@ -976,6 +976,8 @@ func TestDQLExecutorReplayTerminalFailureReplacementAndConcurrency(t *testing.T)
 		opts := DQLExecuteOptions{AgentMode: true}
 		if result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, opts); result != nil || err == nil {
 			t.Fatalf("result=%#v err=%v, want remote failure", result, err)
+		} else if ReplayLoopHardFailure(err) {
+			t.Fatalf("transient remote 503 was classified as a hard loop failure: %v", err)
 		}
 		state, err := fixture.store.Status(fixture.locator)
 		if err != nil || state.Status != session.ReplayStatusTerminalReady || state.CompletedAt != nil {
@@ -1322,6 +1324,9 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		if result != nil || err == nil || ReplayRetryAfter(err) != 7*time.Second {
 			t.Fatalf("result=%#v err=%v retry-after=%s", result, err, ReplayRetryAfter(err))
 		}
+		if ReplayLoopHardFailure(err) {
+			t.Fatalf("rate limit was classified as a hard loop failure: %v", err)
+		}
 		info, ok := ReplayErrorInfo(err)
 		if !ok {
 			t.Fatalf("rate-limit error lost scheduling info: %v", err)
@@ -1353,6 +1358,9 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
 			if result != nil || err == nil || !strings.Contains(err.Error(), remoteMessage) || err.Error() == restrictedRemoteExecutionMessage {
 				t.Fatalf("result=%#v err=%v, want normal remote error passthrough", result, err)
+			}
+			if !ReplayLoopHardFailure(err) {
+				t.Fatalf("remote 400 was not classified as a hard loop failure: %v", err)
 			}
 			_, _, records := sink.snapshot()
 			if len(records) != 1 || !strings.Contains(records[0].Fields["detail"].(string), remoteMessage) {

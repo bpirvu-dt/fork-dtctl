@@ -502,9 +502,10 @@ Examples:
 				fetcher := func(fetchCtx context.Context) (interface{}, error) {
 					detailed, fetchErr := executor.ExecuteQueryDetailedWithContext(fetchCtx, query, opts)
 					if fetchErr != nil {
-						if exec.ReplayTemporaryNonOverlap(fetchErr) || exec.ReplayRetryAfter(fetchErr) > 0 {
+						info, hasReplayInfo := exec.ReplayErrorInfo(fetchErr)
+						if exec.ReplayTemporaryNonOverlap(fetchErr) || exec.ReplayRetryAfter(fetchErr) > 0 || (hasReplayInfo && !exec.ReplayLoopHardFailure(fetchErr)) {
 							fmt.Fprintln(os.Stderr, fetchErr)
-							if info, ok := exec.ReplayErrorInfo(fetchErr); ok {
+							if hasReplayInfo {
 								latestInfo = &info
 							}
 							latestErr = fetchErr

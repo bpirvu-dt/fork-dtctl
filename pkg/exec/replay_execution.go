@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -151,10 +152,29 @@ func ReplayLoopHardFailure(err error) bool {
 	if !errors.As(err, &replayErr) {
 		return false
 	}
-	if replayErr.retryable || replayErr.retryAfter > 0 || replayErr.category == replayErrorRemote {
+	if replayErr.retryable || replayErr.retryAfter > 0 {
 		return false
 	}
+	if replayErr.category == replayErrorRemote {
+		return replayRemoteFailurePermanent(replayErr.detail)
+	}
 	return true
+}
+
+func replayRemoteFailurePermanent(err error) bool {
+	statusCode := 0
+	var queryErr *sdkquery.QueryError
+	if errors.As(err, &queryErr) {
+		statusCode = queryErr.StatusCode
+	}
+	var apiErr *httpclient.APIError
+	if statusCode == 0 && errors.As(err, &apiErr) {
+		statusCode = apiErr.StatusCode
+	}
+	if statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests {
+		return false
+	}
+	return statusCode >= 400 && statusCode < 500
 }
 
 // ReplayRetryAfter returns a Retry-After delay preserved from the first 429.
