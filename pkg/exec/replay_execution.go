@@ -273,11 +273,12 @@ func containsRestrictedGeneratedWord(value string) bool {
 
 func newReplayAttemptError(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable bool, retryAfter time.Duration, postExecution bool) *ReplayAttemptError {
 	public := ""
-	if info.Disclosure == session.ReplayDisclosureRestricted {
+	switch {
+	case info.Disclosure == session.ReplayDisclosureRestricted:
 		public = restrictedMessage(category, detail, retryable, postExecution)
-	} else if category == replayErrorNonOverlap && retryable {
+	case category == replayErrorNonOverlap && retryable:
 		public = fullTemporaryNonOverlapMessage
-	} else if detail != nil {
+	case detail != nil:
 		public = detail.Error()
 	}
 	if public == "" {
