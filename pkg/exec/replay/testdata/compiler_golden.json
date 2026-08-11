@@ -88,5 +88,11 @@
     "ast_fixture": "phase0/matrix-fixtures/10-dynamic-timeframe/parse.json",
     "original_dql": "fetch logs, timeframe:timeframe(from:now()-1h, to:now())",
     "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "evidence-backed contains with time edits",
+    "ast_fixture": "pipeline/contains/parse.json",
+    "original_dql": "fetch logs, from:now()-5m, to:now() | filter contains(content, \"error\") | limit 1",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:55:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") | filter contains(content, \"error\") | limit 1"
   }
 ]

@@ -128,6 +128,7 @@ var knownTerminalRoles = map[string]struct{}{
 	"OPERATOR":                {},
 	"PARAMETER_KEY":           {},
 	"PARAMETER_MODIFIER":      {},
+	"PARSE_PATTERN":           {},
 	"PARENTHESIS_CLOSE":       {},
 	"PARENTHESIS_OPEN":        {},
 	"PIPE":                    {},

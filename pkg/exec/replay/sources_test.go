@@ -221,6 +221,25 @@ func TestKnownSemanticRoleInUnexpectedParentFailsClosed(t *testing.T) {
 	}
 }
 
+func TestParsePatternFailsClosedOutsideParseCommand(t *testing.T) {
+	ast := loadSDKFixture(t, "pipeline/parse/parse.json").Clone()
+	changed := 0
+	for _, command := range terminalNodes(ast, "COMMAND_NAME") {
+		if command.Canonical == "parse" {
+			command.Canonical = "fields"
+			changed++
+		}
+	}
+	if changed != 1 {
+		t.Fatalf("changed %d parse commands, want 1", changed)
+	}
+	_, err := ClassifySources(ast, Milestone1SourcePolicy())
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorASTContract || replayErr.Construct != "PARSE_PATTERN" {
+		t.Fatalf("error = %T %#v, want parse-pattern placement rejection", err, err)
+	}
+}
+
 func TestFutureModelAndMutableLoadFormsFailClosed(t *testing.T) {
 	tests := []struct {
 		name     string

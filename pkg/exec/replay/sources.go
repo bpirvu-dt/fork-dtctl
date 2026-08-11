@@ -241,31 +241,6 @@ func fetchTable(command *Node) (string, error) {
 	return tables[0], nil
 }
 
-func currentDavisView(table string, node *Node) (*DavisCurrentViewError, bool) {
-	var snapshot, identity string
-	switch table {
-	case "dt.davis.problems":
-		snapshot, identity = "dt.davis.problems.snapshots", "problem"
-	case "dt.davis.events":
-		snapshot, identity = "dt.davis.events.snapshots", "event"
-	default:
-		return nil, false
-	}
-	err := &DavisCurrentViewError{
-		View:               table,
-		SnapshotTable:      snapshot,
-		IdentityKind:       identity,
-		IdentityField:      "event.id",
-		LatestPerIDPattern: fmt.Sprintf("fetch %s, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup event.id", snapshot),
-		Path:               node.Path,
-	}
-	if node.Span != nil {
-		span := *node.Span
-		err.Span = &span
-	}
-	return err, true
-}
-
 func validateCommandSurface(ast *AST, commands []commandView) error {
 	forbidden := map[string]string{
 		"smartscapenodes": "current Smartscape nodes",
@@ -278,6 +253,11 @@ func validateCommandSurface(ast *AST, commands []commandView) error {
 	allowed := map[string]struct{}{
 		"fetch": {}, "timeseries": {}, "data": {}, "append": {}, "join": {}, "lookup": {},
 		"filter": {}, "fields": {}, "fieldsadd": {}, "limit": {}, "sort": {}, "summarize": {}, "dedup": {},
+		"parse":        {}, // sdk/api/query/testdata/pipeline/parse/parse.json: transforms piped fields; no tenant-state read.
+		"filterout":    {}, // sdk/api/query/testdata/pipeline/filterOut/parse.json: filters piped records; no tenant-state read.
+		"fieldsremove": {}, // sdk/api/query/testdata/pipeline/fieldsRemove/parse.json: removes piped fields; no tenant-state read.
+		"fieldsrename": {}, // sdk/api/query/testdata/pipeline/fieldsRename/parse.json: renames piped fields; no tenant-state read.
+		"expand":       {}, // sdk/api/query/testdata/pipeline/expand/parse.json: expands piped arrays; no tenant-state read.
 	}
 	for _, command := range commands {
 		if detail, ok := forbidden[command.name]; ok {
@@ -318,6 +298,19 @@ func validateFunctions(ast *AST) error {
 	allowed := map[string]struct{}{
 		"now": {}, "totimestamp": {}, "timeframe": {}, "record": {}, "count": {}, "countif": {},
 		"countdistinctexact": {}, "min": {}, "max": {}, "array": {}, "isnotnull": {}, "in": {},
+		"contains":      {}, // sdk/api/query/testdata/pipeline/contains/parse.json: inspects supplied strings; no tenant-state read.
+		"startswith":    {}, // sdk/api/query/testdata/pipeline/startsWith/parse.json: inspects supplied strings; no tenant-state read.
+		"endswith":      {}, // sdk/api/query/testdata/pipeline/endsWith/parse.json: inspects supplied strings; no tenant-state read.
+		"matchesphrase": {}, // sdk/api/query/testdata/pipeline/matchesPhrase/parse.json: matches supplied strings; no tenant-state read.
+		"matchesvalue":  {}, // sdk/api/query/testdata/pipeline/matchesValue/parse.json: matches supplied values; no tenant-state read.
+		"lower":         {}, // sdk/api/query/testdata/pipeline/lower/parse.json: transforms a supplied string; no tenant-state read.
+		"upper":         {}, // sdk/api/query/testdata/pipeline/upper/parse.json: transforms a supplied string; no tenant-state read.
+		"bin":           {}, // sdk/api/query/testdata/pipeline/bin/parse.json: aligns a supplied value; no tenant-state read.
+		"if":            {}, // sdk/api/query/testdata/pipeline/if/parse.json: selects supplied expressions; no tenant-state read.
+		"coalesce":      {}, // sdk/api/query/testdata/pipeline/coalesce/parse.json: selects supplied expressions; no tenant-state read.
+		"tostring":      {}, // sdk/api/query/testdata/pipeline/toString/parse.json: converts a supplied value; no tenant-state read.
+		"tolong":        {}, // sdk/api/query/testdata/pipeline/toLong/parse.json: converts a supplied value; no tenant-state read.
+		"toduration":    {}, // sdk/api/query/testdata/pipeline/toDuration/parse.json: converts a supplied value; no tenant-state read.
 	}
 	return ast.WalkExecutable(func(node *Node) error {
 		if node.Kind != NodeTerminal || node.Role != "FUNCTION_NAME" {

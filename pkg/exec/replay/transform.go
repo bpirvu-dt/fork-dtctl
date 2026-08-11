@@ -211,6 +211,7 @@ func validateSemanticPlacements(ast *AST) error {
 		"FUNCTION_NAME":          {"FUNCTION": {}},
 		"TIMESERIES_AGGREGATION": {"FUNCTION": {}},
 		"METRIC_KEY":             {"PARAMETER_WITH_KEY": {}},
+		"PARSE_PATTERN":          {"PARAMETER_WITH_KEY": {}},
 		"PARAMETER_WITH_KEY":     {"FUNCTION": {}, "PARAMETERS": {}},
 		"PARAMETER_KEY":          {"PARAMETER_NAMING": {}},
 		"EXECUTION_BLOCK":        {"PARAMETER_WITH_KEY": {}},
@@ -240,6 +241,10 @@ func validateSemanticPlacements(ast *AST) error {
 			case "METRIC_KEY", "TIMESERIES_AGGREGATION":
 				if command != "timeseries" {
 					return replayError(ErrorASTContract, node, node.Role, "A metric source token appears outside a timeseries command.", "Remove the unclassified metric-source form.")
+				}
+			case "PARSE_PATTERN":
+				if command != "parse" {
+					return replayError(ErrorASTContract, node, node.Role, "A parse pattern appears outside the parse command.", "Remove the unclassified parse-pattern form.")
 				}
 			}
 		}
