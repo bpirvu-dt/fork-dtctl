@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dynatrace-oss/dtctl/cmd/testutil"
+	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
@@ -89,6 +90,42 @@ func TestReplayStatusGoldens(t *testing.T) {
 	}
 }
 
+func TestReplayExplainGolden(t *testing.T) {
+	origFormat, origAgent, origPlain := outputFormat, agentMode, plainMode
+	t.Cleanup(func() { outputFormat, agentMode, plainMode = origFormat, origAgent, origPlain })
+	outputFormat, agentMode, plainMode = "table", false, false
+	dataStart := time.Date(2026, 6, 14, 8, 0, 0, 0, time.UTC)
+	dataEnd := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	virtualStart := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	virtualNow := time.Date(2026, 6, 14, 10, 30, 0, 0, time.UTC)
+	requested := execreplay.RequestedRange{
+		Range: execreplay.Interval{Start: virtualNow.Add(-time.Hour), End: virtualNow},
+		Basis: "explicit from with implicit virtual-now end",
+	}
+	effective := execreplay.Interval{Start: virtualNow.Add(-time.Hour), End: virtualNow}
+	value := execreplay.ExplainData{
+		Clock: execreplay.ClockExplain{
+			VirtualNow: virtualNow, VirtualStart: virtualStart,
+			ReplayInterval:  execreplay.Interval{Start: dataStart, End: dataEnd},
+			VisibleInterval: execreplay.Interval{Start: dataStart, End: virtualNow},
+			Locale:          "en_US", Timezone: "UTC",
+		},
+		Sources: []execreplay.SourceExplain{{
+			Ordinal: 0, Class: execreplay.SourceRecord, Name: "logs",
+			BoundaryPolicy: execreplay.BoundaryExact, Requested: &requested, Effective: &effective,
+			Classification: execreplay.OverlapPresent,
+			Proof:          execreplay.OverlapProof{Reason: "the requested source range intersects the visible replay interval"},
+		}},
+		EffectiveDQL: `fetch logs, from:toTimestamp("2026-06-14T09:30:00Z"), to:toTimestamp("2026-06-14T10:30:00Z")`,
+	}
+	got := captureStdout(t, func() {
+		if err := printReplayExplanation(value); err != nil {
+			t.Fatal(err)
+		}
+	})
+	testutil.AssertGolden(t, "replay/explain-table", got)
+}
+
 func TestReplayErrorGoldens(t *testing.T) {
 	tests := []struct {
 		name string
@@ -102,9 +139,9 @@ func TestReplayErrorGoldens(t *testing.T) {
 			},
 		},
 		{
-			name: "query-not-implemented",
+			name: "exec-dql-not-implemented",
 			err: &ReplayQueryUnavailableError{
-				Command:     "query",
+				Command:     "exec dql",
 				ContextName: "historical-window",
 			},
 		},
@@ -116,6 +153,32 @@ func TestReplayErrorGoldens(t *testing.T) {
 				t.Fatal(err)
 			}
 			testutil.AssertGolden(t, "replay/error-"+test.name, buf.String())
+		})
+	}
+}
+
+func TestReplayRestrictedQueryErrorGoldens(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{"non-overlap", "No data is available for the requested timeframe. The query was not executed."},
+		{"temporary-no-data", "no data yet for the requested timeframe; retrying"},
+		{"readiness", "this context is not ready for queries"},
+		{"preparation", "The query could not be prepared. It was not executed."},
+		{"result-validation", "The returned data could not be validated. No result was returned."},
+		{"finalization", "The result could not be finalized. No result was returned."},
+		{"sink-preflight", "Required local recording is unavailable. The query was not executed."},
+		{"sink-post-execution", "Required local recording failed. No result was returned."},
+		{"remote", "The query failed. No result was returned."},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := output.PrintError(&buf, &output.ErrorDetail{Code: "query_failed", Message: test.message}); err != nil {
+				t.Fatal(err)
+			}
+			testutil.AssertGolden(t, "replay/error-restricted-"+test.name, buf.String())
 		})
 	}
 }

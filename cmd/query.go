@@ -162,7 +162,10 @@ Examples:
 			return err
 		}
 
-		executor := NewDQLExecutorFromConfig(cfg, c)
+		executor, err := newReplayQueryExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		// Set up signal handling so a running Grail query is cancelled on Ctrl+C / SIGTERM.
 		ctx, cancel := context.WithCancel(context.Background())
@@ -172,8 +175,11 @@ Examples:
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(sigCh)
 		go func() {
-			<-sigCh
-			cancel()
+			select {
+			case <-sigCh:
+				cancel()
+			case <-ctx.Done():
+			}
 		}()
 
 		queryFile, _ := cmd.Flags().GetString("file")
@@ -431,8 +437,21 @@ Examples:
 			ShowProgress: !noProgress,
 		}
 
+		explainReplay, _ := cmd.Flags().GetBool("explain-replay")
+		if explainReplay {
+			if disclosure, active := executor.ReplayDisclosure(ctx); active && disclosure == "restricted" {
+				return restrictedExplainFlagError()
+			}
+			explanation, explainErr := executor.ExplainReplayWithContext(ctx, query, opts)
+			if explainErr != nil {
+				return explainErr
+			}
+			return printReplayExplanation(explanation)
+		}
+
 		// Handle live mode
 		if live {
+			opts.ReplayMode = exec.ReplayExecutionLive
 			// Warn about flags that are not meaningfully applicable in live mode
 			if len(metadataFields) > 0 {
 				output.PrintWarning("--metadata is ignored in live mode (metadata is not displayed during live updates)")
@@ -456,6 +475,9 @@ Examples:
 			if interval == 0 {
 				interval = output.DefaultLiveInterval
 			}
+			if err := executor.ValidateReplayCadence(interval); err != nil {
+				return err
+			}
 
 			// Live mode owns the terminal via its own printer; a per-fetch
 			// progress bar would fight it, so keep it off.
@@ -473,6 +495,36 @@ Examples:
 
 			printer := output.NewPrinterWithOpts(printerOpts)
 			livePrinter := output.NewLivePrinterWithOpts(printer, interval, os.Stdout, printerOpts)
+			if executor.ReplayEnabled() {
+				var latestInfo *exec.ReplayExecutionInfo
+				var latestErr error
+				terminal := false
+				fetcher := func(fetchCtx context.Context) (interface{}, error) {
+					detailed, fetchErr := executor.ExecuteQueryDetailedWithContext(fetchCtx, query, opts)
+					if fetchErr != nil {
+						if exec.ReplayTemporaryNonOverlap(fetchErr) || exec.ReplayRetryAfter(fetchErr) > 0 {
+							fmt.Fprintln(os.Stderr, fetchErr)
+							if info, ok := exec.ReplayErrorInfo(fetchErr); ok {
+								latestInfo = &info
+							}
+							latestErr = fetchErr
+							return nil, nil
+						}
+						return nil, fetchErr
+					}
+					latestErr = nil
+					if detailed == nil || detailed.Response == nil {
+						return nil, nil
+					}
+					latestInfo = detailed.Replay
+					terminal = detailed.Replay != nil && detailed.Replay.Terminal
+					return liveQueryData(detailed.Response, decodeMode, outputFormat), nil
+				}
+				waiter := func(waitCtx context.Context) error {
+					return executor.WaitForNextAttempt(waitCtx, interval, latestInfo, latestErr)
+				}
+				return livePrinter.RunLiveScheduled(ctx, fetcher, waiter, func() bool { return terminal })
+			}
 
 			// Create data fetcher that re-executes the query
 			fetcher := func(fetchCtx context.Context) (interface{}, error) {
@@ -483,23 +535,7 @@ Examples:
 				if result == nil {
 					return nil, nil // context cancelled; message already printed
 				}
-				// Extract records
-				records := result.Records
-				if result.Result != nil && len(result.Result.Records) > 0 {
-					records = result.Result.Records
-				}
-				// Apply snapshot decoding if requested
-				if decodeMode != exec.DecodeNone && len(records) > 0 {
-					simplify := decodeMode == exec.DecodeSimplified
-					records = output.DecodeSnapshotRecords(records, simplify)
-
-					// For tabular formats, replace parsed_snapshot with a summary string
-					switch outputFormat {
-					case "", "table", "wide", "csv":
-						records = output.SummarizeSnapshotForTable(records)
-					}
-				}
-				return map[string]interface{}{"records": records}, nil
+				return liveQueryData(result, decodeMode, outputFormat), nil
 			}
 
 			return livePrinter.RunLive(ctx, fetcher)
@@ -507,6 +543,21 @@ Examples:
 
 		return executor.ExecuteWithContext(ctx, query, opts)
 	},
+}
+
+func liveQueryData(result *exec.DQLQueryResponse, decodeMode exec.DecodeMode, format string) map[string]interface{} {
+	records := result.Records
+	if result.Result != nil && len(result.Result.Records) > 0 {
+		records = result.Result.Records
+	}
+	if decodeMode != exec.DecodeNone && len(records) > 0 {
+		records = output.DecodeSnapshotRecords(records, decodeMode == exec.DecodeSimplified)
+		switch format {
+		case "", "table", "wide", "csv":
+			records = output.SummarizeSnapshotForTable(records)
+		}
+	}
+	return map[string]interface{}{"records": records}
 }
 
 // maxSegmentsPerQuery is the maximum number of filter segments allowed per query (Dynatrace limit).
@@ -760,6 +811,7 @@ func init() {
 	// Live mode flags
 	queryCmd.Flags().Bool("live", false, "enable live mode with periodic updates")
 	queryCmd.Flags().Duration("interval", 60*time.Second, "refresh interval for live mode")
+	queryCmd.Flags().Bool("explain-replay", false, "explain replay query preparation without executing data")
 
 	// Chart sizing flags
 	queryCmd.Flags().Int("width", 0, "chart width in characters (0 = default)")

@@ -183,6 +183,7 @@ Examples:
 			DefaultTimeframeEnd:    defaultTimeframeEnd,
 			Locale:                 locale,
 			Timezone:               timezone,
+			ReplayMode:             exec.ReplayExecutionWait,
 			// ShowProgress is left false: the waiter drives its own per-attempt
 			// progress output on stderr, and a per-query progress bar (plus a
 			// completion summary per attempt) would fight it.
@@ -202,7 +203,10 @@ Examples:
 		}
 
 		// Create executor and waiter
-		executor := NewDQLExecutorFromConfig(cfg, c)
+		executor, err := newReplayQueryExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 		waiter := wait.NewQueryWaiter(executor, waitConfig)
 
 		// Execute wait

@@ -9,10 +9,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 )
+
+type countingQueryPreparer struct{ calls int }
+
+func (p *countingQueryPreparer) Prepare(context.Context, exec.PrepareInput) (exec.PreparedQuery, error) {
+	p.calls++
+	return exec.PreparedQuery{}, fmt.Errorf("unexpected preparation")
+}
 
 // newWaiterTestExecutor creates a DQL executor backed by a test server.
 func newWaiterTestExecutor(t *testing.T, handler http.HandlerFunc) (*exec.DQLExecutor, func()) {
@@ -59,6 +67,32 @@ func TestNewQueryWaiter_CustomProgressOut(t *testing.T) {
 	waiter := NewQueryWaiter(executor, config)
 	if waiter.config.ProgressOut != buf {
 		t.Error("expected custom ProgressOut to be preserved")
+	}
+}
+
+func TestWait_ReplayCadenceRejectedBeforePreparationOrExecution(t *testing.T) {
+	httpCalls := 0
+	executor, cleanup := newWaiterTestExecutor(t, func(w http.ResponseWriter, r *http.Request) { httpCalls++ })
+	defer cleanup()
+	preparer := &countingQueryPreparer{}
+	executor.WithQueryPreparer(preparer)
+	var progress bytes.Buffer
+	waiter := NewQueryWaiter(executor, WaitConfig{
+		Query:       "fetch logs",
+		Condition:   Condition{Type: ConditionTypeAny, Operator: OpGreater, Value: 0},
+		ProgressOut: &progress,
+		Backoff: BackoffConfig{
+			MinInterval: 4*time.Second + 999*time.Millisecond,
+			MaxInterval: 10 * time.Second,
+			Multiplier:  2,
+		},
+	})
+	result, err := waiter.Wait(context.Background())
+	if result != nil || err == nil || !strings.Contains(err.Error(), "supported minimum of 5s") {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if preparer.calls != 0 || httpCalls != 0 || progress.Len() != 0 {
+		t.Fatalf("preparer=%d HTTP=%d progress=%q, want no work before rejection", preparer.calls, httpCalls, progress.String())
 	}
 }
 

@@ -44,11 +44,11 @@ func configureReplayCLI(t *testing.T, configPath, stateDir string, clock session
 	t.Helper()
 	origConfig, origContext, origFormat := cfgFile, contextName, outputFormat
 	origAgent, origNoAgent, origPlain, origJQ := agentMode, noAgent, plainMode, jqFilter
-	origClock, origStateDir := replayClock, replayStateDirectory
+	origClock, origStateDir, origWaitFunc := replayClock, replayStateDirectory, replayQueryWaitFunc
 	t.Cleanup(func() {
 		cfgFile, contextName, outputFormat = origConfig, origContext, origFormat
 		agentMode, noAgent, plainMode, jqFilter = origAgent, origNoAgent, origPlain, origJQ
-		replayClock, replayStateDirectory = origClock, origStateDir
+		replayClock, replayStateDirectory, replayQueryWaitFunc = origClock, origStateDir, origWaitFunc
 	})
 	cfgFile = configPath
 	contextName = ""
@@ -56,6 +56,7 @@ func configureReplayCLI(t *testing.T, configPath, stateDir string, clock session
 	agentMode, noAgent, plainMode, jqFilter = false, true, false, ""
 	replayClock = clock
 	replayStateDirectory = stateDir
+	replayQueryWaitFunc = nil
 }
 
 func runReplayCLI(t *testing.T, format string, args ...string) replayCLIResult {

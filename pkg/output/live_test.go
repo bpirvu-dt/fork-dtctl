@@ -69,6 +69,40 @@ func TestFetchAndPrint_FetcherError(t *testing.T) {
 	}
 }
 
+func TestRunLiveScheduledSkipsNoDataAttemptAndStopsAfterTerminalResult(t *testing.T) {
+	printed := 0
+	printer := &recordingPrinter{onPrint: func(data interface{}) error {
+		printed++
+		return nil
+	}}
+	var output bytes.Buffer
+	live := &LivePrinter{printer: printer, interval: 5, writer: &output}
+	fetches := 0
+	completed := false
+	fetcher := func(context.Context) (interface{}, error) {
+		fetches++
+		if fetches == 1 {
+			return nil, nil
+		}
+		completed = true
+		return map[string]interface{}{"records": []interface{}{}}, nil
+	}
+	waits := 0
+	waiter := func(context.Context) error {
+		waits++
+		return nil
+	}
+	if err := live.RunLiveScheduled(context.Background(), fetcher, waiter, func() bool { return completed }); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 2 || waits != 1 || printed != 1 {
+		t.Fatalf("fetches=%d waits=%d printed=%d, want 2/1/1", fetches, waits, printed)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("Live mode completed.")) {
+		t.Fatalf("missing clean terminal completion output: %q", output.String())
+	}
+}
+
 // recordingPrinter is a minimal Printer implementation for testing.
 type recordingPrinter struct {
 	onPrint func(data interface{}) error

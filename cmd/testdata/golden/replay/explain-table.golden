@@ -1,0 +1,12 @@
+Virtual now: 2026-06-14T10:30:00Z
+Virtual start: 2026-06-14T10:00:00Z
+Replay interval: 2026-06-14T08:00:00Z – 2026-06-14T12:00:00Z
+Visible interval: 2026-06-14T08:00:00Z – 2026-06-14T10:30:00Z
+Locale: en_US
+Timezone: UTC
+Source 0: record logs (exact_half_open; overlap)
+  Requested: 2026-06-14T09:30:00Z – 2026-06-14T10:30:00Z
+  Effective: 2026-06-14T09:30:00Z – 2026-06-14T10:30:00Z
+  Proof: the requested source range intersects the visible replay interval
+Effective DQL:
+fetch logs, from:toTimestamp("2026-06-14T09:30:00Z"), to:toTimestamp("2026-06-14T10:30:00Z")

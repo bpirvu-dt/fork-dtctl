@@ -597,6 +597,18 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
+	// ReplayAttemptError must be routed first: it may intentionally wrap the
+	// same QueryError while exposing a restricted generic message.
+	var replayAttemptErr *exec.ReplayAttemptError
+	if errors.As(err, &replayAttemptErr) {
+		if !exec.ReplayPreservesRemoteError(err) {
+			return &output.ErrorDetail{
+				Code:    "query_failed",
+				Message: replayAttemptErr.Error(),
+			}
+		}
+	}
+
 	// query.QueryError — a typed DQL API error. The envelope code becomes the
 	// API's error type (e.g. unknown_data_object) and recurring mistake
 	// classes get a targeted recovery suggestion.

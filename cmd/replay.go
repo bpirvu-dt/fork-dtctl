@@ -18,6 +18,7 @@ import (
 var (
 	replayClock          session.Clock = session.SystemClock{}
 	replayStateDirectory               = session.ReplayDir()
+	replayQueryWaitFunc  func(context.Context, time.Duration) error
 )
 
 type replayInvocationContext struct {
