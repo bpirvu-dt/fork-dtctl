@@ -194,6 +194,22 @@ func TestCompilerAbsoluteOverlapTableUsesRealSourceAST(t *testing.T) {
 	}
 }
 
+func TestCompilerRejectsOneNanosecondEffectiveWindow(t *testing.T) {
+	const fixture = "phase0b/fixtures/records/logs/01-to-at-t/parse.json"
+	const original = `fetch logs, from:toTimestamp("2026-08-10T10:45:02.718012207Z"), to:toTimestamp("2026-08-10T11:05:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
+	input := compileInputAt(t, loadSDKFixture(t, fixture), original,
+		"2026-08-10T11:05:02.718012206Z", "2026-08-10T12:00:00Z", "2026-08-10T11:30:00Z")
+
+	result, err := Compile(input)
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if result.EffectiveDQL != "" {
+		t.Fatalf("one-nanosecond intersection emitted DQL: %s", result.EffectiveDQL)
+	}
+}
+
 func TestCompilerEmptyVisibleIntervalClassifiesTemporaryAndUnknown(t *testing.T) {
 	tests := []struct {
 		name     string

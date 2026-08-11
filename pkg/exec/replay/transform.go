@@ -279,6 +279,9 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 	if proof.Classification != OverlapPresent {
 		return compiled, nil
 	}
+	if effective.End.Sub(effective.Start) <= time.Nanosecond {
+		return compiled, replayError(ErrorTimeframe, source.node, "effective source timeframe", "The intersected source timeframe is only one nanosecond wide.", "Use a wider requested range or advance virtual time before retrying.")
+	}
 	compiled.Effective = cloneInterval(&effective)
 	if source.Class == SourceRecord {
 		compiled.PhysicalRange = cloneInterval(&effective)
