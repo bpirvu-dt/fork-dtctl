@@ -894,7 +894,7 @@ func TestVerify_InvalidQuery(t *testing.T) {
 }
 
 // TestWithHeaders_PropagatedToAllEndpoints verifies that custom headers are sent
-// on execute, poll, cancel, and verify requests.
+// on execute, poll, cancel, verify, and parse requests.
 func TestWithHeaders_PropagatedToAllEndpoints(t *testing.T) {
 	var headers sync.Map // endpoint -> header value
 
@@ -910,6 +910,11 @@ func TestWithHeaders_PropagatedToAllEndpoints(t *testing.T) {
 	mux.HandleFunc("/platform/storage/query/v1/query:poll", recordHeader("poll"))
 	mux.HandleFunc("/platform/storage/query/v1/query:cancel", recordHeader("cancel"))
 	mux.HandleFunc("/platform/storage/query/v1/query:verify", recordHeader("verify"))
+	mux.HandleFunc("/platform/storage/query/v1/query:parse", func(w http.ResponseWriter, r *http.Request) {
+		headers.Store("parse", r.Header.Get("x-custom"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(minimalParseTree))
+	})
 
 	h := NewHandler(newTestClient(t, mux)).WithHeaders(map[string]string{"x-custom": "test-value"})
 
@@ -917,8 +922,9 @@ func TestWithHeaders_PropagatedToAllEndpoints(t *testing.T) {
 	h.Poll(context.Background(), "tok", 1000, false)
 	h.Cancel(context.Background(), "tok")
 	h.Verify(context.Background(), VerifyRequest{Query: "q"})
+	h.Parse(context.Background(), ParseRequest{Query: "q"})
 
-	for _, ep := range []string{"execute", "poll", "cancel", "verify"} {
+	for _, ep := range []string{"execute", "poll", "cancel", "verify", "parse"} {
 		val, ok := headers.Load(ep)
 		if !ok || val.(string) != "test-value" {
 			t.Errorf("endpoint %q: x-custom = %q, want %q", ep, val, "test-value")

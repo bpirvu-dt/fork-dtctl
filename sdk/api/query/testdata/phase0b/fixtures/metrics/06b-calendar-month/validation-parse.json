@@ -1,0 +1,4 @@
+{
+  "status": "not tested",
+  "reason": "no effective query was emitted because the original parse failed"
+}

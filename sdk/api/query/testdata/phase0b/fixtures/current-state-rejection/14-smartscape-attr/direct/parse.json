@@ -1,0 +1,39 @@
+{
+  "http_status": 400,
+  "elapsed_ms": 144.994,
+  "response_headers": {
+    "Content-Type": "application/json",
+    "Date": "Mon, 10 Aug 2026 11:04:13 GMT"
+  },
+  "response_body": {
+    "error": {
+      "code": 400,
+      "details": {
+        "arguments": [
+          "smartscapeAttr"
+        ],
+        "errorMessage": "There's no function `smartscapeAttr`.",
+        "errorMessageFormat": "There's no function `%1$s`.",
+        "errorMessageFormatSpecifierTypes": [
+          "INPUT_QUERY_PART"
+        ],
+        "errorType": "UNKNOWN_FUNCTION",
+        "exceptionType": "DQL-SYNTAX-ERROR",
+        "queryString": "data record() | fieldsAdd resolved=smartscapeAttr(dt.smartscape.host, \"name\")",
+        "syntaxErrorPosition": {
+          "end": {
+            "column": 49,
+            "index": 48,
+            "line": 1
+          },
+          "start": {
+            "column": 36,
+            "index": 35,
+            "line": 1
+          }
+        }
+      },
+      "message": "UNKNOWN_FUNCTION"
+    }
+  }
+}

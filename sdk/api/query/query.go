@@ -2,7 +2,9 @@
 // (/platform/storage/query/v1/).
 //
 // It supports synchronous and asynchronous query execution with automatic
-// polling, query verification, and cancellation.
+// polling, query verification, cancellation, and query parsing. Parse returns
+// the server's structured DQL tree; replay treats that tree as its AST input,
+// while this SDK package deliberately implements no replay policy.
 package query
 
 import (
@@ -590,8 +592,8 @@ func (h *Handler) applyHeaders(req *resty.Request) {
 
 // parseError parses the DQL API error response into a structured error.
 // isUnauthorized reports whether an error is an HTTP 401 from either error
-// shape this package produces: Execute wraps error bodies as *QueryError,
-// Poll as *httpclient.APIError.
+// shape this package produces: Execute and Parse wrap error bodies as
+// *QueryError, while Poll uses *httpclient.APIError.
 func isUnauthorized(err error) bool {
 	var apiErr *httpclient.APIError
 	if errors.As(err, &apiErr) {

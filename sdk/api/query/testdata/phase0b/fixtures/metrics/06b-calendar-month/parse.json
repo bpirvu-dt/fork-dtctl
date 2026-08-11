@@ -1,0 +1,39 @@
+{
+  "http_status": 400,
+  "elapsed_ms": 135.436,
+  "response_headers": {
+    "Content-Type": "application/json",
+    "Date": "Mon, 10 Aug 2026 11:08:10 GMT"
+  },
+  "response_body": {
+    "error": {
+      "code": 400,
+      "details": {
+        "arguments": [
+          "interval"
+        ],
+        "errorMessage": "The parameter `interval` doesn't support calendar durations.",
+        "errorMessageFormat": "The parameter `%1$s` doesn't support calendar durations.",
+        "errorMessageFormatSpecifierTypes": [
+          "PARAMETER_KEY"
+        ],
+        "errorType": "NAMED_PARAMETER_MUST_NOT_BE_CALENDAR_DURATION",
+        "exceptionType": "DQL-SYNTAX-ERROR",
+        "queryString": "timeseries metric_value=avg(dt.host.cpu.usage), interval:1M, from:toTimestamp(\"2026-05-02T08:36:06Z\"), to:toTimestamp(\"2026-08-10T12:46:06Z\")",
+        "syntaxErrorPosition": {
+          "end": {
+            "column": 59,
+            "index": 58,
+            "line": 1
+          },
+          "start": {
+            "column": 58,
+            "index": 57,
+            "line": 1
+          }
+        }
+      },
+      "message": "NAMED_PARAMETER_MUST_NOT_BE_CALENDAR_DURATION"
+    }
+  }
+}
