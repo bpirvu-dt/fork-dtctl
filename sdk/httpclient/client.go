@@ -166,7 +166,10 @@ func isRetryable(r *resty.Response, err error) bool {
 		return true
 	}
 	statusCode := r.StatusCode()
-	return statusCode == 429 || statusCode >= 500
+	if statusCode == http.StatusTooManyRequests && r.Request != nil && RateLimitRetrySuppressed(r.Request.Context()) {
+		return false
+	}
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
 }
 
 // HTTP returns the underlying resty client for advanced use cases.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/sdk/agentmode"
 	sdkauth "github.com/dynatrace-oss/dtctl/sdk/auth"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
 
 // defaultUserAgentProduct identifies clients whose builder did not set an
@@ -157,9 +158,14 @@ func isRetryable(r *resty.Response, err error) bool {
 		return true
 	}
 
-	// Retry on rate limit or server errors
+	// Replay query requests surface their first 429 so the replay loop can
+	// honor Retry-After itself. This request-scoped marker deliberately leaves
+	// the client retry count and the separate 401 refresh condition intact.
 	statusCode := r.StatusCode()
-	return statusCode == 429 || statusCode >= 500
+	if statusCode == http.StatusTooManyRequests && r.Request != nil && httpclient.RateLimitRetrySuppressed(r.Request.Context()) {
+		return false
+	}
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
 }
 
 // HTTP returns the underlying resty client

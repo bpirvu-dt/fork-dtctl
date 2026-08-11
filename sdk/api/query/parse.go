@@ -124,7 +124,7 @@ func (n *DQLNode) RawJSON() json.RawMessage {
 func (h *Handler) Parse(ctx context.Context, req ParseRequest) (*ParseResponse, error) {
 	var result ParseResponse
 
-	httpReq := h.client.HTTP().R().SetContext(ctx).
+	httpReq := h.client.HTTP().R().SetContext(h.requestContext(ctx)).
 		SetHeader("Content-Type", "application/json").
 		SetBody(req).
 		SetResult(&result)
@@ -135,7 +135,7 @@ func (h *Handler) Parse(ctx context.Context, req ParseRequest) (*ParseResponse, 
 		return nil, fmt.Errorf("failed to parse query: %w", err)
 	}
 	if resp.IsError() {
-		return nil, parseError(resp.StatusCode(), resp.Body())
+		return nil, wrapRateLimit(resp, parseError(resp.StatusCode(), resp.Body()))
 	}
 	if resp.StatusCode() != http.StatusOK {
 		return nil, fmt.Errorf("query parse returned unexpected status code %d", resp.StatusCode())

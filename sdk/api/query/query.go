@@ -27,6 +27,11 @@ type Handler struct {
 	// headers is an optional map of extra HTTP headers to include on every request
 	// (e.g., dt-client-context).
 	headers map[string]string
+
+	// surfaceFirstRateLimit marks only this handler's requests so the shared
+	// client returns the first 429. It does not change the shared retry count or
+	// disable the independent session-layer OAuth 401 refresh.
+	surfaceFirstRateLimit bool
 }
 
 // NewHandler creates a new query handler.
@@ -40,6 +45,22 @@ func (h *Handler) WithHeaders(headers map[string]string) *Handler {
 	cp := *h
 	cp.headers = headers
 	return &cp
+}
+
+// WithFirstRateLimitResponse returns a shallow handler copy whose requests
+// surface the first HTTP 429 to the caller. Replay loops use this to honor
+// Retry-After without changing retry behavior for the shared client.
+func (h *Handler) WithFirstRateLimitResponse() *Handler {
+	cp := *h
+	cp.surfaceFirstRateLimit = true
+	return &cp
+}
+
+func (h *Handler) requestContext(ctx context.Context) context.Context {
+	if h.surfaceFirstRateLimit {
+		return httpclient.WithoutRateLimitRetry(ctx)
+	}
+	return ctx
 }
 
 // --- Request / Response types ---
@@ -256,7 +277,7 @@ const basePath = "/platform/storage/query/v1/query"
 func (h *Handler) Execute(ctx context.Context, req ExecuteRequest) (*Response, error) {
 	var result Response
 
-	httpReq := h.client.HTTP().R().SetContext(ctx).
+	httpReq := h.client.HTTP().R().SetContext(h.requestContext(ctx)).
 		SetHeader("Content-Type", "application/json").
 		SetBody(req).
 		SetResult(&result)
@@ -276,7 +297,7 @@ func (h *Handler) Execute(ctx context.Context, req ExecuteRequest) (*Response, e
 	}
 
 	if resp.IsError() {
-		return nil, parseError(resp.StatusCode(), resp.Body())
+		return nil, wrapRateLimit(resp, parseError(resp.StatusCode(), resp.Body()))
 	}
 
 	return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode())
@@ -290,7 +311,7 @@ func (h *Handler) Execute(ctx context.Context, req ExecuteRequest) (*Response, e
 func (h *Handler) Poll(ctx context.Context, requestToken string, timeoutMs int64, enrich bool) (*Response, error) {
 	var result Response
 
-	httpReq := h.client.HTTP().R().SetContext(ctx).
+	httpReq := h.client.HTTP().R().SetContext(h.requestContext(ctx)).
 		SetQueryParam("request-token", requestToken).
 		SetQueryParam("request-timeout-milliseconds", fmt.Sprintf("%d", timeoutMs)).
 		SetResult(&result)
@@ -304,7 +325,7 @@ func (h *Handler) Poll(ctx context.Context, requestToken string, timeoutMs int64
 		return nil, fmt.Errorf("failed to poll query: %w", err)
 	}
 	if resp.IsError() {
-		return nil, httpclient.NewAPIError(resp.StatusCode(), resp.Status(), resp.String())
+		return nil, wrapRateLimit(resp, httpclient.NewAPIError(resp.StatusCode(), resp.Status(), resp.String()))
 	}
 
 	return &result, nil
