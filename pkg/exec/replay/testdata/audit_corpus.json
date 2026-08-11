@@ -1,0 +1,74 @@
+[
+  {
+    "name": "logs",
+    "original_ast": "phase0b/fixtures/records/logs/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/logs/00-discovery/validation-parse.json",
+    "original_dql": "fetch logs, from:toTimestamp(\"2026-08-09T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-08-09T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-09T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "spans",
+    "original_ast": "phase0b/fixtures/records/spans/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/spans/00-discovery/validation-parse.json",
+    "original_dql": "fetch spans, from:toTimestamp(\"2026-08-09T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(start_time) | sort start_time desc | fields observed_timestamp=start_time | limit 1",
+    "effective_dql": "fetch spans, from:toTimestamp(\"2026-08-09T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(start_time) | sort start_time desc | fields observed_timestamp=start_time | limit 1",
+    "start": "2026-08-09T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "events",
+    "original_ast": "phase0b/fixtures/records/events/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/events/00-discovery/validation-parse.json",
+    "original_dql": "fetch events, from:toTimestamp(\"2026-08-09T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch events, from:toTimestamp(\"2026-08-09T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-09T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "bizevents",
+    "original_ast": "phase0b/fixtures/records/bizevents/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/bizevents/00-discovery/validation-parse.json",
+    "original_dql": "fetch bizevents, from:toTimestamp(\"2026-08-09T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch bizevents, from:toTimestamp(\"2026-08-09T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-09T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "system events",
+    "original_ast": "phase0b/fixtures/records/system-events/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/system-events/00-discovery/validation-parse.json",
+    "original_dql": "fetch dt.system.events, from:toTimestamp(\"2026-08-03T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch dt.system.events, from:toTimestamp(\"2026-08-03T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-03T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "Davis event snapshots",
+    "original_ast": "phase0b/fixtures/records/davis-events-snapshots/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/davis-events-snapshots/00-discovery/validation-parse.json",
+    "original_dql": "fetch dt.davis.events.snapshots, from:toTimestamp(\"2026-08-03T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch dt.davis.events.snapshots, from:toTimestamp(\"2026-08-03T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-03T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "Davis problem snapshots",
+    "original_ast": "phase0b/fixtures/records/davis-problems-snapshots/00-discovery/parse.json",
+    "validation_ast": "phase0b/fixtures/records/davis-problems-snapshots/00-discovery/validation-parse.json",
+    "original_dql": "fetch dt.davis.problems.snapshots, from:toTimestamp(\"2026-08-03T09:55:03Z\"), to:toTimestamp(\"2026-08-10T10:56:03Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "effective_dql": "fetch dt.davis.problems.snapshots, from:toTimestamp(\"2026-08-03T10:55:03.000000000Z\"), to:toTimestamp(\"2026-08-10T10:55:03.000000000Z\") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1",
+    "start": "2026-08-03T10:55:03Z",
+    "end": "2026-08-10T10:55:03Z"
+  },
+  {
+    "name": "fixed metric interval",
+    "original_ast": "phase0b/fixtures/metrics/02-explicit-1m/parse.json",
+    "validation_ast": "phase0b/fixtures/metrics/02-explicit-1m/validation-parse.json",
+    "original_dql": "timeseries metric_value=avg(dt.host.cpu.usage), interval:1m, from:toTimestamp(\"2026-08-10T08:36:06Z\"), to:toTimestamp(\"2026-08-10T12:51:06Z\")",
+    "effective_dql": "timeseries metric_value=avg(dt.host.cpu.usage), interval:1m, from:toTimestamp(\"2026-08-10T10:36:06.000000000Z\"), to:toTimestamp(\"2026-08-10T10:51:06.000000000Z\")",
+    "start": "2026-08-10T10:36:06Z",
+    "end": "2026-08-10T10:51:06Z"
+  }
+]

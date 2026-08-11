@@ -2,7 +2,6 @@ package replay
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -73,6 +72,7 @@ type MetricForm struct {
 	Aggregations      []string
 	MetricKeys        []string
 	DeclaredInterval  *time.Duration
+	DeclaredLiteral   string
 	AutomaticInterval bool
 }
 
@@ -371,6 +371,7 @@ func classifyMetric(command *Node, params []parameterView) (*MetricForm, error) 
 		}
 		declared := *duration.fixed
 		form.DeclaredInterval = &declared
+		form.DeclaredLiteral = durationLiteral(value)
 	}
 
 	if len(byKey["by"]) == 1 {
@@ -485,15 +486,4 @@ func ownAggregationName(function *Node) string {
 
 func unsupportedMetric(node *Node) error {
 	return replayError(ErrorUnsupportedForm, node, "timeseries", "The timeseries form is outside the exact milestone 1 metric allowlist.", "Use single avg, sum with rate:1s, avg with rollup:avg, the tested single split, or the tested avg/max pair.")
-}
-
-func uniqueStrings(values []string) []string {
-	sort.Strings(values)
-	out := values[:0]
-	for _, value := range values {
-		if len(out) == 0 || out[len(out)-1] != value {
-			out = append(out, value)
-		}
-	}
-	return out
 }

@@ -179,6 +179,33 @@ func TestUnallowlistedMetricShapeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestGenuineCalendarMetricIntervalFailsClosed(t *testing.T) {
+	ast := loadPhase0BFixture(t, "metrics/05-explicit-1d/parse.json").Clone()
+	var duration *Node
+	_ = ast.WalkExecutable(func(node *Node) error {
+		if duration == nil && node.Role == "DURATION" {
+			duration = node
+		}
+		return nil
+	})
+	if duration == nil {
+		t.Fatal("fixture has no duration")
+	}
+	duration.Role = "CALENDAR_DURATION"
+	numbers := terminalsWithRole(duration, "NUMBER")
+	units := terminalsWithRole(duration, "TIME_UNIT")
+	if len(numbers) != 1 || len(units) != 1 {
+		t.Fatalf("duration terminals = %d numbers, %d units", len(numbers), len(units))
+	}
+	numbers[0].Canonical = "1"
+	units[0].Canonical = "M"
+	_, err := ClassifySources(ast, Milestone1SourcePolicy())
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+		t.Fatalf("error = %T %v, want calendar rejection", err, err)
+	}
+}
+
 func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
 	ast := loadPhase0BFixture(t, "current-state-rejection/04-fetch-dt-entity/historical-context/parse.json").Clone()
 	dataObject := firstTerminal(ast, "DATA_OBJECT")

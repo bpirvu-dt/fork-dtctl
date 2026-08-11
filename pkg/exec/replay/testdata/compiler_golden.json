@@ -1,0 +1,92 @@
+[
+  {
+    "name": "explicit semantic now",
+    "ast_fixture": "phase0/fixtures/01-fetch-explicit-now/parse.json",
+    "original_dql": "fetch logs, from:now()-1h",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "implicit now duration",
+    "ast_fixture": "phase0/fixtures/02-fetch-implicit-duration/parse.json",
+    "original_dql": "fetch logs, from:-1h",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "missing source timeframe",
+    "ast_fixture": "phase0/fixtures/05-fetch-no-timeframe/parse.json",
+    "original_dql": "fetch logs",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "quoted absolute timeframe",
+    "ast_fixture": "phase0/fixtures/07-fetch-explicit-timeframe/parse.json",
+    "original_dql": "fetch logs, timeframe:\"2026-06-14T09:00:00Z/2026-06-14T10:00:00Z\"",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "generic now outside source",
+    "ast_fixture": "phase0/fixtures/09-fields-add-now/parse.json",
+    "original_dql": "fetch logs | fieldsAdd age=now()-timestamp",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") | fieldsAdd age=toTimestamp(\"2026-06-14T10:00:00.000000000Z\")-timestamp"
+  },
+  {
+    "name": "nested source boundaries",
+    "ast_fixture": "phase0/fixtures/10-nested-append/parse.json",
+    "original_dql": "fetch logs | append [ fetch spans, from:now()-2h ]",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") | append [ fetch spans, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") ]"
+  },
+  {
+    "name": "string containing now remains text",
+    "ast_fixture": "phase0/fixtures/13-string-now/parse.json",
+    "original_dql": "data record(message=\"now()\")",
+    "effective_dql": "data record(message=\"now()\")"
+  },
+  {
+    "name": "unicode before semantic now",
+    "ast_fixture": "phase0/matrix-fixtures/01-unicode-before-now/parse.json",
+    "original_dql": "data record(message=\"é🙂\") | fieldsAdd t=now()",
+    "effective_dql": "data record(message=\"é🙂\") | fieldsAdd t=toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "escaped string remains text",
+    "ast_fixture": "phase0/matrix-fixtures/02-escaped-string-and-now/parse.json",
+    "original_dql": "data record(message=\"escaped \\\"now()\\\"\") | fieldsAdd t=now()",
+    "effective_dql": "data record(message=\"escaped \\\"now()\\\"\") | fieldsAdd t=toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "comment remains text",
+    "ast_fixture": "phase0/matrix-fixtures/03-comment-and-now/parse.json",
+    "original_dql": "data record(value=1) // now() in comment\n| fieldsAdd t=now()",
+    "effective_dql": "data record(value=1) // now() in comment\n| fieldsAdd t=toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "adjacent source edits",
+    "ast_fixture": "phase0/matrix-fixtures/04-adjacent-source-edits/parse.json",
+    "original_dql": "fetch logs, from:now()-1h, to:now()",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "nested source missing timeframe",
+    "ast_fixture": "phase0/matrix-fixtures/06-nested-source-no-timeframe/parse.json",
+    "original_dql": "fetch logs | append [ fetch spans ]",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") | append [ fetch spans, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") ]"
+  },
+  {
+    "name": "case and whitespace variants",
+    "ast_fixture": "phase0/matrix-fixtures/08-case-and-whitespace/parse.json",
+    "original_dql": "FETCH logs, FROM: now ( ) - 1h",
+    "effective_dql": "FETCH logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  },
+  {
+    "name": "unicode comment before nested source",
+    "ast_fixture": "phase0/matrix-fixtures/09-unicode-comment-before-nested/parse.json",
+    "original_dql": "data record(message=\"é🙂\") // comment\n| append [ fetch spans, from:now()-2h ]",
+    "effective_dql": "data record(message=\"é🙂\") // comment\n| append [ fetch spans, from:toTimestamp(\"2026-06-14T08:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\") ]"
+  },
+  {
+    "name": "dynamic timeframe function",
+    "ast_fixture": "phase0/matrix-fixtures/10-dynamic-timeframe/parse.json",
+    "original_dql": "fetch logs, timeframe:timeframe(from:now()-1h, to:now())",
+    "effective_dql": "fetch logs, from:toTimestamp(\"2026-06-14T09:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")"
+  }
+]

@@ -2,7 +2,9 @@ package replay
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 )
 
 func collectCommands(ast *AST) ([]commandView, error) {
@@ -198,4 +200,156 @@ func validateExecutionBlockOwners(node *Node, owner string) error {
 		}
 	}
 	return nil
+}
+
+func compileSource(source *sourceAnalysis, context timeframeContext, input CompileInput) (SourceCompilation, error) {
+	compiled := SourceCompilation{Source: cloneSourceDescriptor(source.SourceDescriptor)}
+	if source.Class == SourceSynthetic {
+		compiled.Overlap = OverlapProof{
+			Classification: OverlapPresent,
+			Reason:         "synthetic data reads no tenant telemetry",
+			VisibleNow:     input.VisibleInterval,
+			ReplayInterval: input.ReplayInterval,
+		}
+		return compiled, nil
+	}
+	requested, err := resolveRequestedRange(source, context)
+	if err != nil {
+		return compiled, err
+	}
+	compiled.Requested = &requested
+	effective, proof := ClassifyOverlap(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
+	compiled.Overlap = proof
+	if proof.Classification != OverlapPresent {
+		return compiled, nil
+	}
+	compiled.Effective = cloneInterval(&effective)
+	if source.Class == SourceRecord {
+		compiled.PhysicalRange = cloneInterval(&effective)
+		return compiled, nil
+	}
+	compiled.PhysicalPending = true
+	contract := newMetricResultContract(source, effective)
+	compiled.ResultContract = &contract
+	return compiled, nil
+}
+
+func cloneSourceDescriptor(source SourceDescriptor) SourceDescriptor {
+	clone := source
+	if source.Metric != nil {
+		metric := *source.Metric
+		metric.Aggregations = append([]string(nil), source.Metric.Aggregations...)
+		metric.MetricKeys = append([]string(nil), source.Metric.MetricKeys...)
+		if source.Metric.DeclaredInterval != nil {
+			value := *source.Metric.DeclaredInterval
+			metric.DeclaredInterval = &value
+		}
+		clone.Metric = &metric
+	}
+	return clone
+}
+
+func explainSource(source SourceCompilation) SourceExplain {
+	return SourceExplain{
+		Ordinal: source.Source.Ordinal, Path: source.Source.Path, Class: source.Source.Class,
+		Name: source.Source.Name, BoundaryPolicy: source.Source.BoundaryPolicy,
+		Requested: cloneRequestedRange(source.Requested), Effective: cloneInterval(source.Effective),
+		Classification: source.Overlap.Classification, Proof: cloneOverlapProof(source.Overlap),
+		RecordTimeField: source.Source.RecordTimeField,
+	}
+}
+
+func cloneRequestedRange(value *RequestedRange) *RequestedRange {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneOverlapProof(value OverlapProof) OverlapProof {
+	clone := value
+	clone.TerminalRequested = cloneInterval(value.TerminalRequested)
+	return clone
+}
+
+func sourceNotices(source *sourceAnalysis, input CompileInput) []Notice {
+	var notices []Notice
+	if source.Metric != nil && sourceUsesFixedDayLiteral(source, input.OriginalDQL) {
+		notices = append(notices, Notice{
+			Kind: NoticeNotification, Code: NoticeFixedDayInterval, SourceOrdinal: source.Ordinal,
+			Message: "timeseries interval:1d is a fixed 24-hour interval, not a calendar day.",
+		})
+	}
+	if (source.Name == "dt.davis.events.snapshots" || source.Name == "dt.davis.problems.snapshots") &&
+		input.VirtualStart.Sub(input.ReplayInterval.Start) < 6*time.Hour {
+		notices = append(notices, Notice{
+			Kind: NoticeWarning, Code: NoticeDavisWarmup, SourceOrdinal: source.Ordinal,
+			Message: "The Davis snapshot query has less than six hours of warm-up between data_start and virtual_start. Problem-state reconstruction at virtual_start may be incomplete; Phase 0B did not observe this short-gap hazard live. Compilation continues, and this warning does not change the replay boundaries.",
+		})
+	}
+	return notices
+}
+
+func sourceUsesFixedDayLiteral(source *sourceAnalysis, original string) bool {
+	if source.Metric == nil || source.Metric.DeclaredInterval == nil || *source.Metric.DeclaredInterval != 24*time.Hour {
+		return false
+	}
+	intervals := source.parametersByKey()["interval"]
+	if len(intervals) != 1 {
+		return false
+	}
+	value, err := parameterValue(intervals[0].node)
+	if err != nil || value.Span == nil || value.Span.End.Index == int(^uint(0)>>1) {
+		return false
+	}
+	start, err := utf16OffsetToByte(original, value.Span.Start.Index)
+	if err != nil {
+		return false
+	}
+	end, err := utf16OffsetToByte(original, value.Span.End.Index+1)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(original[start:end]) == "1d"
+}
+
+func classifyWholeQueryNonOverlap(sources []SourceExplain) *NonOverlapError {
+	classification := OverlapPresent
+	var rejected []SourceExplain
+	for _, source := range sources {
+		if source.Classification == OverlapPresent {
+			continue
+		}
+		rejected = append(rejected, source)
+		switch source.Classification {
+		case OverlapUnknown:
+			classification = OverlapUnknown
+		case OverlapPermanent:
+			if classification != OverlapUnknown {
+				classification = OverlapPermanent
+			}
+		case OverlapTemporary:
+			if classification == OverlapPresent {
+				classification = OverlapTemporary
+			}
+		default:
+			classification = OverlapUnknown
+		}
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+	return &NonOverlapError{Classification: classification, Sources: rejected}
+}
+
+func uniqueStrings(values []string) []string {
+	sort.Strings(values)
+	out := values[:0]
+	for _, value := range values {
+		if len(out) == 0 || out[len(out)-1] != value {
+			out = append(out, value)
+		}
+	}
+	return out
 }

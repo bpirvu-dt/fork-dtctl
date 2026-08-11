@@ -383,6 +383,15 @@ func parseDurationNode(node *Node) (durationValue, error) {
 	return durationValue{calendar: &calendar}, nil
 }
 
+func durationLiteral(node *Node) string {
+	numbers := terminalsWithRole(node, "NUMBER")
+	units := terminalsWithRole(node, "TIME_UNIT")
+	if len(numbers) != 1 || len(units) != 1 {
+		return ""
+	}
+	return numbers[0].Canonical + units[0].Canonical
+}
+
 func applyDuration(base TimeEndpoint, operator string, node *Node, location *time.Location) (TimeEndpoint, error) {
 	shift, err := parseDurationNode(node)
 	if err != nil {
