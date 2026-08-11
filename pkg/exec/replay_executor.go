@@ -6,11 +6,12 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/term"
+
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
-	"golang.org/x/term"
 )
 
 // ExecuteQueryWithContext executes a DQL query with a cancellable context.
