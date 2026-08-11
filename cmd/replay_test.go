@@ -43,17 +43,17 @@ type replayCLIResult struct {
 func configureReplayCLI(t *testing.T, configPath, stateDir string, clock session.Clock) {
 	t.Helper()
 	origConfig, origContext, origFormat := cfgFile, contextName, outputFormat
-	origAgent, origPlain, origJQ := agentMode, plainMode, jqFilter
+	origAgent, origNoAgent, origPlain, origJQ := agentMode, noAgent, plainMode, jqFilter
 	origClock, origStateDir := replayClock, replayStateDirectory
 	t.Cleanup(func() {
 		cfgFile, contextName, outputFormat = origConfig, origContext, origFormat
-		agentMode, plainMode, jqFilter = origAgent, origPlain, origJQ
+		agentMode, noAgent, plainMode, jqFilter = origAgent, origNoAgent, origPlain, origJQ
 		replayClock, replayStateDirectory = origClock, origStateDir
 	})
 	cfgFile = configPath
 	contextName = ""
 	outputFormat = "table"
-	agentMode, plainMode, jqFilter = false, false, ""
+	agentMode, noAgent, plainMode, jqFilter = false, true, false, ""
 	replayClock = clock
 	replayStateDirectory = stateDir
 }

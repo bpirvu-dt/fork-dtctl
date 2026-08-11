@@ -87,6 +87,45 @@ func TestReplayCLIValidationAndInactiveStatus(t *testing.T) {
 	}
 }
 
+func TestReplayCLIStatusAgentEnvelope(t *testing.T) {
+	t.Setenv(config.ProfileEnvVar, "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	writeReplayCLIConfig(t, configPath, replayCLIConfig(standardReplayBlock(session.ReplayClockManual)))
+	clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)}
+	configureReplayCLI(t, configPath, filepath.Join(dir, "state"), clock)
+
+	if result := runReplayCLI(t, "table", "start"); result.err != nil {
+		t.Fatal(result.err)
+	}
+	agentMode = true
+	status := runReplayCLI(t, "table", "status")
+	if status.err != nil {
+		t.Fatal(status.err)
+	}
+
+	var envelope struct {
+		OK      bool               `json:"ok"`
+		Result  ReplayStatusOutput `json:"result"`
+		Context struct {
+			Verb     string `json:"verb"`
+			Resource string `json:"resource"`
+		} `json:"context"`
+	}
+	if err := json.Unmarshal([]byte(status.stdout), &envelope); err != nil {
+		t.Fatalf("agent status is not valid JSON: %v\n%s", err, status.stdout)
+	}
+	if !envelope.OK || envelope.Context.Verb != "replay" || envelope.Context.Resource != "session" {
+		t.Fatalf("unexpected agent envelope: %+v", envelope)
+	}
+	if envelope.Result.ContextName != "historical-window" || envelope.Result.Status != session.ReplayStatusActive || envelope.Result.ClockMode != session.ReplayClockManual {
+		t.Fatalf("agent envelope status = %+v", envelope.Result)
+	}
+	if envelope.Result.VirtualNow == "" || envelope.Result.DataStart == "" || envelope.Result.DataEnd == "" {
+		t.Fatalf("agent envelope omits replay status fields: %+v", envelope.Result)
+	}
+}
+
 func TestReplayCLIProvenanceOverrideAndSymlinkRefusal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink and POSIX private-mode assertions")
