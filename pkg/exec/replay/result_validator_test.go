@@ -90,6 +90,14 @@ func TestResultValidatorRejectsContractViolations(t *testing.T) {
 				}, Provenance: provenanceFor(contract, time.Hour, nil)},
 		},
 		{
+			name: "two upper boundary buckets",
+			observed: ObservedResultMetadata{Source: contract.Source, NaturalInterval: time.Hour,
+				Buckets: []MetricBucket{
+					{Range: mustResultInterval(t, "2026-06-14T11:00:00Z", "2026-06-14T12:00:00Z")},
+					{Range: mustResultInterval(t, "2026-06-14T11:30:00Z", "2026-06-14T12:30:00Z")},
+				}, Provenance: provenanceFor(contract, time.Hour, nil)},
+		},
+		{
 			name: "bucket duration mismatch",
 			observed: ObservedResultMetadata{Source: contract.Source, NaturalInterval: time.Hour,
 				Buckets:    []MetricBucket{{Range: mustResultInterval(t, "2026-06-14T10:00:00Z", "2026-06-14T10:30:00Z")}},
