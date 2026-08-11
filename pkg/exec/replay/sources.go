@@ -255,7 +255,8 @@ func currentDavisView(table string, node *Node) (*DavisCurrentViewError, bool) {
 		View:               table,
 		SnapshotTable:      snapshot,
 		IdentityKind:       identity,
-		LatestPerIDPattern: fmt.Sprintf("fetch %s, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup <%s-id-field>", snapshot, identity),
+		IdentityField:      "event.id",
+		LatestPerIDPattern: fmt.Sprintf("fetch %s, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup event.id", snapshot),
 		Path:               node.Path,
 	}
 	if node.Span != nil {

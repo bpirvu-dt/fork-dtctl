@@ -269,7 +269,8 @@ func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
 			if !errors.As(err, &davisErr) {
 				t.Fatalf("error = %T %v, want *DavisCurrentViewError", err, err)
 			}
-			if davisErr.SnapshotTable != test.snapshot || davisErr.LatestPerIDPattern == "" ||
+			if davisErr.SnapshotTable != test.snapshot || davisErr.IdentityField != "event.id" ||
+				!strings.Contains(davisErr.LatestPerIDPattern, "dedup event.id") ||
 				!strings.Contains(davisErr.Error(), test.snapshot) || !strings.Contains(davisErr.Error(), "Pattern:") {
 				t.Fatalf("Davis error = %#v (%v)", davisErr, davisErr)
 			}

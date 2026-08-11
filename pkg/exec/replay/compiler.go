@@ -59,6 +59,7 @@ type DavisCurrentViewError struct {
 	View               string
 	SnapshotTable      string
 	IdentityKind       string
+	IdentityField      string
 	LatestPerIDPattern string
 	Path               string
 	Span               *Span
