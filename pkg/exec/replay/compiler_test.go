@@ -74,6 +74,18 @@ func TestCompileDoesNotMutateReusableAST(t *testing.T) {
 	}
 }
 
+func TestCompilerRejectsMismatchedTimezoneIdentity(t *testing.T) {
+	ast := loadSDKFixture(t, "phase0/fixtures/05-fetch-no-timeframe/parse.json")
+	input := fixedCompileInput(ast, "fetch logs")
+	input.TimezoneName = "Europe/Vienna"
+
+	_, err := Compile(input)
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+		t.Fatalf("error = %T %v", err, err)
+	}
+}
+
 func mustTime(t *testing.T, value string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339Nano, value)

@@ -297,6 +297,8 @@ func validateCompileInput(input CompileInput) (CompileInput, error) {
 	}
 	if input.TimezoneName == "" {
 		input.TimezoneName = input.Timezone.String()
+	} else if input.TimezoneName != input.Timezone.String() {
+		return input, replayError(ErrorTimeframe, nil, "replay timezone", "The supplied replay timezone name does not identify the supplied timezone rules.", "Pass one canonical timezone value for both compilation and replay provenance.")
 	}
 	if input.GlobalDefault != nil {
 		if !input.GlobalDefault.Valid() {

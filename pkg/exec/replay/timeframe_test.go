@@ -122,6 +122,18 @@ func TestUnverifiedAlignmentFormsFailClosed(t *testing.T) {
 			t.Fatalf("error = %T %v", err, err)
 		}
 	})
+	t.Run("fixed offset named UTC", func(t *testing.T) {
+		ast := loadSDKFixture(t, "phase0/fixtures/04-fetch-alignment-only/parse.json")
+		context := timeframeContext{
+			VirtualNow: timeAt(10).Add(30 * time.Minute), ReplayInterval: intervalAt(8, 12),
+			VisibleInterval: intervalAt(8, 10), Timezone: time.FixedZone("UTC", 60*60),
+		}
+		_, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	})
 }
 
 func TestNonOverlapClassificationUsesFullReplayIntervalForProof(t *testing.T) {
