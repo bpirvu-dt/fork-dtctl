@@ -1,0 +1,16 @@
+context_name: historical-window
+status: active
+session_id: 0123456789abcdef0123456789abcdef
+session_started_at: "2026-08-11T09:00:00Z"
+host_now: "2026-08-11T09:30:00Z"
+clock_mode: realtime
+anchor_host: "2026-08-11T09:00:00Z"
+anchor_virtual: "2026-06-14T10:00:00Z"
+virtual_start: "2026-06-14T10:00:00Z"
+virtual_now: "2026-06-14T10:30:00Z"
+data_start: "2026-06-14T08:00:00Z"
+data_end: "2026-06-14T12:00:00Z"
+visible_end: "2026-06-14T10:30:00Z"
+position: inside-replay-interval
+configuration_drift: false
+state_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

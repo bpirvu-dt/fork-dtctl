@@ -104,7 +104,14 @@ func execute() int {
 	// not the pre-expansion alias. Load config quietly; if it fails, skip alias
 	// resolution (the real command will produce the proper error later).
 	spanArgs := os.Args[1:]
-	if cfg, err := config.Load(); err == nil {
+	var aliasCfg *config.Config
+	var aliasCfgErr error
+	if path := extractFlagValue(spanArgs, "config"); path != "" {
+		aliasCfg, aliasCfgErr = config.LoadFrom(path)
+	} else {
+		aliasCfg, aliasCfgErr = config.Load()
+	}
+	if cfg, err := aliasCfg, aliasCfgErr; err == nil {
 		// Security: warn when an auto-discovered local .dtctl.yaml carries
 		// code-execution keys (aliases / apply hooks) that are ignored. This
 		// makes adoption of an untrusted per-project config visible instead of
@@ -124,6 +131,10 @@ func execute() int {
 		}
 
 		if isShell {
+			if err := replayShellAliasGuard(cfg, spanArgs); err != nil {
+				output.PrintHumanError("%s", err)
+				return exitCodeForError(err)
+			}
 			if err := execShellAlias(expanded[0]); err != nil {
 				return 1
 			}
@@ -150,6 +161,12 @@ func execute() int {
 	}
 	applyProfile(rootCmd, prof)
 	// --- End command profile filter ---
+
+	// The replay guard is installed after profile shaping so it remains the
+	// outermost enforcement boundary even when a profile replaced a handler.
+	// It derives policy from Cobra's resolved command object and runs before
+	// scope checks, credential resolution, client construction, or mutation.
+	installReplayGuard(rootCmd)
 
 	// Initialise OpenTelemetry tracing. Done after alias resolution so that
 	// the span name reflects the actual command (not a pre-alias invocation).
@@ -548,6 +565,25 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
+	// ReplayGuardError — hard context boundary independent of profile shaping.
+	var replayGuardErr *ReplayGuardError
+	if errors.As(err, &replayGuardErr) {
+		return &output.ErrorDetail{
+			Code:        "replay_guard_blocked",
+			Message:     replayGuardErr.Error(),
+			Suggestions: replayGuardErr.Suggestions(),
+		}
+	}
+
+	// ReplayQueryUnavailableError — Phase 1's pre-network DQL stop.
+	var replayQueryErr *ReplayQueryUnavailableError
+	if errors.As(err, &replayQueryErr) {
+		return &output.ErrorDetail{
+			Code:    "replay_query_not_implemented",
+			Message: replayQueryErr.Error(),
+		}
+	}
+
 	// apply.HookRejectedError — pre-apply hook rejected the resource
 	var hookErr *apply.HookRejectedError
 	if errors.As(err, &hookErr) {
@@ -744,6 +780,16 @@ func exitCodeForError(err error) int {
 
 	var profileErr *ProfileError
 	if errors.As(err, &profileErr) {
+		return client.ExitUsageError
+	}
+
+	var replayGuardErr *ReplayGuardError
+	if errors.As(err, &replayGuardErr) {
+		return client.ExitPermissionError
+	}
+
+	var replayQueryErr *ReplayQueryUnavailableError
+	if errors.As(err, &replayQueryErr) {
 		return client.ExitUsageError
 	}
 

@@ -177,6 +177,8 @@ var localResources = map[string]bool{
 	"export": true, "import": true, "list": true, "create": true,
 	// skills (local install)
 	"install": true, "uninstall": true,
+	// replay lifecycle (private local state only; status is listed above)
+	"start": true, "advance": true, "stop": true,
 }
 
 // QueryScopes are the Grail read scopes required by DQL (`query`, `verify`,

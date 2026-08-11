@@ -19,8 +19,8 @@ func resolveAlias(args []string, cfg *config.Config) ([]string, bool, error) {
 		return nil, false, nil
 	}
 
-	// Skip if the first arg is a flag
-	if strings.HasPrefix(args[0], "-") {
+	leading, aliasArgs := splitAliasLeadingFlags(args)
+	if len(aliasArgs) == 0 || strings.HasPrefix(aliasArgs[0], "-") {
 		return nil, false, nil
 	}
 
@@ -31,7 +31,7 @@ func resolveAlias(args []string, cfg *config.Config) ([]string, bool, error) {
 		return nil, false, nil
 	}
 
-	name := args[0]
+	name := aliasArgs[0]
 	expansion, ok := cfg.GetAlias(name)
 	if !ok {
 		return nil, false, nil
@@ -55,15 +55,15 @@ func resolveAlias(args []string, cfg *config.Config) ([]string, bool, error) {
 	if strings.HasPrefix(expansion, "!") {
 		shellCmd := expansion[1:]
 		// Append extra args
-		if len(args) > 1 {
-			shellCmd += " " + strings.Join(args[1:], " ")
+		if len(aliasArgs) > 1 {
+			shellCmd += " " + strings.Join(aliasArgs[1:], " ")
 		}
 		return []string{shellCmd}, true, nil
 	}
 
 	// Regular alias: split and substitute positional params
 	parts := splitCommand(expansion)
-	extraArgs := args[1:]
+	extraArgs := aliasArgs[1:]
 
 	// Substitute $1..$9
 	maxUsed := 0
@@ -83,7 +83,34 @@ func resolveAlias(args []string, cfg *config.Config) ([]string, bool, error) {
 			name, maxUsed, maxUsed, len(extraArgs))
 	}
 
-	return parts, false, nil
+	return append(append([]string(nil), leading...), parts...), false, nil
+}
+
+// splitAliasLeadingFlags separates dtctl global flags from the alias name so
+// root flags such as --config and --context can precede an alias. Cobra still
+// performs authoritative parsing after expansion; this scanner only needs the
+// root flag arities already maintained for plugin dispatch.
+func splitAliasLeadingFlags(args []string) (leading, remaining []string) {
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") || arg == "-" || arg == "--" {
+			break
+		}
+		i++
+		if strings.HasPrefix(arg, "--") {
+			name := arg
+			if equal := strings.IndexByte(arg, '='); equal >= 0 {
+				name = arg[:equal]
+			}
+			if flagsTakingValues[name] && !strings.Contains(arg, "=") && i < len(args) {
+				i++
+			}
+		} else if shortFlagsTakingValues[arg] && i < len(args) {
+			i++
+		}
+	}
+	return args[:i], args[i:]
 }
 
 // substituteParams replaces $1..$9 in s with values from args.

@@ -44,6 +44,12 @@ func TestResolveAlias(t *testing.T) {
 			wantArgs: []string{"get", "workflows", "--context=prod"},
 		},
 		{
+			name:     "global flags may precede alias",
+			args:     []string{"--config", "/tmp/synthetic-config", "wf", "--context=prod"},
+			aliases:  map[string]string{"wf": "get workflows"},
+			wantArgs: []string{"--config", "/tmp/synthetic-config", "get", "workflows", "--context=prod"},
+		},
+		{
 			name:     "extra args appended after params",
 			args:     []string{"pw", "my-id", "--output=json"},
 			aliases:  map[string]string{"pw": "get workflow $1"},

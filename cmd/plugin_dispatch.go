@@ -29,6 +29,18 @@ func tryPluginDispatch(args []string) (int, bool) {
 	if len(words) == 0 || isBuiltinCommandName(words[0]) {
 		return 0, false
 	}
+	// Only dtctl's leading global flags influence config/context selection; a
+	// plugin's own flags belong to the plugin. The replay guard runs before
+	// executable lookup so a blocked invocation cannot even resolve a plugin.
+	leading := args[:len(args)-len(words)-len(rest)]
+	if err := replayPluginDispatchGuard(leading, words); err != nil {
+		if pluginAgentMode(leading) {
+			_ = output.PrintError(os.Stdout, errorToDetail(err))
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+		return exitCodeForError(err), true
+	}
 	inv, ok := plugin.Resolve(words, rest, exec.LookPath)
 	if !ok {
 		return 0, false
@@ -36,7 +48,6 @@ func tryPluginDispatch(args []string) (int, bool) {
 	// Only the flags dtctl consumed feed the env contract; everything from
 	// the command words on belongs to the plugin and must not be reflected
 	// (a plugin's own --config must not change DTCTL_CONFIG).
-	leading := args[:len(args)-len(words)-len(rest)]
 	code, err := execForward(inv.Path, inv.Args, pluginEnv(leading))
 	if err != nil {
 		err = fmt.Errorf("plugin %s: %w", inv.Path, err)
