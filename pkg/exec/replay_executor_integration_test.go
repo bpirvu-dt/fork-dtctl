@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -391,6 +392,7 @@ func TestDQLExecutorReplayPipelineMemoAndEffectiveExecution(t *testing.T) {
 	api := newReplayMockAPI(t)
 	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, nil)
 	opts := DQLExecuteOptions{AgentMode: true, Locale: "en_US", Timezone: "UTC", ParserOptions: sdkquery.QueryOptions{"mode": "strict"}}
+	var memoBytes []byte
 	for attempt := 0; attempt < 2; attempt++ {
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, opts)
 		if err != nil {
@@ -398,6 +400,35 @@ func TestDQLExecutorReplayPipelineMemoAndEffectiveExecution(t *testing.T) {
 		}
 		if result.Response == nil || result.Replay == nil || !result.Replay.VirtualNow.Equal(replayRecordVirtual) {
 			t.Fatalf("attempt %d result = %#v", attempt+1, result)
+		}
+		provider := fixture.executor.originalASTs.(*MemoizedOriginalASTProvider)
+		provider.mu.Lock()
+		entryCount := len(provider.entries)
+		if entryCount != 1 {
+			provider.mu.Unlock()
+			t.Fatalf("attempt %d memo entries = %d, want 1", attempt+1, entryCount)
+		}
+		var view OriginalASTView
+		for _, entry := range provider.entries {
+			view = entry.view
+		}
+		provider.mu.Unlock()
+		currentBytes := view.Bytes()
+		currentAST, err := view.AST()
+		if err != nil {
+			t.Fatal(err)
+		}
+		structuralBytes, err := json.Marshal(currentAST)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(currentBytes, structuralBytes) {
+			t.Fatalf("attempt %d memo bytes and structure disagree", attempt+1)
+		}
+		if attempt == 0 {
+			memoBytes = append([]byte(nil), currentBytes...)
+		} else if !bytes.Equal(currentBytes, memoBytes) {
+			t.Fatalf("attempt %d changed the memoized original AST", attempt+1)
 		}
 	}
 	parseCalls, executeCalls, _ := api.counts()
