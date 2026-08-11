@@ -475,7 +475,7 @@ Examples:
 			if interval == 0 {
 				interval = output.DefaultLiveInterval
 			}
-			if err := executor.ValidateReplayCadence(interval); err != nil {
+			if err := executor.ValidateReplayCadenceWithContext(ctx, interval); err != nil {
 				return err
 			}
 

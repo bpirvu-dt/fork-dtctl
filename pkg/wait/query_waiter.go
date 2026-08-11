@@ -58,7 +58,7 @@ func NewQueryWaiter(executor *exec.DQLExecutor, config WaitConfig) *QueryWaiter 
 // Wait executes the wait operation
 func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 	startTime := time.Now()
-	if err := w.executor.ValidateReplayCadence(w.config.Backoff.MinInterval); err != nil {
+	if err := w.executor.ValidateReplayCadenceWithContext(ctx, w.config.Backoff.MinInterval); err != nil {
 		return nil, err
 	}
 

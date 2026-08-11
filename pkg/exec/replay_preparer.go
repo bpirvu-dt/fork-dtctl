@@ -88,20 +88,9 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		info = replayInfoFromSession(state, input.OriginalQuery, disclosure)
 	}
 
-	var sink session.ProvenanceSink
-	if disclosure == session.ReplayDisclosureRestricted {
-		if provenancePath == "" {
-			return PreparedQuery{}, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted disclosure has no provenance path"), info, false, 0, false)
-		}
-		sink = p.config.SinkFactory(provenancePath)
-		if sink == nil {
-			return PreparedQuery{}, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted provenance sink is unavailable"), info, false, 0, false)
-		}
-		// This is intentionally before readiness, drift, parse, adaptation, or
-		// any other preparation that could disclose replay-specific detail.
-		if err := sink.Preflight(ctx); err != nil {
-			return PreparedQuery{}, newReplayAttemptError(replayErrorSink, err, info, false, 0, false)
-		}
+	sink, err := p.preflightSink(ctx, disclosure, provenancePath, info)
+	if err != nil {
+		return PreparedQuery{}, err
 	}
 
 	if stateErr != nil {
@@ -277,6 +266,48 @@ func (p *ReplayQueryPreparer) Wait(ctx context.Context, delay time.Duration) err
 	}
 }
 
+// ValidateCadence routes a pre-loop cadence failure through the same
+// restricted sink preflight and generic-error boundary as DQL preparation.
+func (p *ReplayQueryPreparer) ValidateCadence(ctx context.Context, interval time.Duration) error {
+	if interval >= MinReplayExecutionInterval {
+		return nil
+	}
+	detail := fmt.Errorf("replay query interval %s is faster than the supported minimum of %s", interval, MinReplayExecutionInterval)
+	state, stateErr := p.config.Store.Status(p.config.Locator)
+	disclosure, provenancePath := p.authoritativeRoute(state, stateErr)
+	info := ReplayExecutionInfo{Active: true, Disclosure: disclosure}
+	var provenance *ReplayExecutionProvenance
+	if stateErr == nil {
+		info = replayInfoFromSession(state, "", disclosure)
+		value := ReplayExecutionProvenance{Session: state}
+		provenance = &value
+	}
+	sink, err := p.preflightSink(ctx, disclosure, provenancePath, info)
+	if err != nil {
+		return err
+	}
+	return p.failBeforeExecute(ctx, sink, replayErrorPrepare, detail, info, provenance, false)
+}
+
+func (p *ReplayQueryPreparer) preflightSink(ctx context.Context, disclosure, provenancePath string, info ReplayExecutionInfo) (session.ProvenanceSink, error) {
+	if disclosure != session.ReplayDisclosureRestricted {
+		return nil, nil
+	}
+	if provenancePath == "" {
+		return nil, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted disclosure has no provenance path"), info, false, 0, false)
+	}
+	sink := p.config.SinkFactory(provenancePath)
+	if sink == nil {
+		return nil, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted provenance sink is unavailable"), info, false, 0, false)
+	}
+	// This is intentionally before readiness, drift, parse, adaptation, or
+	// any other preparation that could disclose replay-specific detail.
+	if err := sink.Preflight(ctx); err != nil {
+		return nil, newReplayAttemptError(replayErrorSink, err, info, false, 0, false)
+	}
+	return sink, nil
+}
+
 func (p *ReplayQueryPreparer) authoritativeRoute(state session.ReplaySession, stateErr error) (string, string) {
 	if stateErr == nil {
 		return state.Disclosure, state.ProvenancePath
@@ -291,6 +322,9 @@ func (p *ReplayQueryPreparer) failBeforeExecute(ctx context.Context, sink sessio
 			provenance = &value
 		} else {
 			provenance.Outcome, provenance.Detail = string(category), detail.Error()
+			if provenance.HostNow.IsZero() {
+				provenance.HostNow = p.config.Clock.Now().UTC()
+			}
 		}
 		if err := sink.Append(ctx, provenanceRecord("query_pre_execution", *provenance, nil)); err != nil {
 			return newReplayAttemptError(replayErrorSink, err, info, false, 0, false)

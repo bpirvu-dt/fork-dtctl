@@ -227,14 +227,21 @@ func TestRestrictedReplayGuardPreflightsRecordsAndUsesGenericErrors(t *testing.T
 	if err := replayPluginDispatchGuard([]string{"--config", configPath}, []string{"synthetic-plugin"}); err == nil || err.Error() != "this command is not available in this context" {
 		t.Fatalf("restricted plugin guard error = %v", err)
 	}
+	cfg, loadErr := config.LoadFrom(configPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if err := replayShellAliasGuard(cfg, []string{"--config", configPath}); err == nil || err.Error() != "this command is not available in this context" {
+		t.Fatalf("restricted shell-alias guard error = %v", err)
+	}
 
 	raw, err := os.ReadFile(provenancePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("provenance records = %d, want 3: %q", len(lines), raw)
+	if len(lines) != 4 {
+		t.Fatalf("provenance records = %d, want 4: %q", len(lines), raw)
 	}
 	for index, line := range lines {
 		var record session.ReplayProvenanceRecord

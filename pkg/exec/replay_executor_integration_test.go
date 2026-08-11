@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1348,6 +1349,20 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("429 without retry after remains retryable at normal cadence", func(t *testing.T) {
+		api := newReplayMockAPI(t)
+		api.parseStatus = http.StatusTooManyRequests
+		fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, session.ReplayDisclosureFull, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, nil)
+		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true, ReplayMode: ReplayExecutionLive})
+		if result != nil || err == nil || ReplayRetryAfter(err) != 0 || ReplayLoopHardFailure(err) {
+			t.Fatalf("result=%#v err=%v retry-after=%s hard=%t", result, err, ReplayRetryAfter(err), ReplayLoopHardFailure(err))
+		}
+		parseCalls, executeCalls, _ := api.counts()
+		if parseCalls != 1 || executeCalls != 0 {
+			t.Fatalf("parse=%d execute=%d, want one failed parse and no execute", parseCalls, executeCalls)
+		}
+	})
+
 	for _, remoteMessage := range []string{"ordinary remote failure", "remote session unavailable"} {
 		t.Run(remoteMessage, func(t *testing.T) {
 			api := newReplayMockAPI(t)
@@ -1378,6 +1393,11 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	passthrough := newReplayAttemptError(replayErrorRemote, remotePoll, info, false, 0, true)
 	if passthrough.Error() != remotePoll.Error() {
 		t.Fatalf("remote poll content was rewritten: got %q want %q", passthrough, remotePoll)
+	}
+	generatedWrapper := fmt.Errorf("effective request failed: %w", remotePoll)
+	masked := newReplayAttemptError(replayErrorRemote, generatedWrapper, info, false, 0, true)
+	if masked.Error() != restrictedRemoteExecutionMessage {
+		t.Fatalf("dtctl-generated restricted wrapper was not masked: %q", masked)
 	}
 }
 

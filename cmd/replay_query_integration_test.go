@@ -224,6 +224,26 @@ func TestReplayQueryCLICadenceRejectsBeforeParseOrExecute(t *testing.T) {
 	}
 }
 
+func TestReplayQueryCLIRestrictedCadenceIsGenericAndRecordedBeforeLoop(t *testing.T) {
+	api := &replayCLIQueryAPI{t: t}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayQueryFlags(t, true, 4*time.Second, false)
+	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+	if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+		t.Fatalf("error = %v", err)
+	}
+	if parses, executes := api.counts(); parses != 0 || executes != 0 {
+		t.Fatalf("parse=%d execute=%d, want zero", parses, executes)
+	}
+	provenance, readErr := os.ReadFile(fixture.state.ProvenancePath)
+	if readErr != nil || !strings.Contains(string(provenance), "supported minimum of 5s") {
+		t.Fatalf("provenance=%q err=%v", provenance, readErr)
+	}
+}
+
 func TestReplayClientIdentityUsesStableNonSecretPrincipal(t *testing.T) {
 	const token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMtcHJpbmNpcGFsIn0."
 	transport, err := pkgclient.New("http://127.0.0.1", token)

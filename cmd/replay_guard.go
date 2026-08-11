@@ -306,10 +306,10 @@ func replayShellAliasGuard(cfg *config.Config, args []string) error {
 	if err != nil || !activation.Active {
 		return err
 	}
-	return &ReplayGuardError{
+	return routeReplayGuardFailure(activation, &ReplayGuardError{
 		Command:     "shell alias",
 		ContextName: activation.ContextName,
-	}
+	})
 }
 
 func loadConfigForReplayArgs(args []string) (*config.Config, error) {

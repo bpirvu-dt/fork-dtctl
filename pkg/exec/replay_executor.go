@@ -129,7 +129,16 @@ func (e *DQLExecutor) ExplainReplayWithContext(ctx context.Context, query string
 // ValidateReplayCadence rejects unsupported replay request rates before a
 // wait/live loop performs its first parse or execute attempt.
 func (e *DQLExecutor) ValidateReplayCadence(interval time.Duration) error {
+	return e.ValidateReplayCadenceWithContext(context.Background(), interval)
+}
+
+// ValidateReplayCadenceWithContext performs disclosure-safe routing for a
+// cadence rejection before a wait/live loop emits progress or prepares DQL.
+func (e *DQLExecutor) ValidateReplayCadenceWithContext(ctx context.Context, interval time.Duration) error {
 	if e.preparer != nil && interval < MinReplayExecutionInterval {
+		if validator, ok := e.preparer.(replayCadenceValidator); ok {
+			return validator.ValidateCadence(ctx, interval)
+		}
 		return fmt.Errorf("replay query interval %s is faster than the supported minimum of %s", interval, MinReplayExecutionInterval)
 	}
 	return nil

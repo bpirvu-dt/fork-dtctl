@@ -72,6 +72,10 @@ type replayWaiter interface {
 	Wait(context.Context, time.Duration) error
 }
 
+type replayCadenceValidator interface {
+	ValidateCadence(context.Context, time.Duration) error
+}
+
 type replayDisclosureReader interface {
 	Disclosure(context.Context) (string, bool)
 }
@@ -153,6 +157,9 @@ func ReplayLoopHardFailure(err error) bool {
 		return false
 	}
 	if replayErr.retryable || replayErr.retryAfter > 0 {
+		return false
+	}
+	if _, rateLimited := sdkquery.RetryAfter(replayErr.detail); rateLimited {
 		return false
 	}
 	if replayErr.category == replayErrorRemote {
@@ -263,22 +270,24 @@ func restrictedMessage(category replayErrorCategory, detail error, retryable, po
 }
 
 func restrictedRemoteTextMayPass(detail error) bool {
+	generated := detail.Error()
 	// QueryError fields are verbatim remote API content wrapped in the normal
-	// non-replay formatter. Restricted disclosure never scans or edits remote
-	// content merely because a tenant-supplied message happens to contain a
-	// restricted word.
+	// non-replay formatter. Remove that exact normal-format portion before
+	// checking any outer dtctl-generated wrapper text.
 	var queryErr *sdkquery.QueryError
 	if errors.As(detail, &queryErr) {
-		return true
+		generated = strings.Replace(generated, queryErr.Error(), "", 1)
+		return !containsRestrictedGeneratedWord(generated)
 	}
 	// Poll errors use APIError. Its formatter contributes only the fixed
-	// "API error", status, and HTTP status text; Details is verbatim remote
-	// content and must not be scanned or edited by disclosure routing.
+	// normal error shape; remove it as a unit for the same reason. Any outer
+	// wrapper remains subject to the generated-word check.
 	var apiErr *httpclient.APIError
 	if errors.As(detail, &apiErr) {
-		return true
+		generated = strings.Replace(generated, apiErr.Error(), "", 1)
+		return !containsRestrictedGeneratedWord(generated)
 	}
-	return !containsRestrictedGeneratedWord(detail.Error())
+	return !containsRestrictedGeneratedWord(generated)
 }
 
 func containsRestrictedGeneratedWord(value string) bool {
