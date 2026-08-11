@@ -77,8 +77,8 @@ func TestNormalHandlerKeepsShared429RetryBehavior(t *testing.T) {
 func TestReplayRateLimitMarkerDoesNotDisableSessionOAuthRefresh(t *testing.T) {
 	var calls, refreshes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		if r.Header.Get("Authorization") != "Bearer fresh-token" {
+		call := calls.Add(1)
+		if call > 2 && r.Header.Get("Authorization") != "Bearer fresh-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -95,10 +95,12 @@ func TestReplayRateLimitMarkerDoesNotDisableSessionOAuthRefresh(t *testing.T) {
 		return "fresh-token", nil
 	})
 	handler := NewHandler(httpclient.Wrap(client.HTTP())).WithFirstRateLimitResponse()
-	if _, err := handler.Parse(context.Background(), ParseRequest{Query: "fetch logs"}); err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 6; attempt++ {
+		if _, err := handler.Parse(context.Background(), ParseRequest{Query: "fetch logs"}); err != nil {
+			t.Fatalf("sequential parse %d: %v", attempt+1, err)
+		}
 	}
-	if calls.Load() != 2 || refreshes.Load() != 1 {
-		t.Fatalf("calls=%d refreshes=%d, want 2 and 1", calls.Load(), refreshes.Load())
+	if calls.Load() != 7 || refreshes.Load() != 1 {
+		t.Fatalf("calls=%d refreshes=%d, want six successes plus one 401 and one refresh", calls.Load(), refreshes.Load())
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/aidetect"
@@ -47,6 +48,9 @@ type DQLExecutor struct {
 	client         *client.Client
 	sdk            *sdkquery.Handler
 	tokenRefresher func() (string, error)
+	preparer       QueryPreparer
+	originalASTs   OriginalASTProvider
+	replayNotice   sync.Once
 }
 
 // NewDQLExecutor creates a new DQL executor
@@ -62,6 +66,37 @@ func NewDQLExecutor(c *client.Client) *DQLExecutor {
 func (e *DQLExecutor) WithTokenRefresher(refresher func() (string, error)) *DQLExecutor {
 	e.tokenRefresher = refresher
 	return e
+}
+
+// WithQueryPreparer enables replay preparation for this top-level executor and
+// creates its sole invocation-local original-parse memo.
+func (e *DQLExecutor) WithQueryPreparer(preparer QueryPreparer) *DQLExecutor {
+	e.preparer = preparer
+	if preparer == nil {
+		e.originalASTs = nil
+	} else if e.originalASTs == nil {
+		e.originalASTs = NewMemoizedOriginalASTProvider()
+	}
+	return e
+}
+
+// WithOriginalASTProvider replaces the invocation-local provider for tests.
+// Production callers should let WithQueryPreparer create the memo.
+func (e *DQLExecutor) WithOriginalASTProvider(provider OriginalASTProvider) *DQLExecutor {
+	e.originalASTs = provider
+	return e
+}
+
+// ReplayEnabled reports whether this executor performs replay preparation.
+func (e *DQLExecutor) ReplayEnabled() bool { return e.preparer != nil }
+
+// ReplayDisclosure resolves the authoritative current disclosure route.
+func (e *DQLExecutor) ReplayDisclosure(ctx context.Context) (string, bool) {
+	reader, ok := e.preparer.(replayDisclosureReader)
+	if !ok {
+		return "", false
+	}
+	return reader.Disclosure(ctx)
 }
 
 // dtClientContextHeader builds the JSON value for the dt-client-context HTTP header.
@@ -145,6 +180,13 @@ type DQLExecuteOptions struct {
 	// Localization options
 	Locale   string // Query locale (e.g., "en_US")
 	Timezone string // Query timezone (e.g., "UTC", "Europe/Paris")
+	// ParserOptions are internal Query API language-service settings. They are
+	// part of replay's complete original-parse key and are not exposed as CLI
+	// flags.
+	ParserOptions sdkquery.QueryOptions
+	// ReplayMode distinguishes one-shot execution from retry-capable wait/live
+	// loops. It is ignored when the executor has no QueryPreparer.
+	ReplayMode ReplayExecutionMode
 
 	// ShowProgress opts in to the live progress bar drawn on stderr while an
 	// asynchronous query is polled. It is off by default so internal/library
@@ -286,12 +328,14 @@ func (e *DQLExecutor) ExecuteQueryWithOptions(query string, opts DQLExecuteOptio
 	return e.ExecuteQueryWithContext(context.Background(), query, opts)
 }
 
-// ExecuteQueryWithContext executes a DQL query with a cancellable context.
-// If ctx is cancelled while the query is polling, a best-effort cancel request is sent
-// to the Grail backend before returning.
-func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string, opts DQLExecuteOptions) (*DQLQueryResponse, error) {
+// executeQueryRequestWithContext is the existing query:execute/poll transport.
+// Replay orchestration calls it only after successful preparation and audit.
+func (e *DQLExecutor) executeQueryRequestWithContext(ctx context.Context, query string, opts DQLExecuteOptions, surfaceFirstRateLimit bool) (*DQLQueryResponse, error) {
 	req := buildExecuteRequest(query, opts)
 	handler := e.sdkHandler(opts.ClientContext)
+	if surfaceFirstRateLimit {
+		handler = handler.WithFirstRateLimitResponse()
+	}
 
 	// Build the token refresher callback for the SDK. The SDK's ExecuteAndPoll will
 	// call this on 401; we refresh the token and update the underlying HTTP client.

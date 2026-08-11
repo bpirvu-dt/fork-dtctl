@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 )
 
@@ -116,6 +117,13 @@ func (p *MemoizedOriginalASTProvider) OriginalAST(ctx context.Context, key Origi
 	p.mu.Unlock()
 
 	parsed, err := parse(ctx, request)
+	if err == nil {
+		if parsed == nil {
+			err = fmt.Errorf("original DQL parse returned no AST")
+		} else if _, adaptErr := execreplay.Adapt(parsed); adaptErr != nil {
+			err = fmt.Errorf("validate original DQL AST: %w", adaptErr)
+		}
+	}
 	if err == nil {
 		var encoded []byte
 		encoded, err = json.Marshal(parsed)

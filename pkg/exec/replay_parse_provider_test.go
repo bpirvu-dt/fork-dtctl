@@ -150,3 +150,33 @@ func TestMemoizedOriginalASTProviderDoesNotStoreFailures(t *testing.T) {
 		t.Fatalf("failed parse calls = %d, want 2", calls)
 	}
 }
+
+func TestMemoizedOriginalASTProviderDoesNotStoreMalformedSuccessfulResponse(t *testing.T) {
+	provider := NewMemoizedOriginalASTProvider()
+	request := sdkquery.ParseRequest{Query: "data", Timezone: "UTC"}
+	key, err := NewOriginalParseKey(request.Query, "environment-a", "principal-a", "", request.Timezone, ReplayQueryAPIVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	parse := func(context.Context, sdkquery.ParseRequest) (*sdkquery.ParseResponse, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil
+		}
+		var result sdkquery.ParseResponse
+		if err := json.Unmarshal([]byte(providerTestAST), &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}
+	if _, err := provider.OriginalAST(context.Background(), key, request, parse); err == nil {
+		t.Fatal("expected malformed successful response to be rejected")
+	}
+	if _, err := provider.OriginalAST(context.Background(), key, request, parse); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("parse calls = %d, want malformed response to miss again", calls)
+	}
+}
