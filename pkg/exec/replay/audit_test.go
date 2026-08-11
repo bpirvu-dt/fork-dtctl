@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -102,6 +103,38 @@ func TestAuditRejectsForbiddenValidationConstruct(t *testing.T) {
 	var replayErr *ReplayError
 	if !errors.As(err, &replayErr) || replayErr.Code != ErrorCurrentState {
 		t.Fatalf("error = %T %v", err, err)
+	}
+}
+
+func TestVirtualNowFingerprintRequiresExactTimestampShape(t *testing.T) {
+	validation := loadSDKFixture(t, "phase0b/fixtures/records/logs/00-discovery/validation-parse.json")
+	var timestamp *Node
+	_ = validation.WalkExecutable(func(node *Node) error {
+		if timestamp == nil && node.Kind == NodeContainer && node.Role == "FUNCTION" && ownFunctionName(node) == "toTimestamp" {
+			timestamp = node
+		}
+		return nil
+	})
+	if timestamp == nil {
+		t.Fatal("validation fixture has no toTimestamp function")
+	}
+	parameters, err := collectDirectParameters(timestamp)
+	if err != nil || len(parameters) != 1 {
+		t.Fatalf("timestamp parameters = %d, err = %v", len(parameters), err)
+	}
+	value, err := parameterValue(parameters[0].node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	virtualNow := mustTime(t, "2026-08-10T10:55:03Z")
+	value.Canonical = strconv.Quote(virtualNow.Format(time.RFC3339Nano))
+	if !isNormalizedVirtualNow(timestamp, virtualNow) {
+		t.Fatal("exact generated timestamp was not recognized")
+	}
+
+	timestamp.Children = append(timestamp.Children, cloneNode(parameters[0].node))
+	if isNormalizedVirtualNow(timestamp, virtualNow) {
+		t.Fatal("timestamp with an extra semantic parameter was normalized")
 	}
 }
 

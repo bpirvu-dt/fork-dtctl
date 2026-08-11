@@ -240,11 +240,15 @@ func isNormalizedVirtualNow(node *Node, virtualNow time.Time) bool {
 	case "now":
 		return true
 	case "totimestamp":
-		values := terminalsWithRole(node, "STRING")
-		if len(values) != 1 {
+		parameters, err := collectDirectParameters(node)
+		if err != nil || len(parameters) != 1 || parameters[0].key != "value" {
 			return false
 		}
-		literal, err := strconv.Unquote(values[0].Canonical)
+		value, err := parameterValue(parameters[0].node)
+		if err != nil || value.Kind != NodeTerminal || value.Role != "STRING" {
+			return false
+		}
+		literal, err := strconv.Unquote(value.Canonical)
 		if err != nil {
 			return false
 		}
