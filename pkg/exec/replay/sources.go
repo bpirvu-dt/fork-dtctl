@@ -129,6 +129,9 @@ func analyzeSources(ast *AST, policy SourcePolicy) ([]*sourceAnalysis, error) {
 	if err := ValidateASTContract(ast); err != nil {
 		return nil, err
 	}
+	if err := validateSemanticPlacements(ast); err != nil {
+		return nil, err
+	}
 	commands, err := collectCommands(ast)
 	if err != nil {
 		return nil, err

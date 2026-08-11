@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -201,25 +202,78 @@ func TestGenuineCalendarMetricIntervalFailsClosed(t *testing.T) {
 	units[0].Canonical = "M"
 	_, err := ClassifySources(ast, Milestone1SourcePolicy())
 	var replayErr *ReplayError
-	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+	if !errors.As(err, &replayErr) || (replayErr.Code != ErrorTimeframe && replayErr.Code != ErrorASTContract) {
 		t.Fatalf("error = %T %v, want calendar rejection", err, err)
 	}
 }
 
-func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
-	ast := loadPhase0BFixture(t, "current-state-rejection/04-fetch-dt-entity/historical-context/parse.json").Clone()
-	dataObject := firstTerminal(ast, "DATA_OBJECT")
-	if dataObject == nil {
-		t.Fatal("fixture has no data object")
+func TestKnownSemanticRoleInUnexpectedParentFailsClosed(t *testing.T) {
+	ast := loadPhase0BFixture(t, "current-state-rejection/negative-controls/04-historical-entity-id/parse.json").Clone()
+	identifiers := terminalNodes(ast, "SIMPLE_IDENTIFIER")
+	if len(identifiers) == 0 {
+		t.Fatal("fixture has no stored-field identifier")
 	}
-	dataObject.Canonical = "dt.davis.problems"
+	identifiers[len(identifiers)-1].Role = "DATA_OBJECT"
 	_, err := ClassifySources(ast, Milestone1SourcePolicy())
-	var davisErr *DavisCurrentViewError
-	if !errors.As(err, &davisErr) {
-		t.Fatalf("error = %T %v, want *DavisCurrentViewError", err, err)
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorASTContract {
+		t.Fatalf("error = %T %v, want AST placement rejection", err, err)
 	}
-	if davisErr.SnapshotTable != "dt.davis.problems.snapshots" || davisErr.LatestPerIDPattern == "" {
-		t.Fatalf("Davis error = %#v", davisErr)
+}
+
+func TestFutureModelAndMutableLoadFormsFailClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		command  string
+		wantCode ErrorCode
+	}{
+		{"mutable load", "phase0/fixtures/05-fetch-no-timeframe/parse.json", "load", ErrorCurrentState},
+		{"future model source", "phase0/fixtures/13-string-now/parse.json", "futureModel", ErrorUnsupportedForm},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ast := loadSDKFixture(t, test.fixture).Clone()
+			command := firstTerminal(ast, "COMMAND_NAME")
+			if command == nil {
+				t.Fatal("fixture has no command")
+			}
+			command.Canonical = test.command
+			_, err := ClassifySources(ast, Milestone1SourcePolicy())
+			var replayErr *ReplayError
+			if !errors.As(err, &replayErr) || replayErr.Code != test.wantCode || replayErr.Construct == "" {
+				t.Fatalf("error = %T %#v, want %s", err, err, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
+	tests := []struct {
+		view     string
+		snapshot string
+	}{
+		{"dt.davis.problems", "dt.davis.problems.snapshots"},
+		{"dt.davis.events", "dt.davis.events.snapshots"},
+	}
+	for _, test := range tests {
+		t.Run(test.view, func(t *testing.T) {
+			ast := loadPhase0BFixture(t, "current-state-rejection/04-fetch-dt-entity/historical-context/parse.json").Clone()
+			dataObject := firstTerminal(ast, "DATA_OBJECT")
+			if dataObject == nil {
+				t.Fatal("fixture has no data object")
+			}
+			dataObject.Canonical = test.view
+			_, err := ClassifySources(ast, Milestone1SourcePolicy())
+			var davisErr *DavisCurrentViewError
+			if !errors.As(err, &davisErr) {
+				t.Fatalf("error = %T %v, want *DavisCurrentViewError", err, err)
+			}
+			if davisErr.SnapshotTable != test.snapshot || davisErr.LatestPerIDPattern == "" ||
+				!strings.Contains(davisErr.Error(), test.snapshot) || !strings.Contains(davisErr.Error(), "Pattern:") {
+				t.Fatalf("Davis error = %#v (%v)", davisErr, davisErr)
+			}
+		})
 	}
 }
 

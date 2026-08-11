@@ -80,6 +80,50 @@ func TestUnsupportedTimeframeFormsFailClosed(t *testing.T) {
 	}
 }
 
+func TestMalformedQuotedTimeframeFailsClosed(t *testing.T) {
+	ast := loadSDKFixture(t, "phase0/fixtures/07-fetch-explicit-timeframe/parse.json").Clone()
+	literal := firstTerminal(ast, "STRING")
+	if literal == nil {
+		t.Fatal("fixture has no timeframe string")
+	}
+	literal.Canonical = `"not-a-timeframe"`
+	context := timeframeContext{VirtualNow: timeAt(10), ReplayInterval: intervalAt(8, 12), VisibleInterval: intervalAt(8, 10), Timezone: time.UTC}
+	_, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+		t.Fatalf("error = %T %v", err, err)
+	}
+}
+
+func TestUnverifiedAlignmentFormsFailClosed(t *testing.T) {
+	t.Run("unknown alignment operator", func(t *testing.T) {
+		ast := loadSDKFixture(t, "phase0/fixtures/04-fetch-alignment-only/parse.json").Clone()
+		operators := terminalNodes(ast, "OPERATOR")
+		if len(operators) != 1 {
+			t.Fatalf("operators = %d, want 1", len(operators))
+		}
+		operators[0].Canonical = "@w"
+		context := timeframeContext{VirtualNow: timeAt(10).Add(30 * time.Minute), ReplayInterval: intervalAt(8, 12), VisibleInterval: intervalAt(8, 10), Timezone: time.UTC}
+		_, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	})
+	t.Run("DST-sensitive timezone", func(t *testing.T) {
+		ast := loadSDKFixture(t, "phase0/fixtures/04-fetch-alignment-only/parse.json")
+		context := timeframeContext{
+			VirtualNow: timeAt(10).Add(30 * time.Minute), ReplayInterval: intervalAt(8, 12),
+			VisibleInterval: intervalAt(8, 10), Timezone: time.FixedZone("synthetic-dst-sensitive-zone", 60*60),
+		}
+		_, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	})
+}
+
 func TestNonOverlapClassificationUsesFullReplayIntervalForProof(t *testing.T) {
 	replay := intervalAt(8, 12)
 	visible := Interval{Start: replay.Start, End: timeAt(10)}

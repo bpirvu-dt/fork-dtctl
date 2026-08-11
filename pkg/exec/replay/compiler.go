@@ -227,7 +227,11 @@ func Compile(input CompileInput) (CompileResult, error) {
 			contract := *compiled.ResultContract
 			result.ResultContracts = append(result.ResultContracts, contract)
 		}
-		result.Notices = append(result.Notices, sourceNotices(source, input)...)
+		notices, noticeErr := sourceNotices(source, input)
+		if noticeErr != nil {
+			return result, noticeErr
+		}
+		result.Notices = append(result.Notices, notices...)
 	}
 	result.Explain.Notices = append([]Notice(nil), result.Notices...)
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {

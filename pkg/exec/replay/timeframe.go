@@ -419,6 +419,9 @@ func applyDuration(base TimeEndpoint, operator string, node *Node, location *tim
 
 func alignEndpoint(base TimeEndpoint, operator string, context timeframeContext) (TimeEndpoint, error) {
 	location := context.location()
+	if location.String() != "UTC" {
+		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "Calendar or DST-sensitive alignment outside UTC is not supported in milestone 1.", "Use an absolute timestamp or a UTC replay timezone for the tested @h and @d forms.")
+	}
 	local := base.Value.In(location)
 	var aligned time.Time
 	switch strings.ToLower(operator) {

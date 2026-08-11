@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -301,6 +302,98 @@ func TestCompilerBuildsResultContractForEveryAllowlistedMetricForm(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestCompilerAndAuditEveryNestedSourceForm(t *testing.T) {
+	tests := []struct {
+		name string
+		dql  string
+	}{
+		{"append", `fetch logs, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 | append [ fetch spans, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 ] | summarize matched=count()`},
+		{"join", `fetch logs, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 | join [ fetch spans, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 ], on:{replay_key} | summarize matched=count()`},
+		{"lookup", `fetch logs, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 | lookup [ fetch spans, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 ], sourceField:replay_key, lookupField:replay_key | summarize matched=count()`},
+	}
+	want := mustInterval(t, "2026-08-10T09:00:00Z", "2026-08-10T11:00:00Z")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := "nested/" + test.name + "/"
+			input := compileInputAt(t, loadPhase0BFixture(t, fixture+"parse.json"), test.dql,
+				"2026-08-10T09:00:00Z", "2026-08-10T12:00:00Z", "2026-08-10T11:00:00Z")
+			result, err := Compile(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Sources) != 2 {
+				t.Fatalf("sources = %d, want 2", len(result.Sources))
+			}
+			for _, source := range result.Sources {
+				if source.Effective == nil || *source.Effective != want {
+					t.Fatalf("source = %#v, want effective %#v", source, want)
+				}
+			}
+			validation := loadPhase0BFixture(t, fixture+"validation-parse.json").Clone()
+			setValidationSourceBounds(t, validation, result.Sources)
+			audit, err := Audit(AuditInput{
+				ValidationAST: validation, Compilation: result,
+				SourcePolicy: Milestone1SourcePolicy(), Timezone: time.UTC,
+			})
+			if err != nil || !audit.OK {
+				t.Fatalf("Audit = %#v, %v", audit, err)
+			}
+		})
+	}
+}
+
+func TestCompilerRejectsWholeQueryWhenOneNestedSourceHasNoOverlap(t *testing.T) {
+	const original = `fetch logs, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 | append [ fetch spans, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 ] | summarize matched=count()`
+	ast := loadPhase0BFixture(t, "nested/append/parse.json").Clone()
+	sources, err := analyzeSources(ast, Milestone1SourcePolicy())
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("sources = %d, %v", len(sources), err)
+	}
+	setSourceTimeParameter(t, sources[1], "from", mustTime(t, "2026-08-10T11:30:00Z"))
+	setSourceTimeParameter(t, sources[1], "to", mustTime(t, "2026-08-10T11:45:00Z"))
+	input := compileInputAt(t, ast, original, "2026-08-10T09:00:00Z", "2026-08-10T12:00:00Z", "2026-08-10T11:00:00Z")
+	result, err := Compile(input)
+	var nonOverlap *NonOverlapError
+	if !errors.As(err, &nonOverlap) || nonOverlap.Classification != OverlapTemporary {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if result.EffectiveDQL != "" || len(result.Sources) != 2 || result.Sources[0].Effective == nil || result.Sources[1].Effective != nil {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func setValidationSourceBounds(t *testing.T, ast *AST, expected []SourceCompilation) {
+	t.Helper()
+	sources, err := analyzeSources(ast, Milestone1SourcePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != len(expected) {
+		t.Fatalf("validation sources = %d, want %d", len(sources), len(expected))
+	}
+	for index, source := range sources {
+		if expected[index].Effective == nil {
+			t.Fatalf("expected source %d has no effective range", index)
+		}
+		for key, value := range map[string]time.Time{"from": expected[index].Effective.Start, "to": expected[index].Effective.End} {
+			setSourceTimeParameter(t, source, key, value)
+		}
+	}
+}
+
+func setSourceTimeParameter(t *testing.T, source *sourceAnalysis, key string, value time.Time) {
+	t.Helper()
+	parameters := source.parametersByKey()[key]
+	if len(parameters) != 1 {
+		t.Fatalf("source %d %s parameters = %d", source.Ordinal, key, len(parameters))
+	}
+	stringsFound := terminalsWithRole(parameters[0].node, "STRING")
+	if len(stringsFound) != 1 {
+		t.Fatalf("source %d %s strings = %d", source.Ordinal, key, len(stringsFound))
+	}
+	stringsFound[0].Canonical = strconv.Quote(value.UTC().Format(generatedTimestampLayout))
 }
 
 func compileInputAt(t *testing.T, ast *AST, original, replayStart, replayEnd, virtualNow string) CompileInput {

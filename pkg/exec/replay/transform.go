@@ -202,6 +202,62 @@ func validateExecutionBlockOwners(node *Node, owner string) error {
 	return nil
 }
 
+func validateSemanticPlacements(ast *AST) error {
+	allowedParents := map[string]map[string]struct{}{
+		"COMMAND":                {"QUERY": {}, "EXECUTION_BLOCK": {}},
+		"COMMAND_NAME":           {"COMMAND": {}},
+		"DATA_OBJECT":            {"PARAMETER_WITH_KEY": {}},
+		"FUNCTION":               {"EXPRESSION": {}, "PARAMETER_ASSIGNMENT": {}, "PARAMETER_WITH_KEY": {}},
+		"FUNCTION_NAME":          {"FUNCTION": {}},
+		"TIMESERIES_AGGREGATION": {"FUNCTION": {}},
+		"METRIC_KEY":             {"PARAMETER_WITH_KEY": {}},
+		"PARAMETER_WITH_KEY":     {"FUNCTION": {}, "PARAMETERS": {}},
+		"PARAMETER_KEY":          {"PARAMETER_NAMING": {}},
+		"EXECUTION_BLOCK":        {"PARAMETER_WITH_KEY": {}},
+		"DURATION":               {"EXPRESSION": {}, "PARAMETER_WITH_KEY": {}},
+		"CALENDAR_DURATION":      {"EXPRESSION": {}},
+	}
+	var walk func(*Node, *Node, string, bool) error
+	walk = func(node, parent *Node, command string, executable bool) error {
+		if parent != nil {
+			if parents, classified := allowedParents[node.Role]; classified {
+				if _, ok := parents[parent.Role]; !ok {
+					return replayError(ErrorASTContract, node, node.Role,
+						fmt.Sprintf("The known AST role %s appears under unexpected parent %s at %s.", node.Role, parent.Role, node.Path),
+						"Update dtctl if the server AST placement contract changed.")
+				}
+			}
+		}
+		if executable && node.Role == "COMMAND" {
+			command = strings.ToLower(ownCommandName(node))
+		}
+		if executable {
+			switch node.Role {
+			case "DATA_OBJECT":
+				if command != "fetch" && command != "describe" && command != "fieldssnapshot" && command != "load" {
+					return replayError(ErrorASTContract, node, node.Role, "A data object appears outside an observed source-owning command.", "Remove the unclassified source-selection form.")
+				}
+			case "METRIC_KEY", "TIMESERIES_AGGREGATION":
+				if command != "timeseries" {
+					return replayError(ErrorASTContract, node, node.Role, "A metric source token appears outside a timeseries command.", "Remove the unclassified metric-source form.")
+				}
+			}
+		}
+		for _, child := range node.Children {
+			if err := walk(child, node, command, executable); err != nil {
+				return err
+			}
+		}
+		for _, kind := range sortedAlternativeKinds(node.Alternatives) {
+			if err := walk(node.Alternatives[kind], node, command, executable && kind != AlternativeInfo); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(ast.Root, nil, "", true)
+}
+
 func compileSource(source *sourceAnalysis, context timeframeContext, input CompileInput) (SourceCompilation, error) {
 	compiled := SourceCompilation{Source: cloneSourceDescriptor(source.SourceDescriptor)}
 	if source.Class == SourceSynthetic {
@@ -273,9 +329,13 @@ func cloneOverlapProof(value OverlapProof) OverlapProof {
 	return clone
 }
 
-func sourceNotices(source *sourceAnalysis, input CompileInput) []Notice {
+func sourceNotices(source *sourceAnalysis, input CompileInput) ([]Notice, error) {
 	var notices []Notice
-	if source.Metric != nil && sourceUsesFixedDayLiteral(source, input.OriginalDQL) {
+	fixedDay, err := sourceUsesFixedDayLiteral(source, input.OriginalDQL)
+	if err != nil {
+		return nil, err
+	}
+	if fixedDay {
 		notices = append(notices, Notice{
 			Kind: NoticeNotification, Code: NoticeFixedDayInterval, SourceOrdinal: source.Ordinal,
 			Message: "timeseries interval:1d is a fixed 24-hour interval, not a calendar day.",
@@ -288,30 +348,30 @@ func sourceNotices(source *sourceAnalysis, input CompileInput) []Notice {
 			Message: "The Davis snapshot query has less than six hours of warm-up between data_start and virtual_start. Problem-state reconstruction at virtual_start may be incomplete; Phase 0B did not observe this short-gap hazard live. Compilation continues, and this warning does not change the replay boundaries.",
 		})
 	}
-	return notices
+	return notices, nil
 }
 
-func sourceUsesFixedDayLiteral(source *sourceAnalysis, original string) bool {
+func sourceUsesFixedDayLiteral(source *sourceAnalysis, original string) (bool, error) {
 	if source.Metric == nil || source.Metric.DeclaredInterval == nil || *source.Metric.DeclaredInterval != 24*time.Hour {
-		return false
+		return false, nil
 	}
 	intervals := source.parametersByKey()["interval"]
 	if len(intervals) != 1 {
-		return false
+		return false, replayError(ErrorASTContract, source.node, "interval", "A fixed 24-hour metric has no unambiguous interval parameter.", "Update dtctl if the metric AST contract changed.")
 	}
 	value, err := parameterValue(intervals[0].node)
 	if err != nil || value.Span == nil || value.Span.End.Index == int(^uint(0)>>1) {
-		return false
+		return false, replayError(ErrorASTContract, intervals[0].node, "interval", "A fixed 24-hour metric interval has no usable source span.", "Update dtctl if the position contract changed.")
 	}
 	start, err := utf16OffsetToByte(original, value.Span.Start.Index)
 	if err != nil {
-		return false
+		return false, positionError("invalid_start", "metric interval notification", err.Error())
 	}
 	end, err := utf16OffsetToByte(original, value.Span.End.Index+1)
 	if err != nil {
-		return false
+		return false, positionError("invalid_end", "metric interval notification", err.Error())
 	}
-	return strings.TrimSpace(original[start:end]) == "1d"
+	return strings.TrimSpace(original[start:end]) == "1d", nil
 }
 
 func classifyWholeQueryNonOverlap(sources []SourceExplain) *NonOverlapError {
