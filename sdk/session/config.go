@@ -30,6 +30,10 @@ type Config struct {
 	// see profile.go and docs/dev/COMMAND_PROFILES_DESIGN.md.
 	Profiles map[string]Profile `yaml:"profiles,omitempty"`
 
+	// sourcePath is the canonical path of the configuration file this value was
+	// loaded from. Replay state keys use it to distinguish identically named
+	// contexts in different files. It is never serialized.
+	sourcePath string
 	// localPath is the path of the auto-discovered local .dtctl.yaml this
 	// config was loaded from, if any. Empty when loaded from the global config
 	// or from an explicit --config file. Unexported so it is never serialized.
@@ -119,6 +123,9 @@ type Context struct {
 	// Spill overrides the global spill settings for this context (D15). Nil
 	// fields inherit the global spill config.
 	Spill *SpillConfig `yaml:"spill,omitempty"`
+	// Replay contains stable historical-replay settings. Runtime clock anchors
+	// and lifecycle state are stored below StateDir, never in the context.
+	Replay *ReplayConfig `yaml:"replay,omitempty"`
 }
 
 // SpillConfig holds the result-spill settings (D15). Threshold and TTL are kept
@@ -324,6 +331,16 @@ func (c *Config) IsLocal() bool { return c.localPath != "" }
 // config was loaded from, or "" if it was not loaded from a local config.
 func (c *Config) LocalConfigPath() string { return c.localPath }
 
+// SourceIdentity returns the canonical configuration-file identity recorded
+// when the config was loaded. It is suitable as an input to a hash; callers
+// must not expose it in replay filenames.
+func (c *Config) SourceIdentity() (string, error) {
+	if c.sourcePath == "" {
+		return "", fmt.Errorf("configuration source identity is unavailable")
+	}
+	return c.sourcePath, nil
+}
+
 // IgnoredExecKeys reports whether code-execution keys (aliases, apply hooks)
 // are present in the auto-discovered local config and are therefore ignored at
 // runtime. See markLocal.
@@ -391,8 +408,29 @@ func loadFrom(path string, expandEnv bool) (*Config, error) {
 	if !isSupportedAPIVersion(cfg.APIVersion) {
 		return nil, fmt.Errorf("config file %s has schema version %q; this build understands %q — upgrade the tool reading it to a build that does", path, cfg.APIVersion, CurrentAPIVersion)
 	}
+	if err := cfg.validateReservedProfiles(); err != nil {
+		return nil, err
+	}
+
+	sourcePath, err := canonicalConfigPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config source identity: %w", err)
+	}
+	cfg.sourcePath = sourcePath
 
 	return &cfg, nil
+}
+
+func canonicalConfigPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
 }
 
 // CurrentAPIVersion is the config schema version this build reads and writes.

@@ -127,12 +127,56 @@ func TestResolveProfile_Unknown(t *testing.T) {
 
 func TestProfileExists(t *testing.T) {
 	cfg := &Config{Profiles: map[string]Profile{"custom": {}}}
-	for _, name := range []string{"full", "query", "investigate", "custom"} {
+	for _, name := range []string{"full", "query", "investigate", "replay", "custom"} {
 		if !cfg.ProfileExists(name) {
 			t.Errorf("ProfileExists(%q) = false, want true", name)
 		}
 	}
 	if cfg.ProfileExists("bogus") {
 		t.Error("ProfileExists(bogus) = true, want false")
+	}
+}
+
+func TestReplayProfileExactLeavesAndCtxAncestor(t *testing.T) {
+	allowed := []string{
+		"query", "wait", "wait query", "verify", "verify query", "exec", "exec dql",
+		"inventory", "inspect", "replay", "replay start", "replay advance", "replay status", "replay stop",
+		"ctx", "ctx current", "ctx describe", "doctor", "auth", "auth status", "commands", "help",
+	}
+	for _, path := range allowed {
+		if !ReplayProfileAllows(path) {
+			t.Errorf("replay profile rejected %q", path)
+		}
+	}
+
+	blocked := []string{
+		"ctx set", "ctx delete", "ctx token", "auth login", "exec workflow", "exec function",
+		"exec analyzer", "get", "describe", "history", "logs", "create", "apply", "delete", "config", "plugin",
+		"replay future-child", "replay start future-child", "ctx current future-child", "wait query future-child",
+	}
+	for _, path := range blocked {
+		if ReplayProfileAllows(path) {
+			t.Errorf("replay profile unexpectedly allowed %q", path)
+		}
+	}
+}
+
+func TestResolveProfileRejectsProgrammaticReplayShadow(t *testing.T) {
+	cfg := &Config{Profiles: map[string]Profile{
+		ProfileReplay: {Commands: []string{"delete"}},
+	}}
+	if _, err := cfg.resolveProfile(ProfileReplay); err == nil {
+		t.Fatal("user replay profile shadow was accepted")
+	}
+}
+
+func TestBuiltinReplayProfileReturnsIndependentCopy(t *testing.T) {
+	profile := BuiltinReplayProfile()
+	if profile.Name != ProfileReplay || len(profile.Commands) == 0 {
+		t.Fatalf("unexpected replay profile: %+v", profile)
+	}
+	profile.Commands[0] = "delete"
+	if !ReplayProfileAllows("query") || ReplayProfileAllows("delete") {
+		t.Fatal("caller mutation changed the reserved replay profile")
 	}
 }
