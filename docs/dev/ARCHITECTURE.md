@@ -898,6 +898,98 @@ func isRetryable(r *resty.Response, err error) bool {
 
 ---
 
+## Historical Replay Architecture
+
+Historical replay has three enforcement pillars:
+
+1. A shared local replay clock and session snapshot define virtual now and the
+   visible replay interval.
+2. An AST-assisted compiler prepares and audits effective DQL.
+3. The reserved command profile and a separate hard guard keep unsupported
+   built-ins and plugin dispatch outside the replay context.
+
+The query path is:
+
+```text
+expanded original DQL
+  -> invocation-local original query:parse memo
+  -> server-provided DQL AST
+  -> fresh dtctl internal representation
+  -> Method B targeted UTF-16 position edits
+  -> effective DQL text
+  -> fresh query:parse of effective DQL
+  -> validation-AST audit
+  -> query:execute
+  -> metric result-contract validation
+  -> disclosure router
+```
+
+The server-provided DQL AST is a critical dependency. It distinguishes a real
+`now()` call from the same text in a string or comment. It also exposes source
+commands, nested execution blocks, parameters, functions, and semantic node
+roles. Unknown semantic forms remain visible and fail closed.
+
+The AST is analysis input only. `query:parse` returns the structured tree.
+`query:execute` accepts DQL text, not that tree. dtctl therefore emits effective
+DQL, reparses that exact text, and audits the validation AST before execution.
+It never falls back to the original DQL after a parse, adaptation, transform,
+or audit failure.
+
+Phase 0 selected Method B. It preserves the original query and edits only
+AST-identified spans. The measured position contract uses UTF-16 code units
+with inclusive end positions. The editor converts those coordinates to Go byte
+offsets, rejects surrogate splits and overlapping edits, and permits insertion
+only at an AST-proven command boundary. Tests cover ASCII, Unicode, strings,
+comments, escapes, adjacent edits, and nested insertions.
+
+Phase 0B approved a Narrow compatibility surface. Production keeps exact
+allowlists for record tables, metric forms, pipeline commands, and scalar
+functions. Every pipeline or scalar entry needs a sanitized parse fixture and
+a recorded safety rationale. A structurally familiar unknown construct is not
+implicitly safe. Unsupported sources, functions, commands, time semantics,
+current-state dependencies, and every `shift:` form fail closed.
+
+The DQL executor owns one invocation-local original-parse memo. Its complete
+key contains the byte-identical expanded query, normalized environment
+identity, non-secret client or principal identity, locale, timezone, Query API
+version, and parser options. It stores only successful immutable original
+parses and returns a fresh decoded tree for each use. It is never process-global
+or persistent. Effective DQL, effective parses, compiled plans, and audits are
+never memoized.
+
+One-shot replay normally performs two parse calls: original and effective. A
+loop with `N` executions of one unchanged key performs one original parse and
+`N` effective parses. Each execution captures a fresh virtual now. Polling one
+submitted asynchronous query keeps that timestamp fixed.
+
+`sdk/session` owns replay configuration, private state, locks, atomic writes,
+and provenance appends. Queries and status take lock-free snapshots. Lifecycle
+writes and guarded completion take the mandatory writer lock. Restricted
+provenance uses a different append lock keyed by the normalized sink path.
+
+Restricted disclosure preflights the provenance sink before preparation. It
+appends and flushes complete execution provenance before returning a result.
+For terminal execution, that append precedes guarded completion. A failed
+preflight prevents parse and execution. A failed post-execution append
+suppresses the result. Full disclosure has no provenance dependency.
+
+The reserved `replay` profile shapes help, completion, and the command catalog.
+The hard guard checks Cobra's resolved canonical command path and ignores an
+attempt to widen the surface with `DTCTL_PROFILE`. It also runs before plugin
+lookup. The profile is a dtctl guardrail. It is not a shell, credential,
+filesystem, or network sandbox.
+
+The compiler is pure. It reads no state, clock, config, terminal, or network.
+It returns source ranges, overlap proofs, notices, result contracts, effective
+DQL, and an audit plan. The executor orchestrates state reads, parse calls,
+execution, result validation, provenance, and guarded completion. The SDK Query
+API remains a typed HTTP wrapper with no replay policy.
+
+Replay controls DQL time semantics. It does not freeze retained data, tenant
+configuration, authorization, engine behavior, metric rollups, or late
+ingestion. Manual clock mode makes virtual timestamps repeatable, but it does
+not make query results immutable.
+
 ## Performance Considerations
 
 ### 1. Parallel Operations

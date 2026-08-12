@@ -17,6 +17,8 @@ update this spec in the same PR.
 | Explicit config | `--config <path>` flag, wins over discovery |
 | OAuth file store | `$XDG_DATA_HOME/dtctl/oauth-tokens/<sanitized-name>.json`, mode 0600 (dir 0700) |
 | Token-refresh lock | `$TMPDIR/dtctl-token-refresh-<sha256[:8] of env:tokenRef>.lock` |
+| Replay state | `$XDG_STATE_HOME/dtctl/replay/<sha256>.state.json`, Unix mode 0600 (dir 0700) |
+| Restricted replay provenance | `$XDG_STATE_HOME/dtctl/replay/<sha256>.provenance.jsonl` by default, Unix mode 0600 |
 
 Security note: code-execution keys (aliases, apply hooks) in an
 auto-discovered `.dtctl.yaml` are loaded for round-tripping but **never
@@ -29,8 +31,12 @@ YAML document. Top-level keys: `apiVersion`, `kind`, `current-context`,
 `preferences`, `aliases`, `spill`. Per-context keys: `environment`,
 `token-ref`, `safety-level` (`readonly` | `readwrite-mine` | `readwrite-all` |
 `dangerously-unrestricted`; empty means `readwrite-all`), `description`,
-`hooks`, `spill`. The Go structs in `sdk/session/config.go` are the schema's
-source of truth; `testdata/contract/v1-full.yaml` exercises every field.
+`hooks`, `spill`, `profile`, `locale`, `timezone`, and `replay`. The replay
+object has `data_start`, `data_end`, `virtual_start`, `clock_mode`,
+`disclosure`, and `provenance_path`. The Go structs in
+`sdk/session/config.go` and `sdk/session/replay_config.go` are the schema's
+source of truth. The contract fixtures exercise the shared core, and
+`replay_config_test.go` covers replay YAML round-tripping and validation.
 
 Semantics both binaries must share: `safety-level` (a `readonly` context means
 the same thing everywhere) and token resolution order (see below).
@@ -94,6 +100,74 @@ string. Management commands that rewrite the file must load with
    memory only. The sole way to persist a switch is `dtctl ctx <name>`
    (or `dtctl config use-context`).
 
+## Replay configuration and state
+
+A replay context stores stable input only:
+
+```yaml
+contexts:
+  - name: historical-window
+    context:
+      environment: https://example.apps.dynatrace.com
+      token-ref: readonly-reader
+      safety-level: readonly
+      profile: replay
+      replay:
+        data_start: "2026-06-14T08:00:00Z"
+        data_end: "2026-06-14T12:00:00Z"
+        virtual_start: "2026-06-14T10:00:00Z"
+        clock_mode: manual
+        disclosure: restricted
+```
+
+The example is for automation. Automated examples use explicit `manual` clock
+mode and `restricted` disclosure. `virtual_start` defaults to `data_start`.
+`clock_mode` defaults to `realtime`. `disclosure` defaults to `full`.
+`data_start`, `data_end`, and `virtual_start` are absolute RFC 3339 timestamps.
+They are normalized to UTC in runtime state. `data_start` must be earlier than
+`data_end`. `virtual_start` may equal either replay interval boundary.
+
+`replay start` may override the three timestamp fields and `clock_mode`. A flag
+wins over a context field. Disclosure and provenance path have no start-command
+override. A flags-only session therefore uses full disclosure.
+
+Session IDs, host timestamps, clock anchors, resolved value sources, completion
+state, and stop state belong to the private replay state file. They are not
+written to the context. Filenames use a SHA-256 digest of the canonical config
+source, context name, and normalized environment URL. They do not contain a
+context name, URL, or token reference. State is versioned and contains no token
+or telemetry.
+
+Normal queries and `replay status` read state without a state lock and without
+write access. `replay start`, `advance`, `stop`, restart, and guarded terminal
+completion use the mandatory cross-process writer lock and atomic replacement.
+The lock implementation is platform-specific on Unix and Windows.
+
+Restricted disclosure requires a private JSON Lines provenance file. An
+omitted path resolves below the replay state directory. An override must be an
+absolute safe path. The implementation checks the parent, ownership and private
+modes where supported, and refuses symlinks. A separate cross-process lock
+serializes complete appended records. Each record is flushed before the lock is
+released. Full disclosure creates no provenance file and has no provenance
+dependency.
+
+On Unix, the replay directory uses mode `0700`; state, provenance, and lock
+files use mode `0600`. On Windows, dtctl applies and validates a private DACL
+for the current user, local administrators, and `SYSTEM`.
+
+A usable state snapshot owns its stored disclosure and provenance route even
+after the context drifts. This prevents a context edit from widening a running
+restricted session. Context drift blocks query execution and requires restart.
+
+A replay block is also a configured-but-inactive guard signal. If the block is
+present but no active session exists, DQL fails closed. A flags-only session in
+a context without a replay block loses that configured signal after stop. This
+is why automation must persist the complete block.
+
+The reserved profile name `replay` cannot appear under user-defined
+`profiles:`. Config validation rejects that collision and asks the user to
+rename the custom profile.
+
 ## Environment variable overrides
 
 | Variable | Meaning |
@@ -107,9 +181,13 @@ string. Management commands that rewrite the file must load with
 
 | Fixture | Asserts |
 |---|---|
-| `v1-full.yaml` | Every known field parses; unknown fields at all levels are tolerated and survive a load-modify-save cycle |
+| `v1-full.yaml` | Shared core fields parse; unknown fields at all levels are tolerated and survive a load-modify-save cycle |
 | `v1-minimal.yaml` | Minimal config loads; `apiVersion` is optional |
 | `future-version.yaml` | Unsupported schema version fails loudly |
+
+Replay fields have focused coverage in `replay_config_test.go` because their
+resolved defaults, path safety, and UTC normalization are runtime contracts in
+addition to YAML schema fields.
 
 The fixtures live in the sdk module (`sdk/session/testdata/contract/`), so
 after the repo split both binaries keep testing against the same versioned

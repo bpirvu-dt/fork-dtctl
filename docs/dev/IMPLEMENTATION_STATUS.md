@@ -161,6 +161,36 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Full-file predicate filtering via a streaming `--jq` program (per record over the whole file, re-spill-guarded): `dtctl inspect <file> --jq 'select(.status == 500)'`
 - [x] Recover a lost file handle by listing spilled files in the active context: `dtctl inspect --list`
 
+### Historical Replay (Milestone 1)
+
+- [x] Normal DQL uses a shared local historical clock; semantic `now()` becomes virtual now
+- [x] Half-open replay interval and visible replay interval with partial-overlap support
+- [x] Lifecycle commands: `replay start`, `advance`, `status`, `stop`, and `start --restart`
+- [x] Realtime default and explicit manual clock mode
+- [x] Terminal execution at `data_end`, guarded idempotent completion, and clean wait/live exit
+- [x] Exact record allowlist: `logs`, `spans`, `events`, `bizevents`, `dt.system.events`, `dt.davis.events.snapshots`, and `dt.davis.problems.snapshots`
+- [x] Exact record-time fields and `[from, to)` source boundaries
+- [x] Automatic and fixed-duration metrics with one-natural-bucket boundary tolerance
+- [x] Tested metric forms: plain `avg`, `sum(...,rate:1s)`, `avg(...,rollup:avg)`, one `dt.entity.host` split, and paired `avg`/`max`
+- [x] `interval:1d` fixed-`24h` notification; calendar intervals and all shifts rejected
+- [x] Davis snapshot warm-up warning and helpful current-view rejection with latest-per-ID guidance
+- [x] Fail-closed source, pipeline-command, scalar-function, current-state, and AST allowlists
+- [x] Server-AST-assisted Method B compiler with UTF-16 inclusive-position editing
+- [x] Effective DQL reparse, validation-AST audit, and metric result-contract validation
+- [x] Invocation-local immutable original-parse memo; no broader replay cache
+- [x] Temporary, permanent, and unknown non-overlap classification without synthetic empty telemetry
+- [x] Five-second replay loop floor, OAuth refresh preservation, and first-429 `Retry-After` handling
+- [x] Full disclosure default and restricted disclosure with private serialized provenance
+- [x] Reserved `replay` profile, canonical-path hard guard, plugin block, and safe context exits
+- [x] Original/effective DQL provenance for full agent/spill output and restricted JSON Lines records
+- [ ] Best-effort retention and historical metric-resolution inspection before execution; Grail query notifications are routed correctly, but proactive inspection is not implemented
+
+Not supported in milestone 1: RUM tables, Dynatrace synthetic telemetry tables,
+security-event tables, any `timeseries shift:` form, automatic Davis
+current-view mapping, current topology or entity enrichment, mutable lookup or
+schema state, and current or on-demand analyzer/model state. These items have
+no promised delivery date.
+
 ### SLO Features
 - [x] List SLOs: `dtctl get slos`
 - [x] Get SLO details: `dtctl describe slo <id>`
