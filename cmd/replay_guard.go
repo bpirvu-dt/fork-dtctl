@@ -213,8 +213,7 @@ func routeReplayGuardFailure(activation replayActivation, detail error) error {
 			"detail":  detail.Error(),
 		},
 	}
-	switch value := detail.(type) {
-	case *ReplayGuardError:
+	if value, ok := detail.(*ReplayGuardError); ok {
 		record.Fields["command"] = value.Command
 		value.Restricted = true
 	}
