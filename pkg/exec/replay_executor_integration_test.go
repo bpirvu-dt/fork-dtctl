@@ -1475,6 +1475,10 @@ func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
 				Kind: execreplay.NoticeWarning, Code: execreplay.NoticeHistoricalResolutionUnverified,
 				Message: "historical resolution was not verified for this replay session",
 			},
+			{
+				Kind: execreplay.NoticeWarning, Code: execreplay.NoticeRetentionNotVerified,
+				Message: "Retention was not verified for synthetic.unmapped because the retention inspection covers only the logs, spans, events, bizevents, metrics, and dt.system.events families.",
+			},
 		}},
 	}
 	stderr := captureReplayExecutorStderr(t, func() {

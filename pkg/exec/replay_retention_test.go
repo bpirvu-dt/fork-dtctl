@@ -158,6 +158,49 @@ func TestRetentionNoticesUseKnownBoundsAndAdmitResolutionLimits(t *testing.T) {
 	}
 }
 
+func TestDavisSnapshotRetentionUsesEventsFamilyBounds(t *testing.T) {
+	hostNow := mustReplayTestTime("2026-08-11T12:00:00Z")
+	inspection := RetentionInspection{Tables: map[string]RetentionTableBounds{
+		"events": {Table: "events", BucketCount: 3, MinimumRetentionDays: 35, MaximumRetentionDays: 462},
+	}}
+
+	for _, name := range []string{"dt.davis.events.snapshots", "dt.davis.problems.snapshots"} {
+		t.Run(name, func(t *testing.T) {
+			sources := []execreplay.SourceCompilation{{Source: execreplay.SourceDescriptor{
+				Ordinal: 4, Class: execreplay.SourceRecord, Name: name,
+			}}}
+
+			if got := retentionNotices(sources, hostNow.Add(-24*time.Hour), hostNow, inspection, nil); len(got) != 0 {
+				t.Fatalf("recent Davis notices = %#v, want none", got)
+			}
+
+			got := retentionNotices(sources, hostNow.Add(-36*24*time.Hour), hostNow, inspection, nil)
+			if len(got) != 1 || got[0].Kind != execreplay.NoticeWarning || got[0].Code != execreplay.NoticeRetentionBoundary || got[0].SourceOrdinal != 4 {
+				t.Fatalf("Davis boundary notices = %#v", got)
+			}
+			if !strings.Contains(got[0].Message, "shortest current events retention setting of 35 days") || !strings.Contains(got[0].Message, "some matching buckets may be unavailable") {
+				t.Fatalf("Davis boundary message = %q", got[0].Message)
+			}
+		})
+	}
+}
+
+func TestUnmappedRetentionSourceExplainsInspectionCoverage(t *testing.T) {
+	hostNow := mustReplayTestTime("2026-08-11T12:00:00Z")
+	sources := []execreplay.SourceCompilation{{Source: execreplay.SourceDescriptor{
+		Ordinal: 7, Class: execreplay.SourceRecord, Name: "synthetic.unmapped",
+	}}}
+
+	got := retentionNotices(sources, hostNow.Add(-24*time.Hour), hostNow, RetentionInspection{}, nil)
+	if len(got) != 1 || got[0].Kind != execreplay.NoticeWarning || got[0].Code != execreplay.NoticeRetentionNotVerified || got[0].SourceOrdinal != 7 {
+		t.Fatalf("unmapped notices = %#v", got)
+	}
+	want := "Retention was not verified for synthetic.unmapped because the retention inspection covers only the logs, spans, events, bizevents, metrics, and dt.system.events families. The query will continue without changing tenant retention."
+	if got[0].Message != want {
+		t.Fatalf("unmapped notice = %q, want %q", got[0].Message, want)
+	}
+}
+
 func TestRetentionInspectionRejectsUntrustedMetadata(t *testing.T) {
 	tests := []struct {
 		name   string

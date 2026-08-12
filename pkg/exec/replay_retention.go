@@ -260,7 +260,7 @@ func retentionNotices(sources []execreplay.SourceCompilation, replayStart, hostN
 			if source.Source.Class != execreplay.SourceSynthetic {
 				notices = append(notices, execreplay.Notice{
 					Kind: execreplay.NoticeWarning, Code: execreplay.NoticeRetentionNotVerified, SourceOrdinal: source.Source.Ordinal,
-					Message: fmt.Sprintf("Retention was not verified for %s because current bucket metadata exposes only public table families. The query will continue without changing tenant retention.", source.Source.Name),
+					Message: fmt.Sprintf("Retention was not verified for %s because the retention inspection covers only the logs, spans, events, bizevents, metrics, and dt.system.events families. The query will continue without changing tenant retention.", source.Source.Name),
 				})
 			}
 			continue
@@ -309,6 +309,12 @@ func retentionFamily(source execreplay.SourceDescriptor) string {
 	switch source.Name {
 	case "logs", "spans", "events", "bizevents", "dt.system.events":
 		return source.Name
+	case "dt.davis.events.snapshots", "dt.davis.problems.snapshots":
+		// The 2026-08-12 live dt.system.buckets inspection exposed no
+		// dt.davis.* table family. Davis buckets instead reported Table=events;
+		// default_davis_events reported 462 retention days, matching the
+		// documented 15-month default. Use the aggregate events-family bounds.
+		return "events"
 	default:
 		return ""
 	}
