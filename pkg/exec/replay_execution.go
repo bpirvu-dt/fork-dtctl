@@ -9,6 +9,7 @@ import (
 	"time"
 
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
@@ -103,6 +104,7 @@ type ReplayExecutionInfo struct {
 	CompletionDisposition session.CompletionDisposition
 	OriginalQuery         string
 	EffectiveQuery        string
+	Output                *output.ReplayMetadata
 
 	verificationOriginalValid *bool
 }
@@ -256,6 +258,7 @@ type ReplayExecutionProvenance struct {
 	Compilation           *execreplay.CompileResult
 	Audit                 *execreplay.AuditResult
 	Validated             []execreplay.ValidatedResultContract
+	Notifications         []QueryNotification
 	Outcome               string
 	Detail                string
 	Completion            session.CompletionDisposition
@@ -267,7 +270,7 @@ func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {
 		ClockMode: prepared.Session.ClockMode, VirtualNow: prepared.VirtualNow,
 		DataStart: prepared.Session.DataStart, DataEnd: prepared.Session.DataEnd,
 		Terminal: prepared.Terminal, OriginalQuery: prepared.OriginalQuery,
-		EffectiveQuery: prepared.EffectiveQuery,
+		EffectiveQuery: prepared.EffectiveQuery, Output: replayOutputMetadata(prepared, nil, "", nil),
 	}
 }
 

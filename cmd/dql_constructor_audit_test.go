@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 func TestDQLExecutorConstructorAuditHasNoUnwiredProductionPath(t *testing.T) {
@@ -102,11 +105,57 @@ func TestPrintLookupNotificationsDoesNotExecuteDQL(t *testing.T) {
 		return nil, nil
 	}))
 
-	printLookupNotifications(c, []exec.QueryNotification{{Severity: "INFO", Message: "synthetic notification"}})
+	printLookupNotifications(c, nil, []exec.QueryNotification{{Severity: "INFO", Message: "synthetic notification"}})
 
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("notification formatting made %d HTTP requests; want 0", got)
 	}
+}
+
+func TestPrintLookupNotificationsRestrictedRouteIsSilent(t *testing.T) {
+	c, err := client.NewForTesting("https://example.invalid", "synthetic-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := exec.NewDQLExecutor(c).WithQueryPreparer(disclosureNotificationPreparer(session.ReplayDisclosureRestricted))
+	stdout, stderr := captureReplayQueryStreams(t, func() {
+		printLookupNotifications(c, executor, []exec.QueryNotification{{
+			Severity: "WARNING", Message: "replay virtual session clock interval effective",
+		}})
+	})
+	if stdout != "" || stderr != "" {
+		t.Fatalf("restricted lookup notification reached ordinary output: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestExecDQLOutputCompatibilityAndFullReplayEnvelopeSelection(t *testing.T) {
+	c, err := client.NewForTesting("https://example.invalid", "synthetic-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalAgent, originalFormat := agentMode, outputFormat
+	agentMode, outputFormat = true, "json"
+	t.Cleanup(func() { agentMode, outputFormat = originalAgent, originalFormat })
+
+	plain := execDQLExecutionOptions(exec.NewDQLExecutor(c))
+	restricted := execDQLExecutionOptions(exec.NewDQLExecutor(c).WithQueryPreparer(disclosureNotificationPreparer(session.ReplayDisclosureRestricted)))
+	full := execDQLExecutionOptions(exec.NewDQLExecutor(c).WithQueryPreparer(disclosureNotificationPreparer(session.ReplayDisclosureFull)))
+	if plain.AgentMode || restricted.AgentMode || len(plain.MetadataFields) != 0 || len(restricted.MetadataFields) != 0 {
+		t.Fatalf("plain=%+v restricted=%+v, want existing non-envelope serializer", plain, restricted)
+	}
+	if !full.AgentMode || len(full.MetadataFields) != 1 || full.MetadataFields[0] != "all" {
+		t.Fatalf("full replay options = %+v, want replay agent envelope metadata", full)
+	}
+}
+
+type disclosureNotificationPreparer string
+
+func (disclosureNotificationPreparer) Prepare(context.Context, exec.PrepareInput) (exec.PreparedQuery, error) {
+	return exec.PreparedQuery{}, errors.New("not used")
+}
+
+func (p disclosureNotificationPreparer) Disclosure(context.Context) (string, bool) {
+	return string(p), true
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

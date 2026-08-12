@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -11,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/prompt"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/lookup"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // getLookupsCmd retrieves lookup tables
@@ -68,7 +70,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				printLookupNotifications(c, dataResult.Notifications)
+				printLookupNotifications(c, executor, dataResult.Notifications)
 				return printer.PrintList(dataResult.Records)
 			}
 
@@ -78,7 +80,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				printLookupNotifications(c, dataResult.Notifications)
+				printLookupNotifications(c, executor, dataResult.Notifications)
 				return printer.PrintList(dataResult.Records)
 			}
 
@@ -87,7 +89,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			printLookupNotifications(c, notifications)
+			printLookupNotifications(c, executor, notifications)
 			return printer.Print(lookupData)
 		}
 
@@ -165,11 +167,17 @@ func init() {
 }
 
 // printLookupNotifications intentionally uses a non-replay executor only as a
-// notification formatter. It receives an already-completed response, makes no
-// parse or execute request, and cannot bypass replay query preparation.
-func printLookupNotifications(c *client.Client, notifications []exec.QueryNotification) {
+// notification formatter after consulting the factory-built executor's route.
+// It receives an already-completed response, makes no parse or execute request,
+// and cannot bypass replay query preparation or restricted disclosure.
+func printLookupNotifications(c *client.Client, replayAware *exec.DQLExecutor, notifications []exec.QueryNotification) {
 	if len(notifications) == 0 {
 		return
+	}
+	if replayAware != nil {
+		if disclosure, active := replayAware.ReplayDisclosure(context.Background()); active && disclosure == session.ReplayDisclosureRestricted {
+			return
+		}
 	}
 	executor := exec.NewDQLExecutor(c)
 	executor.PrintNotifications(notifications)

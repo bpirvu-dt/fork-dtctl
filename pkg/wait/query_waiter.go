@@ -24,6 +24,7 @@ type WaitConfig struct {
 	OutputFormat string
 	Quiet        bool
 	Verbose      bool
+	AgentMode    bool
 	ProgressOut  io.Writer // Where to write progress messages (default: stderr)
 }
 
@@ -41,6 +42,7 @@ type Result struct {
 	RecordCount   int64
 	Records       []map[string]any
 	FailureReason string
+	Replay        *exec.ReplayExecutionInfo
 }
 
 // NewQueryWaiter creates a new query waiter
@@ -219,7 +221,7 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 				}
 				return &Result{
 					Success: true, Attempts: attempt + 1, Elapsed: elapsed,
-					RecordCount: recordCount, Records: records,
+					RecordCount: recordCount, Records: records, Replay: replayInfo,
 				}, nil
 			}
 
@@ -245,6 +247,7 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 					Elapsed:     elapsed,
 					RecordCount: recordCount,
 					Records:     records,
+					Replay:      replayInfo,
 				}, nil
 			}
 
@@ -322,6 +325,12 @@ func isPermanentQueryError(err error) bool {
 func (w *QueryWaiter) PrintResults(result *Result) error {
 	if w.config.OutputFormat == "" || result.Records == nil {
 		return nil
+	}
+
+	if replayMetadata := exec.ReplayOutputMetadata(result.Replay); w.config.AgentMode && replayMetadata != nil {
+		printer := output.NewAgentPrinter(os.Stdout, &output.ResponseContext{Verb: "wait", Resource: "query"})
+		printer.SetReplay(replayMetadata)
+		return printer.Print(map[string]any{"records": result.Records})
 	}
 
 	printer := output.NewPrinter(w.config.OutputFormat)

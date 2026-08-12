@@ -33,6 +33,48 @@ const (
 	KindFileList = "file-list"
 )
 
+// ReplaySourceMetadata labels the requested, logical effective, and physical
+// range of one compiler-classified source. Empty range endpoints are omitted
+// when the source has no corresponding range (for example synthetic data).
+type ReplaySourceMetadata struct {
+	Ordinal           int    `json:"ordinal"`
+	Path              string `json:"path,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Class             string `json:"class"`
+	BoundaryPolicy    string `json:"boundary_policy"`
+	RequestedFrom     string `json:"requested_from,omitempty"`
+	RequestedTo       string `json:"requested_to,omitempty"`
+	EffectiveFrom     string `json:"effective_from,omitempty"`
+	EffectiveTo       string `json:"effective_to,omitempty"`
+	PhysicalFrom      string `json:"physical_from,omitempty"`
+	PhysicalTo        string `json:"physical_to,omitempty"`
+	NaturalIntervalNS int64  `json:"natural_interval_ns,omitempty"`
+	LowerSpillNS      int64  `json:"lower_spill_ns,omitempty"`
+	UpperSpillNS      int64  `json:"upper_spill_ns,omitempty"`
+}
+
+// ReplayMetadata is the common full-disclosure record used by agent envelopes
+// and spill manifests. Query fields explicitly name all three query forms so a
+// consumer never mistakes Grail's canonical effective text for user input.
+type ReplayMetadata struct {
+	Active                       bool                   `json:"active"`
+	SessionID                    string                 `json:"session_id"`
+	SessionStartedAt             string                 `json:"session_started_at"`
+	ClockMode                    string                 `json:"clock_mode"`
+	AnchorHost                   string                 `json:"anchor_host"`
+	AnchorVirtual                string                 `json:"anchor_virtual"`
+	VirtualNow                   string                 `json:"virtual_now"`
+	DataStart                    string                 `json:"data_start"`
+	DataEnd                      string                 `json:"data_end"`
+	VisibleEnd                   string                 `json:"visible_end"`
+	State                        string                 `json:"state"`
+	OriginalQuery                string                 `json:"original_query"`
+	EffectiveQuery               string                 `json:"effective_query"`
+	GrailCanonicalEffectiveQuery string                 `json:"grail_canonical_effective_query,omitempty"`
+	Sources                      []ReplaySourceMetadata `json:"sources"`
+	Warnings                     []string               `json:"warnings"`
+}
+
 // Stable spill-file error codes (D32). These are part of the versioned envelope
 // contract and are consumed by Layer 2 (`dtctl inspect`) when it acts on a
 // handed-out path that has since become mortal (TTL prune / overwrite / delete).
@@ -74,9 +116,12 @@ type ResultFileManifest struct {
 	Path string `json:"path,omitempty"`
 	// Query is the original DQL text, recorded so a stale-file recovery can
 	// suggest a concrete re-query (D32).
-	Query  string `json:"query,omitempty"`
-	Format string `json:"format"`
-	Rows   int    `json:"rows"`
+	Query                        string          `json:"query,omitempty"`
+	EffectiveQuery               string          `json:"effective_query,omitempty"`
+	GrailCanonicalEffectiveQuery string          `json:"grail_canonical_effective_query,omitempty"`
+	Replay                       *ReplayMetadata `json:"replay,omitempty"`
+	Format                       string          `json:"format"`
+	Rows                         int             `json:"rows"`
 	// Bytes is the size of the spilled data file. Omitted for summary-only.
 	Bytes       int64  `json:"bytes,omitempty"`
 	ContextName string `json:"context_name,omitempty"`
@@ -120,15 +165,18 @@ func (m *ResultFileManifest) SetStats(cols []ColumnStats, sampled bool) {
 // honestly, (b) refuse cross-context reads, and (c) suggest a concrete re-query
 // when the file is gone.
 type SidecarManifest struct {
-	EnvelopeVersion int           `json:"envelope_version"`
-	Format          string        `json:"format"`
-	Sampled         bool          `json:"sampled"`
-	SamplingRatio   float64       `json:"sampling_ratio,omitempty"`
-	TenantID        string        `json:"tenant_id,omitempty"`
-	ContextName     string        `json:"context_name,omitempty"`
-	Query           string        `json:"query,omitempty"`
-	Rows            int           `json:"rows"`
-	Bytes           int64         `json:"bytes"`
-	Created         time.Time     `json:"created"`
-	Columns         []ColumnStats `json:"columns,omitempty"`
+	EnvelopeVersion              int             `json:"envelope_version"`
+	Format                       string          `json:"format"`
+	Sampled                      bool            `json:"sampled"`
+	SamplingRatio                float64         `json:"sampling_ratio,omitempty"`
+	TenantID                     string          `json:"tenant_id,omitempty"`
+	ContextName                  string          `json:"context_name,omitempty"`
+	Query                        string          `json:"query,omitempty"`
+	EffectiveQuery               string          `json:"effective_query,omitempty"`
+	GrailCanonicalEffectiveQuery string          `json:"grail_canonical_effective_query,omitempty"`
+	Replay                       *ReplayMetadata `json:"replay,omitempty"`
+	Rows                         int             `json:"rows"`
+	Bytes                        int64           `json:"bytes"`
+	Created                      time.Time       `json:"created"`
+	Columns                      []ColumnStats   `json:"columns,omitempty"`
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 func TestParseByteSize(t *testing.T) {
@@ -174,6 +175,104 @@ func TestBuildSpillResponse_SpillAlways(t *testing.T) {
 	}
 	if len(resp.Context.Suggestions) == 0 {
 		t.Error("expected suggestions")
+	}
+}
+
+func TestBuildSpillResponse_FullReplayProvenanceInEnvelopeAndSidecar(t *testing.T) {
+	e := &DQLExecutor{}
+	result, records := sampleResult(false)
+	result.Metadata.Grail.Query = "fetch logs, from:now()-1h"
+	result.Metadata.Grail.CanonicalQuery = `fetch logs, from:toTimestamp("2026-08-10T10:00:00Z")`
+	dir := t.TempDir()
+	replayMetadata := &output.ReplayMetadata{
+		Active: true, SessionID: "synthetic-session", SessionStartedAt: "2026-08-11T12:00:00Z",
+		ClockMode: session.ReplayClockManual, AnchorHost: "2026-08-11T12:00:00Z", AnchorVirtual: "2026-08-10T11:00:00Z",
+		VirtualNow: "2026-08-10T11:00:00Z", DataStart: "2026-08-10T10:00:00Z", DataEnd: "2026-08-10T12:00:00Z",
+		VisibleEnd: "2026-08-10T11:00:00Z", State: session.ReplayStatusActive,
+		OriginalQuery: "fetch logs, from:now()-1h", EffectiveQuery: `fetch logs, from:toTimestamp("2026-08-10T10:00:00Z")`,
+		GrailCanonicalEffectiveQuery: `fetch logs, from:toTimestamp("2026-08-10T10:00:00Z")`,
+		Sources: []output.ReplaySourceMetadata{{
+			Ordinal: 0, Class: "record", Name: "logs", BoundaryPolicy: "exact_half_open",
+			RequestedFrom: "2026-08-10T10:00:00Z", RequestedTo: "2026-08-10T11:00:00Z",
+			EffectiveFrom: "2026-08-10T10:00:00Z", EffectiveTo: "2026-08-10T11:00:00Z",
+			PhysicalFrom: "2026-08-10T10:00:00Z", PhysicalTo: "2026-08-10T11:00:00Z",
+		}},
+		Warnings: []string{"synthetic retention warning"},
+	}
+	opts := DQLExecuteOptions{
+		ContextName: "synthetic", Spill: SpillOptions{Mode: SpillAlways, Dir: dir, Format: "json"},
+		replay: &ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureFull, Output: replayMetadata},
+	}
+
+	resp, handled, err := e.buildSpillResponse(replayMetadata.OriginalQuery, result, records, "json", opts)
+	if err != nil || !handled {
+		t.Fatalf("buildSpillResponse: handled=%v err=%v", handled, err)
+	}
+	manifest := resp.Result.(*output.ResultFileManifest)
+	if resp.Replay == nil || manifest.Replay == nil || manifest.Query != replayMetadata.OriginalQuery ||
+		manifest.EffectiveQuery != replayMetadata.EffectiveQuery || manifest.GrailCanonicalEffectiveQuery != replayMetadata.GrailCanonicalEffectiveQuery {
+		t.Fatalf("response=%#v manifest=%#v", resp.Replay, manifest)
+	}
+	raw, err := os.ReadFile(output.SidecarPathFor(manifest.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sidecar output.SidecarManifest
+	if err := json.Unmarshal(raw, &sidecar); err != nil {
+		t.Fatal(err)
+	}
+	if sidecar.Replay == nil || sidecar.Query != replayMetadata.OriginalQuery || sidecar.EffectiveQuery != replayMetadata.EffectiveQuery ||
+		sidecar.GrailCanonicalEffectiveQuery != replayMetadata.GrailCanonicalEffectiveQuery {
+		t.Fatalf("sidecar = %#v", sidecar)
+	}
+}
+
+func TestBuildSpillResponse_RestrictedReplayUsesNormalManifestSchemas(t *testing.T) {
+	e := &DQLExecutor{}
+	result, records := sampleResult(false)
+	result.Metadata.Grail.Notifications = []QueryNotification{{
+		Severity: "WARNING", Message: "replay virtual session clock interval effective",
+	}}
+	dir := t.TempDir()
+	effective := `fetch logs, from:toTimestamp("2026-08-10T10:00:00Z")`
+	opts := DQLExecuteOptions{
+		ContextName: "synthetic", Spill: SpillOptions{Mode: SpillAlways, Dir: dir, Format: "json"},
+		replay: &ReplayExecutionInfo{
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: "fetch logs", EffectiveQuery: effective,
+			Output: &output.ReplayMetadata{Active: true, OriginalQuery: "fetch logs", EffectiveQuery: effective},
+		},
+	}
+	resp, handled, err := e.buildSpillResponse("fetch logs", result, records, "json", opts)
+	if err != nil || !handled {
+		t.Fatalf("buildSpillResponse: handled=%v err=%v", handled, err)
+	}
+	manifest := resp.Result.(*output.ResultFileManifest)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecarJSON, err := os.ReadFile(output.SidecarPathFor(manifest.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string][]byte{"manifest": manifestJSON, "sidecar": sidecarJSON} {
+		text := string(raw)
+		if strings.Contains(text, `"replay"`) || strings.Contains(text, `"effective_query"`) || strings.Contains(text, effective) {
+			t.Fatalf("restricted %s contains replay-only provenance: %s", name, text)
+		}
+	}
+	if resp.Replay != nil {
+		t.Fatalf("restricted response contains replay block: %#v", resp.Replay)
+	}
+	generated := resp
+	generated.Result = nil // returned data and manifest query text are excluded from the disclosure-word scan
+	generatedJSON, err := json.Marshal(generated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedText := strings.ReplaceAll(string(generatedJSON), manifest.Path, "<result-path>")
+	if containsRestrictedGeneratedWord(generatedText) {
+		t.Fatalf("restricted generated envelope fields contain a disclosure word: %s", generatedJSON)
 	}
 }
 

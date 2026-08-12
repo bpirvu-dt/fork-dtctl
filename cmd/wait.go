@@ -174,6 +174,7 @@ Examples:
 
 		queryOpts := exec.DQLExecuteOptions{
 			OutputFormat:           outputFormat,
+			AgentMode:              agentMode,
 			MaxResultRecords:       maxResultRecords,
 			MaxResultBytes:         maxResultBytes,
 			DefaultScanLimitGbytes: defaultScanLimitGbytes,
@@ -200,6 +201,7 @@ Examples:
 			OutputFormat: outputFormat,
 			Quiet:        quiet,
 			Verbose:      verbose,
+			AgentMode:    agentMode,
 		}
 
 		// Create executor and waiter

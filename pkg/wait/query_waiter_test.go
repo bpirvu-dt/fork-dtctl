@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 type countingQueryPreparer struct{ calls int }
@@ -293,6 +297,78 @@ func TestPrintResults_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrintResults() JSON error = %v", err)
 	}
+}
+
+func TestPrintResults_AgentCarriesFullReplayMetadataOnly(t *testing.T) {
+	executor, cleanup := newWaiterTestExecutor(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer cleanup()
+
+	metadata := &output.ReplayMetadata{
+		Active: true, SessionID: "0123456789abcdef0123456789abcdef",
+		OriginalQuery: "fetch logs", EffectiveQuery: `fetch logs, from:toTimestamp("2026-06-14T10:00:00Z")`,
+		Sources: []output.ReplaySourceMetadata{}, Warnings: []string{},
+	}
+	outputs := make(map[string]string)
+	for _, test := range []struct {
+		name       string
+		disclosure string
+		wantReplay bool
+	}{
+		{name: "full", disclosure: session.ReplayDisclosureFull, wantReplay: true},
+		{name: "restricted", disclosure: session.ReplayDisclosureRestricted, wantReplay: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			waiter := NewQueryWaiter(executor, WaitConfig{OutputFormat: "json", AgentMode: true})
+			stdout := captureWaitStdout(t, func() {
+				err := waiter.PrintResults(&Result{
+					Records: []map[string]any{{"matched": float64(1)}},
+					Replay:  &exec.ReplayExecutionInfo{Active: true, Disclosure: test.disclosure, Output: metadata},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			outputs[test.name] = stdout
+			var envelope struct {
+				Replay *output.ReplayMetadata `json:"replay"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+				t.Fatalf("decode agent output %q: %v", stdout, err)
+			}
+			if (envelope.Replay != nil) != test.wantReplay {
+				t.Fatalf("replay metadata = %#v, want present=%v", envelope.Replay, test.wantReplay)
+			}
+		})
+	}
+	plainWaiter := NewQueryWaiter(executor, WaitConfig{OutputFormat: "json", AgentMode: true})
+	plain := captureWaitStdout(t, func() {
+		if err := plainWaiter.PrintResults(&Result{Records: []map[string]any{{"matched": float64(1)}}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if outputs["restricted"] != plain {
+		t.Fatalf("restricted and plain wait output differ:\nrestricted=%s\nplain=%s", outputs["restricted"], plain)
+	}
+}
+
+func captureWaitStdout(t *testing.T, run func()) string {
+	t.Helper()
+	original := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = original }()
+	run()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 // Test verbose mode path

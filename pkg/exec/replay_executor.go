@@ -175,15 +175,17 @@ func (e *DQLExecutor) ExecuteQueryDetailedWithContext(ctx context.Context, query
 		return &DQLExecutionResult{Response: nil, Replay: replayInfoPtr(prepared)}, nil
 	}
 
+	prepared.provenance.Notifications = append([]QueryNotification(nil), response.GetNotifications()...)
+	prepared.provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
 	validated, err := validateReplayResult(prepared, response)
 	if err != nil {
 		return nil, e.afterExecutionError(ctx, prepared, response, replayErrorValidation, err)
 	}
 	prepared.provenance.Validated = validated
 	prepared.provenance.Outcome = "succeeded"
-	prepared.provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
 
 	info := replayInfoFromPrepared(prepared)
+	info.Output = replayOutputMetadata(prepared, validated, prepared.provenance.CanonicalEffectiveDQL, prepared.provenance.Notifications)
 	if prepared.sink != nil {
 		if err := prepared.sink.Append(ctx, provenanceRecord("query_execution", prepared.provenance, nil)); err != nil {
 			return nil, newReplayAttemptError(replayErrorSink, err, info, false, 0, true)
@@ -195,11 +197,14 @@ func (e *DQLExecutor) ExecuteQueryDetailedWithContext(ctx context.Context, query
 		if !ok {
 			return nil, e.afterFinalizationError(ctx, prepared, fmt.Errorf("replay query preparer cannot finalize a terminal execution"))
 		}
-		_, disposition, err := finalizer.Finalize(ctx, prepared)
+		finalState, disposition, err := finalizer.Finalize(ctx, prepared)
 		if err != nil {
 			return nil, e.afterFinalizationError(ctx, prepared, err)
 		}
 		info.CompletionDisposition = disposition
+		if info.Output != nil && disposition != session.CompletionSessionReplaced {
+			info.Output.State = finalState.Status
+		}
 		if prepared.sink != nil {
 			completion := prepared.provenance
 			completion.Outcome = "terminal_completion"

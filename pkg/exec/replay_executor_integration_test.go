@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dynatrace-oss/dtctl/cmd/testutil"
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
@@ -1264,10 +1265,14 @@ func TestDQLExecutorReplayMetricResultContractGatesTerminalOutput(t *testing.T) 
 
 func TestDQLExecutorRestrictedMetricProvenanceContainsCompleteExecutionFacts(t *testing.T) {
 	api := newReplayMetricMockAPI(t)
+	api.executeResponse.Result.Metadata.Grail.Notifications = []sdkquery.Notification{{
+		Severity: "WARNING", NotificationType: "SYNTHETIC_NOTICE", Message: "synthetic query notification",
+	}}
 	sink := &replayTestSink{}
 	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayMetricDataStart, replayMetricDataEnd, replayMetricDataEnd, func(string) session.ProvenanceSink { return sink })
 	result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayMetricOriginal, DQLExecuteOptions{AgentMode: true})
-	if err != nil || result == nil || result.Replay == nil || result.Replay.CompletionDisposition != session.CompletionRecorded {
+	if err != nil || result == nil || result.Replay == nil || result.Replay.CompletionDisposition != session.CompletionRecorded ||
+		result.Replay.Output == nil || result.Replay.Output.State != session.ReplayStatusCompleted {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	_, appends, records := sink.snapshot()
@@ -1275,10 +1280,14 @@ func TestDQLExecutorRestrictedMetricProvenanceContainsCompleteExecutionFacts(t *
 		t.Fatalf("appends=%d records=%#v", appends, records)
 	}
 	fields := records[0].Fields
-	for _, key := range []string{"outcome", "original_dql", "effective_dql", "grail_canonical_effective_dql", "session", "sources", "notices", "audit", "validated_result_contracts"} {
+	for _, key := range []string{"outcome", "original_dql", "effective_dql", "grail_canonical_effective_dql", "session", "sources", "notices", "query_notifications", "audit", "validated_result_contracts"} {
 		if _, ok := fields[key]; !ok {
 			t.Fatalf("execution provenance omits %q: %#v", key, fields)
 		}
+	}
+	notifications, ok := fields["query_notifications"].([]map[string]any)
+	if !ok || len(notifications) != 1 || notifications[0]["type"] != "SYNTHETIC_NOTICE" || notifications[0]["message"] != "synthetic query notification" {
+		t.Fatalf("query notifications = %#v", fields["query_notifications"])
 	}
 	sessionFields, ok := fields["session"].(map[string]any)
 	if !ok {
@@ -1305,6 +1314,14 @@ func TestDQLExecutorRestrictedMetricProvenanceContainsCompleteExecutionFacts(t *
 	if records[1].Fields["completion_disposition"] != session.CompletionRecorded {
 		t.Fatalf("completion provenance = %#v", records[1])
 	}
+	goldenRecord := records[0]
+	goldenRecord.SessionID = "0123456789abcdef0123456789abcdef"
+	sessionFields["id"] = goldenRecord.SessionID
+	encoded, err := json.Marshal(goldenRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertGolden(t, "replay/restricted-provenance-jsonl", string(encoded)+"\n")
 }
 
 func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
@@ -1424,6 +1441,41 @@ func TestDQLExecutorFullDisclosureRoutesCompilerNoticesOnce(t *testing.T) {
 	})
 	if stderr != "" {
 		t.Fatalf("agent warning must wait for the Phase 5 envelope route: %q", stderr)
+	}
+}
+
+func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
+	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
+	surfaces := map[string]string{
+		"hard non-overlap":      restrictedMessage(replayErrorNonOverlap, errors.New("replay interval does not overlap"), false, false),
+		"temporary non-overlap": restrictedMessage(replayErrorNonOverlap, errors.New("virtual interval pending"), true, false),
+		"readiness":             restrictedMessage(replayErrorReadiness, errors.New("session is stopped"), false, false),
+		"preparation":           restrictedMessage(replayErrorPrepare, errors.New("effective query unsupported"), false, false),
+		"validation":            restrictedMessage(replayErrorValidation, errors.New("interval spill invalid"), false, true),
+		"finalization":          restrictedMessage(replayErrorFinalize, errors.New("session completion failed"), false, true),
+		"sink preflight":        restrictedMessage(replayErrorSink, errors.New("replay sink unavailable"), false, false),
+		"sink post-execution":   restrictedMessage(replayErrorSink, errors.New("replay sink append failed"), false, true),
+		"remote fallback":       newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true).Error(),
+		"other":                 restrictedMessage("synthetic_other", errors.New("replay detail"), false, false),
+	}
+	for name, value := range surfaces {
+		if containsRestrictedGeneratedWord(value) {
+			t.Errorf("restricted %s contains a disclosure word: %q", name, value)
+		}
+	}
+
+	prepared := PreparedQuery{
+		Disclosure: session.ReplayDisclosureRestricted,
+		Compilation: execreplay.CompileResult{Notices: []execreplay.Notice{{
+			Kind: execreplay.NoticeWarning, Code: execreplay.NoticeDavisWarmup,
+			Message: "replay virtual session clock interval effective",
+		}}},
+	}
+	stderr := captureReplayExecutorStderr(t, func() {
+		(&DQLExecutor{}).printReplayNoticeOnce(prepared, DQLExecuteOptions{})
+	})
+	if stderr != "" {
+		t.Fatalf("restricted compiler notice reached ordinary stderr: %q", stderr)
 	}
 }
 
@@ -1550,6 +1602,47 @@ func TestDQLExecutorVerifyReplayCompatibilityRestrictedRecordsDetails(t *testing
 	parseCalls, executeCalls, _ := api.counts()
 	if parseCalls != 2 || executeCalls != 0 {
 		t.Fatalf("restricted compatibility parse=%d execute=%d, want two parses and no execute", parseCalls, executeCalls)
+	}
+}
+
+func TestDQLExecutorDavisCurrentViewGuidanceUsesDisclosureRoute(t *testing.T) {
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		t.Run(disclosure, func(t *testing.T) {
+			api := newReplayMockAPI(t)
+			api.originalBody = bytes.Replace(api.originalBody,
+				[]byte(`"canonicalString": "logs"`), []byte(`"canonicalString": "dt.davis.problems"`), 1)
+			sink := &replayTestSink{}
+			var sinkFactory func(string) session.ProvenanceSink
+			if disclosure == session.ReplayDisclosureRestricted {
+				sinkFactory = func(string) session.ProvenanceSink { return sink }
+			}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, sinkFactory)
+
+			_, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
+			if err == nil {
+				t.Fatal("current Davis view unexpectedly executed")
+			}
+			if disclosure == session.ReplayDisclosureFull {
+				for _, wanted := range []string{"dt.davis.problems.snapshots", "latest snapshot", "dedup event.id"} {
+					if !strings.Contains(err.Error(), wanted) {
+						t.Fatalf("full Davis guidance missing %q: %v", wanted, err)
+					}
+				}
+			} else {
+				if err.Error() != restrictedPreparationMessage {
+					t.Fatalf("restricted error = %q", err)
+				}
+				_, _, records := sink.snapshot()
+				if len(records) != 1 || !strings.Contains(fmt.Sprint(records[0].Fields["detail"]), "dt.davis.problems.snapshots") ||
+					!strings.Contains(fmt.Sprint(records[0].Fields["detail"]), "dedup event.id") {
+					t.Fatalf("restricted Davis provenance = %#v", records)
+				}
+			}
+			parseCalls, executeCalls, _ := api.counts()
+			if parseCalls != 1 || executeCalls != 0 {
+				t.Fatalf("parse=%d execute=%d, want one parse and no execute", parseCalls, executeCalls)
+			}
+		})
 	}
 }
 

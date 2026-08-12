@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	replayCLIRecordOriginal = `fetch logs, from:toTimestamp("2026-08-10T10:45:02.718012207Z"), to:toTimestamp("2026-08-10T11:05:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
-	replayCLILoopOriginal   = `fetch logs, from:toTimestamp("2026-08-09T09:55:03Z"), to:toTimestamp("2026-08-10T10:56:03Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`
+	replayCLIRecordOriginal  = `fetch logs, from:toTimestamp("2026-08-10T10:45:02.718012207Z"), to:toTimestamp("2026-08-10T11:05:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
+	replayCLIRecordEffective = `fetch logs, from:toTimestamp("2026-08-10T10:50:02.718012207Z"), to:toTimestamp("2026-08-10T10:55:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
+	replayCLILoopOriginal    = `fetch logs, from:toTimestamp("2026-08-09T09:55:03Z"), to:toTimestamp("2026-08-10T10:56:03Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`
 )
 
 type replayCLIQueryAPI struct {
@@ -31,6 +32,7 @@ type replayCLIQueryAPI struct {
 	validationBody  json.RawMessage
 	executeFailures int
 	executeStatus   int
+	executeResponse *sdkquery.Response
 
 	mu       sync.Mutex
 	parses   int
@@ -89,9 +91,13 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sdkquery.Response{
+		response := sdkquery.Response{
 			State: "SUCCEEDED", Result: &sdkquery.Result{Records: []map[string]interface{}{{"matched": float64(1)}}},
-		})
+		}
+		if a.executeResponse != nil {
+			response = *a.executeResponse
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	case "/platform/storage/query/v1/query:verify":
 		var request sdkquery.VerifyRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -638,10 +644,20 @@ func TestReplayQueryCLIRestrictedNoSessionPreflightsAndRecordsBeforeGenericReadi
 }
 
 func TestReplayQueryCLIRestrictedAndNonReplayAgentResultsAreByteIdentical(t *testing.T) {
+	returned := map[string]interface{}{
+		"replay": "replay", "virtual": "virtual", "session": "session",
+		"clock": "clock", "interval": "interval", "effective": "effective",
+	}
 	api := &replayCLIQueryAPI{
 		t: t, originalQuery: replayCLIRecordOriginal,
 		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
 		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{returned},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				Query: replayCLIRecordOriginal, CanonicalQuery: replayCLIRecordOriginal,
+			}},
+		}},
 	}
 	server := httptest.NewServer(api)
 	defer server.Close()
@@ -672,8 +688,129 @@ func TestReplayQueryCLIRestrictedAndNonReplayAgentResultsAreByteIdentical(t *tes
 	if replayOutput != plainOutput {
 		t.Fatalf("restricted and non-replay agent outputs differ:\nreplay=%s\nplain=%s", replayOutput, plainOutput)
 	}
+	returnedJSON, err := json.Marshal(returned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(replayOutput, string(returnedJSON)) {
+		t.Fatalf("returned disclosure-word fixture was not preserved byte-for-byte: envelope=%s record=%s", replayOutput, returnedJSON)
+	}
 	if parses, executes := api.counts(); parses != 2 || executes != 2 {
 		t.Fatalf("parse=%d execute=%d, want replay original+effective parses and one execution on each path", parses, executes)
+	}
+}
+
+func TestRestrictedReplayDisclosureLeakMatrixQueryNotifications(t *testing.T) {
+	const notification = "replay virtual session clock interval effective"
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{{"matched": float64(1)}},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				Query: replayCLIRecordEffective, CanonicalQuery: replayCLIRecordEffective,
+				Notifications: []sdkquery.Notification{{
+					Severity: "WARNING", NotificationType: "SYNTHETIC_RETENTION", Message: notification,
+				}},
+			}},
+		}},
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+
+	var runErr error
+	stdout, stderr := captureReplayQueryStreams(t, func() {
+		runErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+	})
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("restricted query notification reached stderr: %q", stderr)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode restricted envelope %q: %v", stdout, err)
+	}
+	delete(envelope, "result") // returned records are deliberately outside the generated-text scan
+	generated, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoRestrictedGeneratedWords(t, "agent envelope outside result", string(generated))
+
+	provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(provenance), notification) || !strings.Contains(string(provenance), `"query_notifications"`) {
+		t.Fatalf("restricted query notification did not reach provenance: %s", provenance)
+	}
+	if parses, executes := api.counts(); parses != 2 || executes != 1 {
+		t.Fatalf("parse=%d execute=%d, want two parses and one execution", parses, executes)
+	}
+}
+
+func TestReplayQueryCLIFullAgentLabelsAllQueryForms(t *testing.T) {
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{{"matched": float64(1)}},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				Query: replayCLIRecordEffective, CanonicalQuery: replayCLIRecordEffective,
+				Notifications: []sdkquery.Notification{{
+					Severity: "WARNING", NotificationType: "SYNTHETIC_RETENTION",
+					Message: "synthetic retention warning",
+				}},
+			}},
+		}},
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var runErr error
+	stdout := captureStdout(t, func() { runErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	var envelope struct {
+		Replay *struct {
+			Active                       bool   `json:"active"`
+			SessionID                    string `json:"session_id"`
+			SessionStartedAt             string `json:"session_started_at"`
+			ClockMode                    string `json:"clock_mode"`
+			VirtualNow                   string `json:"virtual_now"`
+			DataStart                    string `json:"data_start"`
+			DataEnd                      string `json:"data_end"`
+			VisibleEnd                   string `json:"visible_end"`
+			State                        string `json:"state"`
+			OriginalQuery                string `json:"original_query"`
+			EffectiveQuery               string `json:"effective_query"`
+			GrailCanonicalEffectiveQuery string `json:"grail_canonical_effective_query"`
+			Sources                      []any  `json:"sources"`
+			Warnings                     []any  `json:"warnings"`
+		} `json:"replay"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode envelope %q: %v", stdout, err)
+	}
+	got := envelope.Replay
+	if got == nil || !got.Active || got.SessionID == "" || got.SessionStartedAt == "" || got.ClockMode != session.ReplayClockManual ||
+		got.VirtualNow == "" || got.DataStart == "" || got.DataEnd == "" || got.VisibleEnd == "" || got.State == "" ||
+		got.OriginalQuery != replayCLIRecordOriginal || got.EffectiveQuery != replayCLIRecordEffective ||
+		got.GrailCanonicalEffectiveQuery != replayCLIRecordEffective || len(got.Sources) != 1 || len(got.Warnings) != 1 ||
+		got.Warnings[0] != "synthetic retention warning" {
+		t.Fatalf("replay metadata = %#v; envelope=%s", got, stdout)
 	}
 }
 

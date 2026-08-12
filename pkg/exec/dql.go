@@ -19,6 +19,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/version"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // Re-export SDK types so existing callers continue to compile.
@@ -216,6 +217,11 @@ type DQLExecuteOptions struct {
 	// query execution and are only consulted on the spill path.
 	TenantID    string
 	ContextName string
+
+	// replay is populated only by ExecuteWithContext after the detailed replay
+	// pipeline succeeds. Keeping it private prevents callers from fabricating
+	// disclosure metadata and leaves the public execution contract unchanged.
+	replay *ReplayExecutionInfo
 }
 
 // DQLVerifyOptions configures DQL query verification
@@ -308,14 +314,15 @@ func (e *DQLExecutor) ExecuteWithOptions(query string, opts DQLExecuteOptions) e
 
 // ExecuteWithContext executes a DQL query with a cancellable context and prints the results.
 func (e *DQLExecutor) ExecuteWithContext(ctx context.Context, query string, opts DQLExecuteOptions) error {
-	result, err := e.ExecuteQueryWithContext(ctx, query, opts)
+	detailed, err := e.ExecuteQueryDetailedWithContext(ctx, query, opts)
 	if err != nil {
 		return err
 	}
-	if result == nil {
+	if detailed == nil || detailed.Response == nil {
 		return nil // context was cancelled; message already printed to stderr
 	}
-	return e.printResults(query, result, opts)
+	opts.replay = detailed.Replay
+	return e.printResults(query, detailed.Response, opts)
 }
 
 // ExecuteQuery executes a DQL query and returns the raw result
@@ -775,8 +782,10 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		effectiveFormat = output.NormalizeJQOutputFormat(effectiveFormat)
 	}
 
-	// Print any notifications/warnings first
-	if notifications := result.GetNotifications(); len(notifications) > 0 {
+	// Restricted disclosure records query notifications in private provenance
+	// and emits none of them on ordinary output. Full and non-replay execution
+	// retain the existing human route.
+	if notifications := result.GetNotifications(); len(notifications) > 0 && !restrictedReplayOutput(opts) {
 		e.PrintNotifications(notifications)
 	}
 
@@ -828,7 +837,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	// Extract metadata if requested
 	var meta *output.QueryMetadata
 	if len(opts.MetadataFields) > 0 {
-		meta = extractQueryMetadata(result)
+		meta = outputQueryMetadata(result, opts)
 	}
 
 	printer := output.NewPrinterWithOpts(output.PrinterOptions{
@@ -1000,6 +1009,30 @@ func extractQueryMetadata(result *DQLQueryResponse) *output.QueryMetadata {
 	}
 
 	return meta
+}
+
+// outputQueryMetadata prevents Grail's effective query text from being
+// mistaken for user input. Full disclosure labels all three forms in the
+// replay block; restricted disclosure retains only user-authored query text in
+// ordinary metadata and omits a differing canonical effective form.
+func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *output.QueryMetadata {
+	meta := extractQueryMetadata(result)
+	if meta == nil || opts.replay == nil || !opts.replay.Active {
+		return meta
+	}
+	clone := *meta
+	if clone.Query != "" && opts.replay.OriginalQuery != "" {
+		clone.Query = opts.replay.OriginalQuery
+	}
+	if opts.replay.Disclosure == session.ReplayDisclosureRestricted &&
+		clone.CanonicalQuery != "" && clone.CanonicalQuery != opts.replay.OriginalQuery {
+		clone.CanonicalQuery = ""
+	}
+	return &clone
+}
+
+func restrictedReplayOutput(opts DQLExecuteOptions) bool {
+	return opts.replay != nil && opts.replay.Active && opts.replay.Disclosure == session.ReplayDisclosureRestricted
 }
 
 // CancelQuery sends a best-effort cancellation request for a running query.

@@ -41,6 +41,9 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 	if provenance.Validated != nil {
 		fields["validated_result_contracts"] = replayValidatedContracts(provenance.Validated)
 	}
+	if provenance.Notifications != nil {
+		fields["query_notifications"] = replayQueryNotifications(provenance.Notifications)
+	}
 	if provenance.Completion != "" {
 		fields["completion_disposition"] = provenance.Completion
 	}
@@ -54,6 +57,17 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 		SessionID:     provenance.Session.SessionID,
 		Fields:        fields,
 	}
+}
+
+func replayQueryNotifications(values []QueryNotification) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]any{
+			"severity": value.Severity, "type": value.NotificationType,
+			"message": value.Message,
+		})
+	}
+	return result
 }
 
 func replaySessionProvenance(value session.ReplaySession, virtualNow time.Time) map[string]any {

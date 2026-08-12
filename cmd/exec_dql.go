@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // execDQLCmd executes a DQL query (DEPRECATED)
@@ -45,7 +49,11 @@ Examples:
 		queryFile, _ := cmd.Flags().GetString("file")
 
 		if queryFile != "" {
-			return executor.ExecuteFromFile(queryFile, outputFormat)
+			data, err := os.ReadFile(queryFile)
+			if err != nil {
+				return fmt.Errorf("failed to read file: %w", err)
+			}
+			return executor.ExecuteWithOptions(string(data), execDQLExecutionOptions(executor))
 		}
 
 		if len(args) == 0 {
@@ -53,8 +61,18 @@ Examples:
 		}
 
 		query := args[0]
-		return executor.Execute(query, outputFormat)
+		return executor.ExecuteWithOptions(query, execDQLExecutionOptions(executor))
 	},
+}
+
+func execDQLExecutionOptions(executor *exec.DQLExecutor) exec.DQLExecuteOptions {
+	options := exec.DQLExecuteOptions{OutputFormat: outputFormat}
+	disclosure, replayActive := executor.ReplayDisclosure(context.Background())
+	if agentMode && replayActive && disclosure == session.ReplayDisclosureFull {
+		options.AgentMode = true
+		options.MetadataFields = []string{"all"}
+	}
+	return options
 }
 
 func init() {

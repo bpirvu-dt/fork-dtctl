@@ -52,6 +52,10 @@ type Response struct {
 	// --metadata is requested and the response carried metadata; omitted
 	// otherwise so other envelopes stay byte-for-byte unchanged.
 	Metadata interface{} `json:"metadata,omitempty"`
+	// Replay is additive full-disclosure provenance for a replay-aware query.
+	// It is nil for ordinary queries and for restricted disclosure, preserving
+	// the normal envelope byte-for-byte in both cases.
+	Replay *ReplayMetadata `json:"replay,omitempty"`
 }
 
 // ResponseContext provides operational metadata alongside the result.
@@ -123,6 +127,7 @@ type AgentPrinter struct {
 	ctx          *ResponseContext
 	resultFormat string // "json" (default) or "toon"
 	jqFilter     string
+	replay       *ReplayMetadata
 }
 
 // NewAgentPrinter creates an AgentPrinter that writes envelope-wrapped JSON to writer.
@@ -165,6 +170,7 @@ func (p *AgentPrinter) Print(data interface{}) error {
 		OK:      true,
 		Result:  result,
 		Context: p.ctx,
+		Replay:  p.replay,
 	}
 	return EncodeEnvelope(p.writer, resp)
 }
@@ -238,6 +244,12 @@ func (p *AgentPrinter) SetWarnings(warnings []string) {
 // Only use for commands where timing is meaningful (wait, query, exec).
 func (p *AgentPrinter) SetDuration(duration string) {
 	p.ctx.Duration = duration
+}
+
+// SetReplay sets optional full-disclosure query provenance. Passing nil keeps
+// the normal envelope schema unchanged.
+func (p *AgentPrinter) SetReplay(replay *ReplayMetadata) {
+	p.replay = replay
 }
 
 // SetLinks sets deep links to the Dynatrace UI in the response context.
