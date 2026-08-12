@@ -96,6 +96,14 @@ func validateReplayPrivatePermissions(path string, info os.FileInfo) error {
 	return nil
 }
 
-func validateReplayPrivateFilePermissions(path string, _ *os.File, info os.FileInfo) error {
+func validateReplayPrivateHandlePermissions(path string, _ *os.File, info os.FileInfo) error {
 	return validateReplayPrivatePermissions(path, info)
+}
+
+func validateReplayPrivateDirectoryPermissions(path string, info os.FileInfo) error {
+	return validateReplayPrivatePermissions(path, info)
+}
+
+func readReplayDirectory(path string) ([]os.DirEntry, error) {
+	return os.ReadDir(path)
 }

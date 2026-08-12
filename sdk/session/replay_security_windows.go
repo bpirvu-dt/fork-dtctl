@@ -56,7 +56,7 @@ func openReplayFileNoFollow(path string, flag int, _ os.FileMode) (*os.File, err
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		disposition,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
 	)
 	if err != nil {
@@ -156,13 +156,15 @@ func replayWindowsAccessEntry(sid *windows.SID, trusteeType windows.TRUSTEE_TYPE
 	}
 }
 
-func validateReplayPrivatePermissions(path string, info os.FileInfo) error {
+func validateReplayPrivateHandlePermissions(path string, file *os.File, info os.FileInfo) error {
+	// Inspect the descriptor through the existing share-delete handle. A named
+	// lookup performs another transient open that can block atomic replacement.
 	kind := "file"
 	if info.IsDir() {
 		kind = "directory"
 	}
-	descriptor, err := windows.GetNamedSecurityInfo(
-		path,
+	descriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
 		windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
 	)
@@ -172,18 +174,22 @@ func validateReplayPrivatePermissions(path string, info os.FileInfo) error {
 	return validateReplayPrivateSecurityDescriptor(path, info, descriptor)
 }
 
-func validateReplayPrivateFilePermissions(path string, file *os.File, info os.FileInfo) error {
-	// Inspect the descriptor through the existing share-delete handle. A named
-	// lookup performs another transient open that can block atomic replacement.
-	descriptor, err := windows.GetSecurityInfo(
-		windows.Handle(file.Fd()),
-		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
-	)
+func validateReplayPrivateDirectoryPermissions(path string, info os.FileInfo) error {
+	f, err := openReplayFileNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("inspect replay file %s Windows security: %w", path, err)
+		return fmt.Errorf("open replay directory %s: %w", path, err)
 	}
-	return validateReplayPrivateSecurityDescriptor(path, info, descriptor)
+	defer f.Close()
+	return validateReplayPrivateHandlePermissions(path, f, info)
+}
+
+func readReplayDirectory(path string) ([]os.DirEntry, error) {
+	f, err := openReplayFileNoFollow(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.ReadDir(-1)
 }
 
 func validateReplayPrivateSecurityDescriptor(path string, info os.FileInfo, descriptor *windows.SECURITY_DESCRIPTOR) error {

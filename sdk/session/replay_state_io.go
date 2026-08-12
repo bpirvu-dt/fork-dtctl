@@ -71,7 +71,7 @@ func validatePrivateDirectoryInfo(path string, info os.FileInfo) error {
 	if !info.IsDir() {
 		return fmt.Errorf("replay path %s is not a directory", path)
 	}
-	return validateReplayPrivatePermissions(path, info)
+	return validateReplayPrivateDirectoryPermissions(path, info)
 }
 
 func validatePrivateRegularFile(path string, file *os.File) error {
@@ -82,7 +82,7 @@ func validatePrivateRegularFile(path string, file *os.File) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("replay path %s is not a regular file", path)
 	}
-	return validateReplayPrivateFilePermissions(path, file, info)
+	return validateReplayPrivateHandlePermissions(path, file, info)
 }
 
 func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySession, error) {
@@ -98,7 +98,7 @@ func (s *ReplayStateStore) locateWithDiagnostics(locator ReplayLocator) (Context
 		return "", ReplaySession{}, ReplayStateDiagnostics{}, err
 	}
 
-	entries, err := os.ReadDir(s.dir)
+	entries, err := readReplayDirectory(s.dir)
 	if err != nil {
 		return "", ReplaySession{}, ReplayStateDiagnostics{}, fmt.Errorf("read replay state directory: %w", err)
 	}
