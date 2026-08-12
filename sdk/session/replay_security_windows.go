@@ -169,6 +169,28 @@ func validateReplayPrivatePermissions(path string, info os.FileInfo) error {
 	if err != nil {
 		return fmt.Errorf("inspect replay %s %s Windows security: %w", kind, path, err)
 	}
+	return validateReplayPrivateSecurityDescriptor(path, info, descriptor)
+}
+
+func validateReplayPrivateFilePermissions(path string, file *os.File, info os.FileInfo) error {
+	// Inspect the descriptor through the existing share-delete handle. A named
+	// lookup performs another transient open that can block atomic replacement.
+	descriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return fmt.Errorf("inspect replay file %s Windows security: %w", path, err)
+	}
+	return validateReplayPrivateSecurityDescriptor(path, info, descriptor)
+}
+
+func validateReplayPrivateSecurityDescriptor(path string, info os.FileInfo, descriptor *windows.SECURITY_DESCRIPTOR) error {
+	kind := "file"
+	if info.IsDir() {
+		kind = "directory"
+	}
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return fmt.Errorf("inspect replay %s %s owner: %w", kind, path, err)

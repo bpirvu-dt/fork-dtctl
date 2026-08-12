@@ -22,21 +22,9 @@ func TestReplayStatePrivateModesAndNoCredentialMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dirInfo, err := os.Stat(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := dirInfo.Mode().Perm(); got != 0700 {
-		t.Fatalf("replay dir mode = %04o, want 0700", got)
-	}
+	assertReplayPrivatePath(t, dir, 0700)
 	for _, path := range []string{store.StatePath(state.ContextKey), store.writerLockPath(req.Locator.ContextIdentityHash)} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != 0600 {
-			t.Fatalf("%s mode = %04o, want 0600", path, got)
-		}
+		assertReplayPrivatePath(t, path, 0600)
 	}
 	data, err := os.ReadFile(store.StatePath(state.ContextKey))
 	if err != nil {
@@ -309,6 +297,9 @@ func TestReplayStatusAndReadActiveAreLockFreeAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got, want := before.Mode().Perm(), replayReadOnlyModeForTest(); got != want {
+		t.Fatalf("read-only state mode = %04o, want %04o", got, want)
+	}
 
 	unlock, err := acquireReplayFileLock(store.writerLockPath(req.Locator.ContextIdentityHash), time.Second, time.Millisecond)
 	if err != nil {
@@ -337,8 +328,9 @@ func TestReplayStatusAndReadActiveAreLockFreeAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.ModTime() != before.ModTime() || after.Mode().Perm() != 0400 {
-		t.Fatal("status/read-active modified the state file")
+	if !after.ModTime().Equal(before.ModTime()) || after.Mode() != before.Mode() || after.Size() != before.Size() {
+		t.Fatalf("status/read-active modified state metadata: before mode=%v mtime=%v size=%d; after mode=%v mtime=%v size=%d",
+			before.Mode(), before.ModTime(), before.Size(), after.Mode(), after.ModTime(), after.Size())
 	}
 }
 

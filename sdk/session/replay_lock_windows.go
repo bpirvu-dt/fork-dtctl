@@ -81,5 +81,15 @@ func atomicReplaceReplayFile(tempPath, targetPath string) error {
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	// Share-delete readers remove the application-level conflict. Keep a short
+	// bound for transient denials from filesystem filters around the rename.
+	const attempts = 5
+	for attempt := 0; ; attempt++ {
+		err = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+		if err == nil || attempt == attempts-1 ||
+			(!errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION)) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

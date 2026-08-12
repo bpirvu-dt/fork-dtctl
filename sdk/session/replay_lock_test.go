@@ -101,11 +101,5 @@ func TestReplayWriterLockFileMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("lock mode = %04o, want 0600", got)
-	}
+	assertReplayPrivatePath(t, path, 0600)
 }

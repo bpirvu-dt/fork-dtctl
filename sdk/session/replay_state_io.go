@@ -82,7 +82,7 @@ func validatePrivateRegularFile(path string, file *os.File) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("replay path %s is not a regular file", path)
 	}
-	return validateReplayPrivatePermissions(path, info)
+	return validateReplayPrivateFilePermissions(path, file, info)
 }
 
 func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySession, error) {

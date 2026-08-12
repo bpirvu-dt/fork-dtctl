@@ -25,13 +25,7 @@ func TestReplayProvenancePreflightCreatesPrivateFiles(t *testing.T) {
 		path string
 		mode os.FileMode
 	}{{dir, 0700}, {path, 0600}, {sink.LockPath(), 0600}} {
-		info, err := os.Stat(check.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != check.mode {
-			t.Fatalf("%s mode = %04o, want %04o", check.path, got, check.mode)
-		}
+		assertReplayPrivatePath(t, check.path, check.mode)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -204,13 +198,16 @@ func TestReplayProvenanceRejectsSymlinkAndUnsafeParent(t *testing.T) {
 		t.Fatalf("symlink error = %v", err)
 	}
 
-	unsafe := filepath.Join(dir, "unsafe")
-	if err := os.Mkdir(unsafe, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewFileProvenanceSink(filepath.Join(unsafe, "audit.jsonl"), dir).Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "not private") {
-		t.Fatalf("unsafe parent error = %v", err)
-	}
+	t.Run("unsafe parent", func(t *testing.T) {
+		skipPOSIXModeAssertionsOnWindows(t)
+		unsafe := filepath.Join(dir, "unsafe")
+		if err := os.Mkdir(unsafe, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := NewFileProvenanceSink(filepath.Join(unsafe, "audit.jsonl"), dir).Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "not private") {
+			t.Fatalf("unsafe parent error = %v", err)
+		}
+	})
 }
 
 func TestReplayProvenanceLockIsMandatory(t *testing.T) {

@@ -143,13 +143,16 @@ func TestValidateReplayProvenancePathRejectsUnsafePaths(t *testing.T) {
 	if err := ValidateReplayProvenancePath(nonNormalized, false); err == nil {
 		t.Fatal("non-normalized path should fail")
 	}
-	unsafeParent := filepath.Join(dir, "unsafe")
-	if err := os.Mkdir(unsafeParent, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateReplayProvenancePath(filepath.Join(unsafeParent, "audit.jsonl"), false); err == nil {
-		t.Fatal("non-private parent should fail")
-	}
+	t.Run("unsafe parent", func(t *testing.T) {
+		skipPOSIXModeAssertionsOnWindows(t)
+		unsafeParent := filepath.Join(dir, "unsafe")
+		if err := os.Mkdir(unsafeParent, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateReplayProvenancePath(filepath.Join(unsafeParent, "audit.jsonl"), false); err == nil {
+			t.Fatal("non-private parent should fail")
+		}
+	})
 	target := filepath.Join(dir, "target")
 	if err := os.WriteFile(target, nil, 0600); err != nil {
 		t.Fatal(err)

@@ -270,7 +270,11 @@ func TestBuildSpillResponse_RestrictedReplayUsesNormalManifestSchemas(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	generatedText := strings.ReplaceAll(string(generatedJSON), manifest.Path, "<result-path>")
+	encodedPath, err := json.Marshal(manifest.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedText := strings.ReplaceAll(string(generatedJSON), string(encodedPath[1:len(encodedPath)-1]), "<result-path>")
 	if containsRestrictedGeneratedWord(generatedText) {
 		t.Fatalf("restricted generated envelope fields contain a disclosure word: %s", generatedJSON)
 	}
