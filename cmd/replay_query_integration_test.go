@@ -334,6 +334,46 @@ func TestReplayQueryCLIExplainAndRestrictedUnknownFlag(t *testing.T) {
 	})
 }
 
+func TestReplayQueryCLIForeignUnreadableStateStaysSilent(t *testing.T) {
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		t.Run(disclosure, func(t *testing.T) {
+			api := &replayCLIQueryAPI{
+				t: t, originalQuery: replayCLIRecordOriginal,
+				originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+				validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+			}
+			server := httptest.NewServer(api)
+			defer server.Close()
+			fixture := newReplayCLIQueryFixture(t, server.URL, disclosure, session.ReplayClockManual,
+				mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+			foreignKey := session.ContextKey(strings.Repeat("b", 64))
+			if foreignKey == fixture.locator.ContextKey {
+				foreignKey = session.ContextKey(strings.Repeat("c", 64))
+			}
+			foreignFilename := string(foreignKey) + ".state.json"
+			writeReplayUnknownFieldState(t, fixture.store.StatePath(foreignKey), fixture.state, foreignKey)
+			setReplayQueryFlags(t, false, time.Minute, false)
+
+			var runErr error
+			stdout, stderr := captureReplayQueryStreams(t, func() {
+				runErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+			})
+			if runErr != nil {
+				t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+			}
+			generated := stdout + stderr
+			for _, forbidden := range []string{foreignFilename, "unreadable state", "future_writer_field", "unknown field"} {
+				if strings.Contains(generated, forbidden) {
+					t.Fatalf("query output leaked diagnostic %q: stdout=%q stderr=%q", forbidden, stdout, stderr)
+				}
+			}
+			if parses, executes := api.counts(); parses != 2 || executes != 1 {
+				t.Fatalf("parse=%d execute=%d, want two parses and one execution", parses, executes)
+			}
+		})
+	}
+}
+
 func TestReplayQueryCLIOneShotNonOverlapIsHardError(t *testing.T) {
 	api := &replayCLIQueryAPI{
 		t: t, originalQuery: replayCLILoopOriginal,

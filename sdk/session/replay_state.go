@@ -88,6 +88,13 @@ type ReplayStartRequest struct {
 	Restart          bool
 }
 
+// ReplayStateDiagnostics contains opaque local-state warnings intended only
+// for explicit replay management output. Filenames never include directories
+// or decoded state-file contents.
+type ReplayStateDiagnostics struct {
+	UnreadableStateFiles []string
+}
+
 // ReplayStore is the lifecycle boundary shared by CLI management and later
 // replay-aware query integration. Status and ReadActive are lock-free; every
 // other method performs a mandatory cross-process locked update.
@@ -234,6 +241,17 @@ func (s *ReplayStateStore) Status(locator ReplayLocator) (ReplaySession, error) 
 		return ReplaySession{}, err
 	}
 	return observedReplaySession(state, s.clock.Now()), nil
+}
+
+// StatusWithDiagnostics returns the same lock-free snapshot as Status plus
+// opaque warnings about unreadable state files at other context keys. Callers
+// must only surface these warnings in explicit replay management output.
+func (s *ReplayStateStore) StatusWithDiagnostics(locator ReplayLocator) (ReplaySession, ReplayStateDiagnostics, error) {
+	_, state, diagnostics, err := s.locateSnapshotWithDiagnostics(locator)
+	if err != nil {
+		return ReplaySession{}, diagnostics, err
+	}
+	return observedReplaySession(state, s.clock.Now()), diagnostics, nil
 }
 
 // ReadActive returns an active or terminal-ready lock-free snapshot.

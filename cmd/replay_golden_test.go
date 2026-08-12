@@ -31,6 +31,9 @@ func replayGoldenStatus() ReplayStatusOutput {
 		Position:           "inside-replay-interval",
 		ConfigurationDrift: false,
 		StateKey:           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		UnreadableStateFiles: []string{
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.state.json",
+		},
 	}
 }
 

@@ -86,16 +86,21 @@ func validatePrivateRegularFile(path string, file *os.File) error {
 }
 
 func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySession, error) {
+	key, state, _, err := s.locateWithDiagnostics(locator)
+	return key, state, err
+}
+
+func (s *ReplayStateStore) locateWithDiagnostics(locator ReplayLocator) (ContextKey, ReplaySession, ReplayStateDiagnostics, error) {
 	if locator.ContextKey == "" || locator.ContextIdentityHash == "" {
-		return "", ReplaySession{}, fmt.Errorf("replay state lookup requires a complete context identity")
+		return "", ReplaySession{}, ReplayStateDiagnostics{}, fmt.Errorf("replay state lookup requires a complete context identity")
 	}
 	if err := validatePrivateReplayDirectory(s.dir); err != nil {
-		return "", ReplaySession{}, err
+		return "", ReplaySession{}, ReplayStateDiagnostics{}, err
 	}
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		return "", ReplaySession{}, fmt.Errorf("read replay state directory: %w", err)
+		return "", ReplaySession{}, ReplayStateDiagnostics{}, fmt.Errorf("read replay state directory: %w", err)
 	}
 	type candidate struct {
 		key   ContextKey
@@ -106,7 +111,8 @@ func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySess
 		err error
 	}
 	var matches []candidate
-	var failures []failedCandidate
+	var currentFailure *failedCandidate
+	diagnostics := ReplayStateDiagnostics{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".state.json") {
@@ -114,32 +120,46 @@ func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySess
 		}
 		keyText := strings.TrimSuffix(name, ".state.json")
 		if !validReplayHash(keyText) {
-			return ContextKey(keyText), ReplaySession{}, fmt.Errorf("unsafe replay state filename %q", name)
+			return ContextKey(keyText), ReplaySession{}, diagnostics, fmt.Errorf("unsafe replay state filename %q", name)
 		}
 		key := ContextKey(keyText)
 		state, readErr := s.read(key)
 		if readErr != nil {
-			if errors.Is(readErr, ErrReplaySessionNotFound) {
-				return "", ReplaySession{}, errReplaySnapshotRace
+			if key == locator.ContextKey {
+				if errors.Is(readErr, ErrReplaySessionNotFound) {
+					return "", ReplaySession{}, diagnostics, errReplaySnapshotRace
+				}
+				failure := failedCandidate{key: key, err: readErr}
+				currentFailure = &failure
+				continue
 			}
-			failures = append(failures, failedCandidate{key: key, err: readErr})
+
+			// A different key is not provably a different context identity:
+			// ContextKey hashes (source, name, environment), while the identity
+			// hashes only (source, name). An unreadable file at another key could
+			// therefore be this context's session under an old environment URL.
+			// We deliberately accept the narrow loss of that session when the file
+			// is corrupt and the environment changed, rather than let one context's
+			// unreadable state deny service to every other context.
+			diagnostics.UnreadableStateFiles = append(diagnostics.UnreadableStateFiles, name)
 			continue
 		}
 		if state.ContextIdentityHash == locator.ContextIdentityHash {
 			matches = append(matches, candidate{key: key, state: state})
 		}
 	}
-	if len(failures) > 0 {
+	sort.Strings(diagnostics.UnreadableStateFiles)
+	if currentFailure != nil {
 		// Explicit restart may recover exactly one corrupt state at the current
-		// key. Any additional readable match or second failure makes recovery
-		// ambiguous, so return no key and force manual inspection.
-		if len(failures) == 1 && len(matches) == 0 {
-			return failures[0].key, ReplaySession{}, failures[0].err
+		// key. Any additional readable match makes recovery ambiguous, so return
+		// no key and force manual inspection.
+		if len(matches) == 0 {
+			return currentFailure.key, ReplaySession{}, diagnostics, currentFailure.err
 		}
-		return "", ReplaySession{}, fmt.Errorf("replay state lookup is ambiguous (%d unreadable state file(s), %d readable match(es)); preserve the files before recovery: %w", len(failures), len(matches), failures[0].err)
+		return "", ReplaySession{}, diagnostics, fmt.Errorf("replay state lookup is ambiguous (1 unreadable state file(s), %d readable match(es)); preserve the files before recovery: %w", len(matches), currentFailure.err)
 	}
 	if len(matches) == 0 {
-		return "", ReplaySession{}, ErrReplaySessionNotFound
+		return "", ReplaySession{}, diagnostics, ErrReplaySessionNotFound
 	}
 
 	var live []candidate
@@ -149,21 +169,21 @@ func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySess
 		}
 	}
 	if len(live) > 1 {
-		return "", ReplaySession{}, fmt.Errorf("%w: multiple live replay states exist for context identity %s; preserve the files and inspect them before recovery", errReplaySnapshotRace, locator.ContextIdentityHash)
+		return "", ReplaySession{}, diagnostics, fmt.Errorf("%w: multiple live replay states exist for context identity %s; preserve the files and inspect them before recovery", errReplaySnapshotRace, locator.ContextIdentityHash)
 	}
 	if len(live) == 1 {
-		return live[0].key, live[0].state, nil
+		return live[0].key, live[0].state, diagnostics, nil
 	}
 	for _, match := range matches {
 		if match.key == locator.ContextKey {
-			return match.key, match.state, nil
+			return match.key, match.state, diagnostics, nil
 		}
 	}
 
 	sort.Slice(matches, func(i, j int) bool {
 		return matches[i].state.SessionStartedAt.After(matches[j].state.SessionStartedAt)
 	})
-	return matches[0].key, matches[0].state, nil
+	return matches[0].key, matches[0].state, diagnostics, nil
 }
 
 // locateSnapshot retries only races created by a cross-key atomic replacement:
@@ -171,15 +191,20 @@ func (s *ReplayStateStore) locate(locator ReplayLocator) (ContextKey, ReplaySess
 // that the writer removes between ReadDir and open. It never retries corrupt,
 // unsafe, or unsupported state and never takes the writer lock.
 func (s *ReplayStateStore) locateSnapshot(locator ReplayLocator) (ContextKey, ReplaySession, error) {
+	key, state, _, err := s.locateSnapshotWithDiagnostics(locator)
+	return key, state, err
+}
+
+func (s *ReplayStateStore) locateSnapshotWithDiagnostics(locator ReplayLocator) (ContextKey, ReplaySession, ReplayStateDiagnostics, error) {
 	const attempts = 3
 	for attempt := 0; attempt < attempts; attempt++ {
-		key, state, err := s.locate(locator)
+		key, state, diagnostics, err := s.locateWithDiagnostics(locator)
 		if !errors.Is(err, errReplaySnapshotRace) || attempt == attempts-1 {
-			return key, state, err
+			return key, state, diagnostics, err
 		}
 		time.Sleep(s.retryInterval)
 	}
-	return "", ReplaySession{}, errReplaySnapshotRace
+	return "", ReplaySession{}, ReplayStateDiagnostics{}, errReplaySnapshotRace
 }
 
 func (s *ReplayStateStore) read(key ContextKey) (ReplaySession, error) {

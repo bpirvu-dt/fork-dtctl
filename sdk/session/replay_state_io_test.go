@@ -146,6 +146,111 @@ func TestReplayStateCorruptionAndSchemaVersionFailClosed(t *testing.T) {
 	}
 }
 
+func TestReplayForeignUnreadableStateDoesNotBlockHealthyLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	clock := newReplayFakeClock(time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC))
+	store := NewReplayStateStore(dir, clock)
+	req := replayTestRequest(t, dir, ReplayClockManual)
+	original, err := store.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignReq := replayTestRequestForIdentity(
+		t,
+		dir,
+		ReplayClockManual,
+		"/synthetic/other-config.yaml",
+		"other-context",
+		"https://other.example.invalid",
+	)
+	foreign, err := store.Start(foreignReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreign.ContextKey == original.ContextKey || foreign.ContextIdentityHash == original.ContextIdentityHash {
+		t.Fatal("test setup did not create a distinct context key and identity")
+	}
+	foreignPath := store.StatePath(foreign.ContextKey)
+	if err := os.WriteFile(foreignPath, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := store.Status(req.Locator)
+	if err != nil || status.SessionID != original.SessionID {
+		t.Fatalf("status was blocked by foreign state: state=%+v err=%v", status, err)
+	}
+	_, diagnostics, err := store.StatusWithDiagnostics(req.Locator)
+	wantDiagnostic := filepath.Base(foreignPath)
+	if err != nil || len(diagnostics.UnreadableStateFiles) != 1 || diagnostics.UnreadableStateFiles[0] != wantDiagnostic {
+		t.Fatalf("diagnostics=%+v err=%v, want %q", diagnostics, err, wantDiagnostic)
+	}
+	advanced, err := store.Advance(req.Locator, time.Minute, req.ContextInputHash)
+	if err != nil || advanced.Revision != original.Revision+1 {
+		t.Fatalf("advance was blocked by foreign state: state=%+v err=%v", advanced, err)
+	}
+	stopped, err := store.Stop(req.Locator)
+	if err != nil || stopped.Status != ReplayStatusStopped {
+		t.Fatalf("stop was blocked by foreign state: state=%+v err=%v", stopped, err)
+	}
+	req.Restart = true
+	restarted, err := store.Start(req)
+	if err != nil || restarted.Status != ReplayStatusActive || restarted.SessionID == original.SessionID {
+		t.Fatalf("restart was blocked by foreign state: state=%+v err=%v", restarted, err)
+	}
+	if raw, err := os.ReadFile(foreignPath); err != nil || string(raw) != "{" {
+		t.Fatalf("healthy lifecycle changed foreign diagnostics: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestReplayForeignUnknownFieldDoesNotBlockOtherContext(t *testing.T) {
+	dir := t.TempDir()
+	clock := newReplayFakeClock(time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC))
+	store := NewReplayStateStore(dir, clock)
+	req := replayTestRequest(t, dir, ReplayClockManual)
+	original, err := store.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignReq := replayTestRequestForIdentity(
+		t,
+		dir,
+		ReplayClockManual,
+		"/synthetic/future-config.yaml",
+		"future-context",
+		"https://future.example.invalid",
+	)
+	foreign, err := store.Start(foreignReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := store.StatePath(foreign.ContextKey)
+	raw, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	encoded["future_writer_field"] = map[string]any{"enabled": true}
+	raw, err = json.Marshal(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreignPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, diagnostics, err := store.StatusWithDiagnostics(req.Locator)
+	if err != nil || status.SessionID != original.SessionID {
+		t.Fatalf("version-skew state blocked healthy context: state=%+v err=%v", status, err)
+	}
+	wantDiagnostic := filepath.Base(foreignPath)
+	if len(diagnostics.UnreadableStateFiles) != 1 || diagnostics.UnreadableStateFiles[0] != wantDiagnostic {
+		t.Fatalf("diagnostics=%+v, want %q", diagnostics, wantDiagnostic)
+	}
+}
+
 func TestReplayStateSymlinksFailClosed(t *testing.T) {
 	t.Run("state file", func(t *testing.T) {
 		dir := t.TempDir()

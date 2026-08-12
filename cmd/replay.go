@@ -33,27 +33,28 @@ type replayInvocationContext struct {
 // commands. It contains clock and state metadata only, never credentials or
 // tenant data.
 type ReplayStatusOutput struct {
-	ContextName        string `json:"context_name" yaml:"context_name"`
-	Status             string `json:"status" yaml:"status"`
-	SessionID          string `json:"session_id,omitempty" yaml:"session_id,omitempty"`
-	SessionStartedAt   string `json:"session_started_at,omitempty" yaml:"session_started_at,omitempty"`
-	HostNow            string `json:"host_now" yaml:"host_now"`
-	ClockMode          string `json:"clock_mode,omitempty" yaml:"clock_mode,omitempty"`
-	AnchorHost         string `json:"anchor_host,omitempty" yaml:"anchor_host,omitempty"`
-	AnchorVirtual      string `json:"anchor_virtual,omitempty" yaml:"anchor_virtual,omitempty"`
-	VirtualStart       string `json:"virtual_start,omitempty" yaml:"virtual_start,omitempty"`
-	VirtualNow         string `json:"virtual_now,omitempty" yaml:"virtual_now,omitempty"`
-	DataStart          string `json:"data_start,omitempty" yaml:"data_start,omitempty"`
-	DataEnd            string `json:"data_end,omitempty" yaml:"data_end,omitempty"`
-	VisibleEnd         string `json:"visible_end,omitempty" yaml:"visible_end,omitempty"`
-	Position           string `json:"position,omitempty" yaml:"position,omitempty"`
-	ConfigurationDrift bool   `json:"configuration_drift" yaml:"configuration_drift"`
-	StateKey           string `json:"state_key" yaml:"state_key"`
-	Disclosure         string `json:"disclosure,omitempty" yaml:"disclosure,omitempty"`
-	ProvenancePath     string `json:"provenance_path,omitempty" yaml:"provenance_path,omitempty"`
-	CompletedAt        string `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
-	StoppedAt          string `json:"stopped_at,omitempty" yaml:"stopped_at,omitempty"`
-	FinalVirtualNow    string `json:"final_virtual_now,omitempty" yaml:"final_virtual_now,omitempty"`
+	ContextName          string   `json:"context_name" yaml:"context_name"`
+	Status               string   `json:"status" yaml:"status"`
+	SessionID            string   `json:"session_id,omitempty" yaml:"session_id,omitempty"`
+	SessionStartedAt     string   `json:"session_started_at,omitempty" yaml:"session_started_at,omitempty"`
+	HostNow              string   `json:"host_now" yaml:"host_now"`
+	ClockMode            string   `json:"clock_mode,omitempty" yaml:"clock_mode,omitempty"`
+	AnchorHost           string   `json:"anchor_host,omitempty" yaml:"anchor_host,omitempty"`
+	AnchorVirtual        string   `json:"anchor_virtual,omitempty" yaml:"anchor_virtual,omitempty"`
+	VirtualStart         string   `json:"virtual_start,omitempty" yaml:"virtual_start,omitempty"`
+	VirtualNow           string   `json:"virtual_now,omitempty" yaml:"virtual_now,omitempty"`
+	DataStart            string   `json:"data_start,omitempty" yaml:"data_start,omitempty"`
+	DataEnd              string   `json:"data_end,omitempty" yaml:"data_end,omitempty"`
+	VisibleEnd           string   `json:"visible_end,omitempty" yaml:"visible_end,omitempty"`
+	Position             string   `json:"position,omitempty" yaml:"position,omitempty"`
+	ConfigurationDrift   bool     `json:"configuration_drift" yaml:"configuration_drift"`
+	StateKey             string   `json:"state_key" yaml:"state_key"`
+	Disclosure           string   `json:"disclosure,omitempty" yaml:"disclosure,omitempty"`
+	ProvenancePath       string   `json:"provenance_path,omitempty" yaml:"provenance_path,omitempty"`
+	CompletedAt          string   `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
+	StoppedAt            string   `json:"stopped_at,omitempty" yaml:"stopped_at,omitempty"`
+	FinalVirtualNow      string   `json:"final_virtual_now,omitempty" yaml:"final_virtual_now,omitempty"`
+	UnreadableStateFiles []string `json:"unreadable_state_files,omitempty" yaml:"unreadable_state_files,omitempty"`
 }
 
 func newReplayCommand() *cobra.Command {
@@ -228,15 +229,16 @@ func newReplayStatusCommand() *cobra.Command {
 				return err
 			}
 			store := session.NewReplayStateStore(replayStateDirectory, replayClock)
-			state, err := store.Status(inv.Locator)
+			state, diagnostics, err := store.StatusWithDiagnostics(inv.Locator)
 			if errors.Is(err, session.ErrReplaySessionNotFound) {
 				now := replayClock.Now().UTC()
 				return printReplayStatus(cmd, ReplayStatusOutput{
-					ContextName:        inv.Name,
-					Status:             session.ReplayStatusInactive,
-					HostNow:            replayTimeString(now),
-					ConfigurationDrift: false,
-					StateKey:           store.StateKey(inv.Locator.ContextKey),
+					ContextName:          inv.Name,
+					Status:               session.ReplayStatusInactive,
+					HostNow:              replayTimeString(now),
+					ConfigurationDrift:   false,
+					StateKey:             store.StateKey(inv.Locator.ContextKey),
+					UnreadableStateFiles: diagnostics.UnreadableStateFiles,
 				})
 			}
 			if err != nil {
@@ -248,7 +250,9 @@ func newReplayStatusCommand() *cobra.Command {
 			// with an earlier, non-terminal virtual timestamp.
 			now := replayClock.Now().UTC()
 			drifted := state.ContextInputHash != session.ReplayContextInputHash(inv.Context)
-			return printReplayStatus(cmd, replayStatusFromSession(state, now, drifted))
+			view := replayStatusFromSession(state, now, drifted)
+			view.UnreadableStateFiles = diagnostics.UnreadableStateFiles
+			return printReplayStatus(cmd, view)
 		},
 	}
 }
@@ -458,6 +462,9 @@ func printReplayStatusText(w io.Writer, status ReplayStatusOutput) error {
 	line("Completed at", status.CompletedAt)
 	line("Stopped at", status.StoppedAt)
 	line("Final virtual time", status.FinalVirtualNow)
+	for _, stateFile := range status.UnreadableStateFiles {
+		line("Unreadable state file", stateFile)
+	}
 	return nil
 }
 

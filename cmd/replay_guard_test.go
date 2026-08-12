@@ -47,6 +47,10 @@ func newReplayGuardTestTree(counters *replayGuardCounters) *cobra.Command {
 		counters.network++
 		return nil
 	}}
+	getCmd := &cobra.Command{Use: "get <resource>", Args: cobra.ExactArgs(1), RunE: func(*cobra.Command, []string) error {
+		counters.network++
+		return nil
+	}}
 	deleteCmd := &cobra.Command{Use: "delete <resource>", Args: cobra.ExactArgs(1), RunE: func(*cobra.Command, []string) error {
 		counters.mutation++
 		return nil
@@ -81,7 +85,7 @@ func newReplayGuardTestTree(counters *replayGuardCounters) *cobra.Command {
 	for _, name := range []string{"start", "advance", "status", "stop"} {
 		replay.AddCommand(&cobra.Command{Use: name, RunE: func(*cobra.Command, []string) error { return nil }})
 	}
-	root.AddCommand(query, waitCmd, execCmd, inventory, deleteCmd, ctxCmd, replay)
+	root.AddCommand(query, waitCmd, execCmd, inventory, getCmd, deleteCmd, ctxCmd, replay)
 	return root
 }
 
@@ -385,6 +389,40 @@ func TestReplayContextFlagAndEnvironmentSelectNonReplayExit(t *testing.T) {
 	}
 	if after.SessionID != before.SessionID || after.Revision != before.Revision {
 		t.Fatal("switching selection stopped or rewrote the replay session")
+	}
+}
+
+func TestReplayGuardIgnoresUnreadableStateAtDifferentKeyForNonReplayContext(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	writeReplayCLIConfig(t, configPath, replayCLIConfig(nil))
+	clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 17, 0, 0, 0, time.UTC)}
+	stateDir := filepath.Join(dir, "state")
+	configureReplayCLI(t, configPath, stateDir, clock)
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	locator, _ := replayLocatorForConfig(t, configPath)
+	foreignKey := session.ContextKey(strings.Repeat("b", 64))
+	if foreignKey == locator.ContextKey {
+		foreignKey = session.ContextKey(strings.Repeat("c", 64))
+	}
+	if err := os.WriteFile(session.NewReplayStateStore(stateDir, clock).StatePath(foreignKey), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadFrom(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activation, err := replayActivationForConfig(cfg)
+	if err != nil || activation.Active {
+		t.Fatalf("foreign corrupt state activated guard: activation=%+v err=%v", activation, err)
+	}
+	t.Setenv(config.ProfileEnvVar, config.ProfileFull)
+	counters, err := executeReplayGuardTree(t, "get", "workflows")
+	if err != nil || counters.network != 1 {
+		t.Fatalf("get-class command was blocked: counters=%+v err=%v", counters, err)
 	}
 }
 

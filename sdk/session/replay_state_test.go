@@ -32,9 +32,18 @@ func (c *replayFakeClock) Set(now time.Time) {
 
 func replayTestRequest(t *testing.T, dir string, mode string) ReplayStartRequest {
 	t.Helper()
-	source := "/synthetic/config.yaml"
-	name := "historical"
-	environment := "https://tenant.example.invalid"
+	return replayTestRequestForIdentity(
+		t,
+		dir,
+		mode,
+		"/synthetic/config.yaml",
+		"historical",
+		"https://tenant.example.invalid",
+	)
+}
+
+func replayTestRequestForIdentity(t *testing.T, dir, mode, source, name, environment string) ReplayStartRequest {
+	t.Helper()
 	key := NewReplayContextKey(source, name, environment)
 	resolved, err := ResolveReplayConfig(&ReplayConfig{
 		DataStart:    "2026-06-14T08:00:00Z",

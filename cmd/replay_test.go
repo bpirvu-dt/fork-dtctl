@@ -135,6 +135,32 @@ func replayLocatorForConfig(t *testing.T, path string) (session.ReplayLocator, *
 	}, ctx
 }
 
+func writeReplayUnknownFieldState(t *testing.T, path string, state session.ReplaySession, key session.ContextKey) {
+	t.Helper()
+	state.SessionID = strings.Repeat("f", 32)
+	state.ContextName = "other-context"
+	state.ContextKey = key
+	state.ContextIdentityHash = strings.Repeat("c", 64)
+	state.EnvironmentHash = strings.Repeat("d", 64)
+	state.ContextInputHash = strings.Repeat("e", 64)
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	encoded["future_writer_field"] = map[string]any{"enabled": true}
+	raw, err = json.Marshal(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReplayCLILifecycleRealtimeAndIndependentStores(t *testing.T) {
 	t.Setenv(config.ProfileEnvVar, "")
 	dir := t.TempDir()
@@ -240,6 +266,48 @@ func TestReplayCLILifecycleRealtimeAndIndependentStores(t *testing.T) {
 	}
 	if state.SessionID == activeID || !state.AnchorVirtual.Equal(state.VirtualStart) {
 		t.Fatal("--restart did not replace and reset the active session")
+	}
+}
+
+func TestReplayCLIStatusListsOnlyOpaqueUnreadableStateFilenames(t *testing.T) {
+	t.Setenv(config.ProfileEnvVar, "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	stateDir := filepath.Join(dir, "state")
+	writeReplayCLIConfig(t, configPath, replayCLIConfig(standardReplayBlock(session.ReplayClockManual)))
+	clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)}
+	configureReplayCLI(t, configPath, stateDir, clock)
+	if result := runReplayCLI(t, "table", "start"); result.err != nil {
+		t.Fatal(result.err)
+	}
+	locator, _ := replayLocatorForConfig(t, configPath)
+	store := session.NewReplayStateStore(stateDir, clock)
+	state, err := store.Status(locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignKey := session.ContextKey(strings.Repeat("b", 64))
+	if foreignKey == locator.ContextKey {
+		foreignKey = session.ContextKey(strings.Repeat("c", 64))
+	}
+	foreignFilename := string(foreignKey) + ".state.json"
+	writeReplayUnknownFieldState(t, store.StatePath(foreignKey), state, foreignKey)
+
+	result := runReplayCLI(t, "json", "status")
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	var view ReplayStatusOutput
+	if err := json.Unmarshal([]byte(result.stdout), &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.UnreadableStateFiles) != 1 || view.UnreadableStateFiles[0] != foreignFilename {
+		t.Fatalf("unreadable state diagnostics = %#v, want %q", view.UnreadableStateFiles, foreignFilename)
+	}
+	for _, forbidden := range []string{stateDir, "future_writer_field", "unknown field"} {
+		if strings.Contains(result.stdout, forbidden) {
+			t.Fatalf("status leaked diagnostic detail %q: %s", forbidden, result.stdout)
+		}
 	}
 }
 

@@ -14,3 +14,4 @@ Visible end:           2026-06-14T10:30:00Z
 Position:              inside-replay-interval
 Configuration drift:   false
 State key:             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Unreadable state file: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.state.json
