@@ -114,12 +114,15 @@ Examples:
 			return fmt.Errorf("unsupported output format %q for verify query (supported: json, yaml, toon)", outputFmt)
 		}
 
-		_, c, err := SetupClient()
+		cfg, c, err := SetupClient()
 		if err != nil {
 			return err
 		}
 
-		executor := exec.NewDQLExecutor(c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		queryFile, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")

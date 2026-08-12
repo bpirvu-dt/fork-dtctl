@@ -11,11 +11,25 @@ import (
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
-// newReplayQueryExecutorFromConfig is deliberately limited to the Phase 4
-// query, wait query, and query --live call sites. Phase 5 replaces this with a
-// context-aware factory after the remaining direct-constructor audit.
-func newReplayQueryExecutorFromConfig(cfg *config.Config, c *client.Client) (*pkgexec.DQLExecutor, error) {
-	executor := NewDQLExecutorFromConfig(cfg, c)
+// newDQLExecutorFromConfig is the only production constructor for executors
+// that can submit DQL to Grail. One call creates one top-level executor, its
+// OAuth refresh callback, and (when the selected context activates replay) its
+// invocation-local original-parse memo and disclosure-aware preparer.
+//
+// Callers construct this once per top-level command and inject the result into
+// helpers or resource handlers. That keeps memo lifetime invocation-local and
+// prevents nested packages from reloading global configuration.
+func newDQLExecutorFromConfig(cfg *config.Config, c *client.Client) (*pkgexec.DQLExecutor, error) {
+	executor := pkgexec.NewDQLExecutor(c)
+	if config.IsOAuthStorageAvailable() {
+		ctx, contextErr := cfg.CurrentContextObj()
+		if contextErr == nil && ctx.TokenRef != "" {
+			tokenRef := ctx.TokenRef
+			executor = executor.WithTokenRefresher(func() (string, error) {
+				return client.GetTokenWithOAuthSupport(cfg, tokenRef)
+			})
+		}
+	}
 	activation, err := replayActivationForConfig(cfg)
 	if err != nil {
 		return nil, err

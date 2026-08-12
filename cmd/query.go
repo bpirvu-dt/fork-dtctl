@@ -162,7 +162,7 @@ Examples:
 			return err
 		}
 
-		executor, err := newReplayQueryExecutorFromConfig(cfg, c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
 		if err != nil {
 			return err
 		}

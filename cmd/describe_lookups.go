@@ -28,12 +28,16 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
 
-		_, c, printer, err := Setup()
+		cfg, c, printer, err := Setup()
 		if err != nil {
 			return err
 		}
 
-		handler := lookup.NewHandler(c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
+		handler := lookup.NewHandler(c, executor)
 
 		// Get lookup metadata
 		lu, err := handler.Get(path)

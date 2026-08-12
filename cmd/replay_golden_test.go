@@ -141,13 +141,6 @@ func TestReplayErrorGoldens(t *testing.T) {
 				ContextName: "historical-window",
 			},
 		},
-		{
-			name: "exec-dql-not-implemented",
-			err: &ReplayQueryUnavailableError{
-				Command:     "exec dql",
-				ContextName: "historical-window",
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

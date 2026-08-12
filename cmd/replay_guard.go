@@ -47,21 +47,6 @@ func (e *ReplayGuardError) Suggestions() []string {
 	}
 }
 
-// ReplayQueryUnavailableError is the temporary fail-closed boundary retained
-// for DQL paths that Phase 5 has not yet wired through the replay preparer.
-type ReplayQueryUnavailableError struct {
-	Command     string
-	ContextName string
-	Restricted  bool
-}
-
-func (e *ReplayQueryUnavailableError) Error() string {
-	if e.Restricted {
-		return "The query could not be prepared. It was not executed."
-	}
-	return fmt.Sprintf("replay query execution is not implemented yet for command %q in context %q; no network request was made", e.Command, e.ContextName)
-}
-
 type replayGuardRecordingError struct{ detail error }
 
 func (e *replayGuardRecordingError) Error() string {
@@ -143,9 +128,6 @@ func guardReplayResolvedCommand(cmd, root *cobra.Command) error {
 	path := commandPathRelative(cmd, root)
 	if !replayHardGuardAllows(path) {
 		return routeReplayGuardFailure(activation, &ReplayGuardError{Command: path, ContextName: activation.ContextName})
-	}
-	if replayDQLExecutionPath(path) {
-		return routeReplayGuardFailure(activation, &ReplayQueryUnavailableError{Command: path, ContextName: activation.ContextName})
 	}
 	return nil
 }
@@ -235,9 +217,6 @@ func routeReplayGuardFailure(activation replayActivation, detail error) error {
 	case *ReplayGuardError:
 		record.Fields["command"] = value.Command
 		value.Restricted = true
-	case *ReplayQueryUnavailableError:
-		record.Fields["command"] = value.Command
-		value.Restricted = true
 	}
 	if err := sink.Append(ctx, record); err != nil {
 		return &replayGuardRecordingError{detail: err}
@@ -250,15 +229,6 @@ func routeReplayGuardFailure(activation replayActivation, detail error) error {
 // boundary does not automatically bless a future child command.
 func replayHardGuardAllows(path string) bool {
 	return config.ReplayProfileAllows(path)
-}
-
-func replayDQLExecutionPath(path string) bool {
-	switch path {
-	case "exec dql", "inventory":
-		return true
-	default:
-		return false
-	}
 }
 
 func replayPluginDispatchGuard(leadingArgs, commandWords []string) error {

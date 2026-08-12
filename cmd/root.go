@@ -575,15 +575,6 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
-	// ReplayQueryUnavailableError — Phase 1's pre-network DQL stop.
-	var replayQueryErr *ReplayQueryUnavailableError
-	if errors.As(err, &replayQueryErr) {
-		return &output.ErrorDetail{
-			Code:    "replay_query_not_implemented",
-			Message: replayQueryErr.Error(),
-		}
-	}
-
 	// apply.HookRejectedError — pre-apply hook rejected the resource
 	var hookErr *apply.HookRejectedError
 	if errors.As(err, &hookErr) {
@@ -798,11 +789,6 @@ func exitCodeForError(err error) int {
 	var replayGuardErr *ReplayGuardError
 	if errors.As(err, &replayGuardErr) {
 		return client.ExitPermissionError
-	}
-
-	var replayQueryErr *ReplayQueryUnavailableError
-	if errors.As(err, &replayQueryErr) {
-		return client.ExitUsageError
 	}
 
 	var cmdErr *suggest.CommandError
@@ -1229,24 +1215,6 @@ func extractSafeArgs(args []string) []string {
 		}
 	}
 	return parts
-}
-
-// NewDQLExecutorFromConfig creates a DQL executor from a config and client, with OAuth
-// token refresh support. When the OAuth token expires during a long-running query poll
-// (which can exceed the 5-minute token lifetime), the executor automatically fetches a
-// fresh token and retries without aborting the query.
-func NewDQLExecutorFromConfig(cfg *config.Config, c *client.Client) *exec.DQLExecutor {
-	executor := exec.NewDQLExecutor(c)
-	if config.IsOAuthStorageAvailable() {
-		ctx, err := cfg.CurrentContextObj()
-		if err == nil && ctx.TokenRef != "" {
-			tokenRef := ctx.TokenRef
-			executor = executor.WithTokenRefresher(func() (string, error) {
-				return client.GetTokenWithOAuthSupport(cfg, tokenRef)
-			})
-		}
-	}
-	return executor
 }
 
 func init() {

@@ -186,7 +186,7 @@ func TestReplayHardGuardAllowsCtxInspectionAndSwitchParent(t *testing.T) {
 	}
 }
 
-func TestReplayHardGuardOnlyRemovesInterimBlockForPhase4DQLPaths(t *testing.T) {
+func TestReplayHardGuardAllowsEveryReplayAwareDQLPath(t *testing.T) {
 	configureReplayGuardTest(t)
 	t.Setenv(config.ProfileEnvVar, config.ProfileFull)
 
@@ -196,20 +196,15 @@ func TestReplayHardGuardOnlyRemovesInterimBlockForPhase4DQLPaths(t *testing.T) {
 		t.Fatalf("full profile bypassed hard guard: counters=%+v err=%v", counters, err)
 	}
 
-	for _, args := range [][]string{{"query", "fetch logs"}, {"wait", "query", "fetch logs"}} {
+	for _, args := range [][]string{
+		{"query", "fetch logs"},
+		{"wait", "query", "fetch logs"},
+		{"exec", "dql", "fetch logs"},
+		{"inventory"},
+	} {
 		counters, err = executeReplayGuardTree(t, args...)
 		if err != nil || counters.network != 1 {
-			t.Fatalf("Phase 4 path %v stayed blocked: counters=%+v err=%v", args, counters, err)
-		}
-	}
-	for _, args := range [][]string{{"exec", "dql", "fetch logs"}, {"inventory"}} {
-		counters, err = executeReplayGuardTree(t, args...)
-		var unavailable *ReplayQueryUnavailableError
-		if !errors.As(err, &unavailable) || counters.network != 0 || !strings.Contains(err.Error(), "no network request was made") {
-			t.Fatalf("Phase 5 path %v escaped interim block: counters=%+v err=%v", args, counters, err)
-		}
-		if got := exitCodeForError(err); got == 0 {
-			t.Fatalf("interim DQL block for %v must return non-zero", args)
+			t.Fatalf("replay-aware path %v stayed blocked: counters=%+v err=%v", args, counters, err)
 		}
 	}
 }
@@ -223,10 +218,6 @@ func TestRestrictedReplayGuardPreflightsRecordsAndUsesGenericErrors(t *testing.T
 	counters, err := executeReplayGuardTree(t, "delete", "workflows")
 	if err == nil || err.Error() != "this command is not available in this context" || counters.mutation != 0 {
 		t.Fatalf("restricted guard: counters=%+v err=%v detail=%v", counters, err, errors.Unwrap(err))
-	}
-	counters, err = executeReplayGuardTree(t, "exec", "dql", "fetch logs")
-	if err == nil || err.Error() != "The query could not be prepared. It was not executed." || counters.network != 0 {
-		t.Fatalf("restricted interim DQL guard: counters=%+v err=%v", counters, err)
 	}
 	if err := replayPluginDispatchGuard([]string{"--config", configPath}, []string{"synthetic-plugin"}); err == nil || err.Error() != "this command is not available in this context" {
 		t.Fatalf("restricted plugin guard error = %v", err)
@@ -244,8 +235,8 @@ func TestRestrictedReplayGuardPreflightsRecordsAndUsesGenericErrors(t *testing.T
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("provenance records = %d, want 4: %q", len(lines), raw)
+	if len(lines) != 3 {
+		t.Fatalf("provenance records = %d, want 3: %q", len(lines), raw)
 	}
 	for index, line := range lines {
 		var record session.ReplayProvenanceRecord

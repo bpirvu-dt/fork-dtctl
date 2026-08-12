@@ -82,8 +82,12 @@ Examples:
 		budgetSeconds, _ := cmd.Flags().GetFloat64("budget-seconds")
 		scanLimitGB, _ := cmd.Flags().GetFloat64("scan-limit-gbytes")
 
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 		runner := &inventoryRunner{
-			executor:    NewDQLExecutorFromConfig(cfg, c),
+			executor:    executor,
 			scanLimitGB: scanLimitGB,
 		}
 

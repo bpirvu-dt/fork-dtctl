@@ -187,7 +187,7 @@ func TestReplayExecuteEnforcesGuardInRealRootPipeline(t *testing.T) {
 		{"ctx-token", "ctx token"},
 		{"ctx-rm", "ctx delete"},
 		{"query", "no replay session is active"},
-		{"exec-dql", "replay query execution is not implemented yet"},
+		{"exec-dql", "no replay session is active"},
 		{"plugin", "plugin command"},
 		{"root-alias", "ctx delete"},
 		{"shell-alias", "shell alias"},

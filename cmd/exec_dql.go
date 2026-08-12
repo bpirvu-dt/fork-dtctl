@@ -37,7 +37,10 @@ Examples:
 			return err
 		}
 
-		executor := NewDQLExecutorFromConfig(cfg, c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		queryFile, _ := cmd.Flags().GetString("file")
 
