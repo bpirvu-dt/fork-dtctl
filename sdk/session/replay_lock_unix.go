@@ -69,6 +69,13 @@ func openReplayFileNoFollow(path string, flag int, perm os.FileMode) (*os.File, 
 	return os.OpenFile(path, flag|unix.O_NOFOLLOW, perm)
 }
 
+func rejectReplaySymlinkBeforeOpen(path string) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlinked replay state path %s", path)
+	}
+	return nil
+}
+
 func atomicReplaceReplayFile(tempPath, targetPath string) error {
 	return os.Rename(tempPath, targetPath)
 }

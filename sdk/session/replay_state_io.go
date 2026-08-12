@@ -209,8 +209,8 @@ func (s *ReplayStateStore) locateSnapshotWithDiagnostics(locator ReplayLocator) 
 
 func (s *ReplayStateStore) read(key ContextKey) (ReplaySession, error) {
 	path := s.StatePath(key)
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return ReplaySession{}, fmt.Errorf("refusing symlinked replay state path %s", path)
+	if err := rejectReplaySymlinkBeforeOpen(path); err != nil {
+		return ReplaySession{}, err
 	}
 	f, err := openReplayFileNoFollow(path, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
