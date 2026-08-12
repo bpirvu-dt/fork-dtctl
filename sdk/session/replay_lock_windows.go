@@ -6,10 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+type replayFileRenameInfo struct {
+	Flags          uint32
+	RootDirectory  windows.Handle
+	FileNameLength uint32
+	FileName       [1]uint16
+}
 
 func acquireReplayFileLock(path string, timeout, retryInterval time.Duration) (func(), error) {
 	f, err := openOrCreateReplayLockFile(path)
@@ -73,23 +82,71 @@ func openOrCreateReplayLockFile(path string) (*os.File, error) {
 }
 
 func atomicReplaceReplayFile(tempPath, targetPath string) error {
-	from, err := windows.UTF16PtrFromString(tempPath)
+	source, err := openReplayFileWithAccessNoFollow(
+		tempPath,
+		windows.DELETE|windows.SYNCHRONIZE,
+		windows.OPEN_EXISTING,
+	)
 	if err != nil {
 		return err
 	}
-	to, err := windows.UTF16PtrFromString(targetPath)
+	targetDir, err := openReplayFileNoFollow(filepath.Dir(targetPath), os.O_RDONLY, 0)
 	if err != nil {
+		_ = source.Close()
 		return err
 	}
+
+	targetName, err := windows.UTF16FromString(filepath.Base(targetPath))
+	if err != nil {
+		_ = targetDir.Close()
+		_ = source.Close()
+		return err
+	}
+	targetName = targetName[:len(targetName)-1]
+	nameBytes := len(targetName) * 2
+	buffer := make([]byte, int(unsafe.Offsetof(replayFileRenameInfo{}.FileName))+nameBytes)
+	renameInfo := (*replayFileRenameInfo)(unsafe.Pointer(&buffer[0]))
+	renameInfo.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS
+	renameInfo.RootDirectory = windows.Handle(targetDir.Fd())
+	renameInfo.FileNameLength = uint32(nameBytes)
+	copy(unsafe.Slice(&renameInfo.FileName[0], len(targetName)), targetName)
+
 	// Share-delete readers remove the application-level conflict. Keep a short
 	// bound for transient denials from filesystem filters around the rename.
 	const attempts = 5
 	for attempt := 0; ; attempt++ {
-		err = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+		err = windows.SetFileInformationByHandle(
+			windows.Handle(source.Fd()),
+			windows.FileRenameInfoEx,
+			&buffer[0],
+			uint32(len(buffer)),
+		)
 		if err == nil || attempt == attempts-1 ||
 			(!errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION)) {
-			return err
+			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	_ = targetDir.Close()
+	_ = source.Close()
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, windows.ERROR_INVALID_FUNCTION) &&
+		!errors.Is(err, windows.ERROR_INVALID_PARAMETER) &&
+		!errors.Is(err, windows.ERROR_NOT_SUPPORTED) {
+		return err
+	}
+
+	// Older filesystems may not implement POSIX rename semantics. Preserve the
+	// legacy behavior there; it still succeeds when no destination handle is open.
+	from, fromErr := windows.UTF16PtrFromString(tempPath)
+	if fromErr != nil {
+		return fromErr
+	}
+	to, toErr := windows.UTF16PtrFromString(targetPath)
+	if toErr != nil {
+		return toErr
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }

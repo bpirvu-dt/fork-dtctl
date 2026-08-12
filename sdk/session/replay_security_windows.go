@@ -14,11 +14,6 @@ import (
 // handing a file descriptor to the caller. Sharing delete access is required
 // so an atomic state replacement is not blocked by a lock-free reader.
 func openReplayFileNoFollow(path string, flag int, _ os.FileMode) (*os.File, error) {
-	pathPtr, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-
 	var access uint32
 	switch flag & (os.O_WRONLY | os.O_RDWR) {
 	case os.O_WRONLY:
@@ -48,6 +43,14 @@ func openReplayFileNoFollow(path string, flag int, _ os.FileMode) (*os.File, err
 		disposition = windows.TRUNCATE_EXISTING
 	default:
 		disposition = windows.OPEN_EXISTING
+	}
+	return openReplayFileWithAccessNoFollow(path, access, disposition)
+}
+
+func openReplayFileWithAccessNoFollow(path string, access, disposition uint32) (*os.File, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 
 	handle, err := windows.CreateFile(
