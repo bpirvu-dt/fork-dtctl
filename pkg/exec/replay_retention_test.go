@@ -99,15 +99,15 @@ func TestGrailRetentionInspectorUsesFixedBoundedReadOnlyQuery(t *testing.T) {
 
 func TestGrailRetentionInspectorLatencyIsBounded(t *testing.T) {
 	requestDone := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
-		close(requestDone)
-	}))
-	defer server.Close()
-	transport, err := client.NewForTesting(server.URL, "dt0c01.synthetic")
+	transport, err := client.NewForTesting("https://example.invalid", "dt0c01.synthetic")
 	if err != nil {
 		t.Fatal(err)
 	}
+	transport.HTTP().SetTransport(retentionRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		close(requestDone)
+		return nil, r.Context().Err()
+	}))
 	inspector := &grailRetentionInspector{
 		handler: sdkquery.NewHandler(httpclient.Wrap(transport.HTTP())),
 		timeout: 25 * time.Millisecond,
@@ -124,6 +124,12 @@ func TestGrailRetentionInspectorLatencyIsBounded(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("inspection cancellation did not reach the request")
 	}
+}
+
+type retentionRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f retentionRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestRetentionNoticesUseKnownBoundsAndAdmitResolutionLimits(t *testing.T) {
