@@ -917,6 +917,7 @@ expanded original DQL
   -> fresh dtctl internal representation
   -> Method B targeted UTF-16 position edits
   -> effective DQL text
+  -> invocation-cached best-effort current retention inspection
   -> fresh query:parse of effective DQL
   -> validation-AST audit
   -> query:execute
@@ -961,6 +962,17 @@ One-shot replay normally performs two parse calls: original and effective. A
 loop with `N` executions of one unchanged key performs one original parse and
 `N` effective parses. Each execution captures a fresh virtual now. Polling one
 submitted asynchronous query keeps that timestamp fixed.
+
+Stored-telemetry execution also makes at most one retention inspection per
+top-level executor. This is an intentional direct Query API read of aggregate
+`dt.system.buckets` metadata. The fixed query returns public table families and
+minimum and maximum retention days. It does not return bucket names. A
+five-second context bounds the call. The result is reused across loop ticks.
+Failure produces a warning and never changes query execution. Current metadata
+cannot prove past availability or historical metric-resolution transitions.
+Metric replay records that limit as a warning. `verify query` and
+`--explain-replay` skip the read to preserve their execution-free contract.
+No path writes tenant retention settings.
 
 `sdk/session` owns replay configuration, private state, locks, atomic writes,
 and provenance appends. Queries and status take lock-free snapshots. Lifecycle

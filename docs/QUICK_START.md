@@ -1722,10 +1722,21 @@ sampling, scan limits, unordered `limit`, or new Davis snapshots. Pin the dtctl
 version, use sampling ratio `1`, sort before `limit`, and retain provenance when
 building regression tests.
 
-Grail query notifications about retention or historical metric resolution are
-reported as warnings. Restricted disclosure routes those notifications only to
-provenance. dtctl does not change tenant retention and does not guarantee that
-old fine-grained data still exists.
+Before stored telemetry execution, dtctl makes one best-effort read of current
+aggregate retention metadata per command invocation. If the replay interval
+starts before a known current retention boundary, dtctl warns and continues.
+If the read is unavailable or fails, dtctl warns that retention was not
+verified and continues. The read has a five-second limit. It does not run for
+`verify query` or `--explain-replay`.
+
+Current bucket metadata does not prove that one historical instant is still
+available. It also does not expose past metric-resolution transitions. Metric
+replay therefore warns that historical resolution was not verified. Grail
+query notifications about retention or historical metric resolution remain
+warnings too. Full disclosure shows these notices once per executor.
+Restricted disclosure writes them only to provenance. dtctl never changes
+tenant retention and does not guarantee that old fine-grained data still
+exists.
 
 Restricted disclosure prevents incidental disclosure. It is not
 counter-forensics, authentication, containment, or a security sandbox. A

@@ -183,7 +183,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Full disclosure default and restricted disclosure with private serialized provenance
 - [x] Reserved `replay` profile, canonical-path hard guard, plugin block, and safe context exits
 - [x] Original/effective DQL provenance for full agent/spill output and restricted JSON Lines records
-- [ ] Best-effort retention and historical metric-resolution inspection before execution; Grail query notifications are routed correctly, but proactive inspection is not implemented
+- [x] Bounded best-effort current retention inspection once per command invocation, known-boundary and `not verified` warnings, historical metric-resolution warning, and disclosure-aware provenance routing
 
 Not supported in milestone 1: RUM tables, Dynatrace synthetic telemetry tables,
 security-event tables, any `timeseries shift:` form, automatic Davis

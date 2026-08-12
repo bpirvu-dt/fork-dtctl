@@ -358,7 +358,7 @@ func newReplayExecutorFixture(t *testing.T, api *replayMockAPI, clockMode, discl
 		ExpectedContextInputHash: replayTestContextInputHash, ExpectedEnvironmentHash: replayTestEnvironmentHash,
 		EnvironmentID: replayTestEnvironmentHash, ClientIdentity: "synthetic-principal",
 		FallbackDisclosure: disclosure, FallbackProvenancePath: provenancePath,
-		SourcePolicy: execreplay.Milestone1SourcePolicy(), SinkFactory: sinkFactory,
+		SourcePolicy: execreplay.Milestone1SourcePolicy(), RetentionInspector: replayVerifiedRetentionInspector(), SinkFactory: sinkFactory,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -484,7 +484,7 @@ func TestDQLExecutorWithoutReplayMakesNoParseCallAndPreservesQuery(t *testing.T)
 	}
 	parseCalls, executeCalls, _ := api.counts()
 	_, executions := api.queries()
-	if parseCalls != 0 || executeCalls != 1 || executions[0].Query != replayRecordOriginal {
+	if parseCalls != 0 || executeCalls != 1 || executions[0].Query != replayRecordOriginal || strings.Contains(executions[0].Query, "dt.system.buckets") {
 		t.Fatalf("parse=%d execute=%d query=%q", parseCalls, executeCalls, executions[0].Query)
 	}
 }
@@ -1466,10 +1466,16 @@ func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
 
 	prepared := PreparedQuery{
 		Disclosure: session.ReplayDisclosureRestricted,
-		Compilation: execreplay.CompileResult{Notices: []execreplay.Notice{{
-			Kind: execreplay.NoticeWarning, Code: execreplay.NoticeDavisWarmup,
-			Message: "replay virtual session clock interval effective",
-		}}},
+		Compilation: execreplay.CompileResult{Notices: []execreplay.Notice{
+			{
+				Kind: execreplay.NoticeWarning, Code: execreplay.NoticeRetentionBoundary,
+				Message: "replay retention boundary virtual interval",
+			},
+			{
+				Kind: execreplay.NoticeWarning, Code: execreplay.NoticeHistoricalResolutionUnverified,
+				Message: "historical resolution was not verified for this replay session",
+			},
+		}},
 	}
 	stderr := captureReplayExecutorStderr(t, func() {
 		(&DQLExecutor{}).printReplayNoticeOnce(prepared, DQLExecuteOptions{})

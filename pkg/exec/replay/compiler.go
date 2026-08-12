@@ -78,8 +78,11 @@ const (
 type NoticeCode string
 
 const (
-	NoticeFixedDayInterval NoticeCode = "fixed_1d_means_24h"
-	NoticeDavisWarmup      NoticeCode = "davis_snapshot_warmup"
+	NoticeFixedDayInterval               NoticeCode = "fixed_1d_means_24h"
+	NoticeDavisWarmup                    NoticeCode = "davis_snapshot_warmup"
+	NoticeRetentionBoundary              NoticeCode = "retention_boundary"
+	NoticeRetentionNotVerified           NoticeCode = "retention_not_verified"
+	NoticeHistoricalResolutionUnverified NoticeCode = "historical_metric_resolution_not_verified"
 )
 
 // Notice is full-disclosure compiler data. Phase 4 decides whether it goes to

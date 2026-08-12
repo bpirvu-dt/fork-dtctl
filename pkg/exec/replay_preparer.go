@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
@@ -25,6 +26,7 @@ type ReplayPreparerConfig struct {
 	FallbackDisclosure       string
 	FallbackProvenancePath   string
 	SourcePolicy             execreplay.SourcePolicy
+	RetentionInspector       RetentionInspector
 	SinkFactory              func(string) session.ProvenanceSink
 	WaitFunc                 func(context.Context, time.Duration) error
 }
@@ -32,7 +34,10 @@ type ReplayPreparerConfig struct {
 // ReplayQueryPreparer owns replay state orchestration for one command
 // invocation. It contains no process-global memo or mutable replay plan.
 type ReplayQueryPreparer struct {
-	config ReplayPreparerConfig
+	config              ReplayPreparerConfig
+	retentionOnce       sync.Once
+	retentionInspection RetentionInspection
+	retentionErr        error
 }
 
 // NewReplayQueryPreparer validates invocation-stable dependencies. Dynamic
@@ -204,6 +209,7 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		candidateProvenance.Compilation = &compilation
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
 	}
+	p.addRetentionNotices(ctx, input.Mode, &compilation, state, hostNow)
 	info.EffectiveQuery = compilation.EffectiveDQL
 
 	effectiveRequest := sdkquery.ParseRequest{

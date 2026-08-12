@@ -26,17 +26,19 @@ const (
 )
 
 type replayCLIQueryAPI struct {
-	t               *testing.T
-	originalQuery   string
-	originalBody    json.RawMessage
-	validationBody  json.RawMessage
-	executeFailures int
-	executeStatus   int
-	executeResponse *sdkquery.Response
+	t                *testing.T
+	originalQuery    string
+	originalBody     json.RawMessage
+	validationBody   json.RawMessage
+	executeFailures  int
+	executeStatus    int
+	inspectionStatus int
+	executeResponse  *sdkquery.Response
 
 	mu       sync.Mutex
 	parses   int
 	executes int
+	inspects int
 	verifies int
 	queries  []string
 }
@@ -70,6 +72,27 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			a.t.Errorf("decode execute request: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(request.Query, "fetch dt.system.buckets") {
+			a.mu.Lock()
+			a.inspects++
+			status := a.inspectionStatus
+			a.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":{"message":"current retention metadata unavailable"}}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{Records: []map[string]interface{}{
+				{"dt.system.table": "logs", "bucket_count": "2", "minimum_retention_days": "35", "maximum_retention_days": "90"},
+				{"dt.system.table": "spans", "bucket_count": "1", "minimum_retention_days": "10", "maximum_retention_days": "1000"},
+				{"dt.system.table": "events", "bucket_count": "1", "minimum_retention_days": "35", "maximum_retention_days": "462"},
+				{"dt.system.table": "bizevents", "bucket_count": "1", "minimum_retention_days": "35", "maximum_retention_days": "3657"},
+				{"dt.system.table": "metrics", "bucket_count": "1", "minimum_retention_days": "180", "maximum_retention_days": "462"},
+				{"dt.system.table": "dt.system.events", "bucket_count": "1", "minimum_retention_days": "35", "maximum_retention_days": "372"},
+			}}})
 			return
 		}
 		a.mu.Lock()
@@ -131,6 +154,12 @@ func (a *replayCLIQueryAPI) verifyCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.verifies
+}
+
+func (a *replayCLIQueryAPI) inspectionCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inspects
 }
 
 type replayCLIQueryFixture struct {
@@ -753,6 +782,9 @@ func TestRestrictedReplayDisclosureLeakMatrixQueryNotifications(t *testing.T) {
 	}
 	if parses, executes := api.counts(); parses != 2 || executes != 1 {
 		t.Fatalf("parse=%d execute=%d, want two parses and one execution", parses, executes)
+	}
+	if inspections := api.inspectionCount(); inspections != 1 {
+		t.Fatalf("retention inspections=%d, want one per invocation", inspections)
 	}
 }
 

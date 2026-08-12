@@ -131,6 +131,15 @@ rejected.
 > now is exactly on a bucket boundary. A fixed 24-hour bucket can therefore look
 > ahead by almost 24 hours.
 
+Before stored telemetry execution, dtctl makes one best-effort read of current
+aggregate retention metadata per command invocation. It warns when the replay
+interval starts before a known current retention boundary. If the read fails,
+it warns that retention was not verified. Current metadata cannot report past
+metric-resolution transitions, so metric replay also warns that historical
+resolution was not verified. These warnings never block an otherwise valid
+query. dtctl never changes tenant retention. Restricted disclosure writes the
+warnings only to the provenance file.
+
 See [Historical replay](docs/QUICK_START.md#historical-replay) for source limits,
 Davis snapshot reconstruction, non-overlap behavior, provenance, command
 guardrails, and determinism limits.

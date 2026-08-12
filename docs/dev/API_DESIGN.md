@@ -295,9 +295,18 @@ on-demand analyzer and model state also remain rejected.
 
 Replay controls time semantics. It does not freeze retention, ingestion,
 authorization, engine behavior, rollups, sampling, or query limits. Manual mode
-makes virtual now repeatable, not the tenant data immutable. Query
-notifications about retention or historical metric resolution remain warnings;
-dtctl never changes tenant retention.
+makes virtual now repeatable, not the tenant data immutable.
+
+Before stored telemetry execution, one bounded best-effort inspection reads
+current aggregate retention bounds. The result is cached for one command
+invocation. A replay interval older than a known current boundary produces a
+warning. An unavailable or failed inspection produces a `not verified`
+warning. Neither condition blocks execution. Current metadata cannot prove
+past availability or past metric-resolution transitions. Metric replay
+therefore also carries a historical-resolution warning. `verify query` and
+`--explain-replay` remain execution-free and skip this inspection. Restricted
+disclosure routes every such notice only to provenance. Grail query
+notifications remain warnings too. dtctl never changes tenant retention.
 
 The replay interval is a semantic correctness boundary. It is not a physical
 storage-scan, privacy, authorization, or billing boundary.
