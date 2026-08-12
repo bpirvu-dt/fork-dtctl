@@ -1,0 +1,5 @@
+Name:         historical-window (current)
+Environment:  https://tenant.example.invalid
+Token-Ref:    synthetic-reader
+Safety Level: readonly
+              (No modifications allowed)

@@ -1,0 +1,50 @@
+{
+  "kind": "result-file",
+  "path": "/synthetic/q-result.jsonl",
+  "query": "fetch logs, from:now()-1h",
+  "effective_query": "fetch logs, from:toTimestamp(\"2026-06-14T09:30:00Z\"), to:toTimestamp(\"2026-06-14T10:30:00Z\")",
+  "grail_canonical_effective_query": "fetch logs, from:toTimestamp(\"2026-06-14T09:30:00Z\"), to:toTimestamp(\"2026-06-14T10:30:00Z\")",
+  "replay": {
+    "active": true,
+    "session_id": "0123456789abcdef0123456789abcdef",
+    "session_started_at": "2026-08-11T09:00:00Z",
+    "clock_mode": "manual",
+    "anchor_host": "2026-08-11T09:00:00Z",
+    "anchor_virtual": "2026-06-14T10:00:00Z",
+    "virtual_now": "2026-06-14T10:30:00Z",
+    "data_start": "2026-06-14T08:00:00Z",
+    "data_end": "2026-06-14T12:00:00Z",
+    "visible_end": "2026-06-14T10:30:00Z",
+    "state": "active",
+    "original_query": "fetch logs, from:now()-1h",
+    "effective_query": "fetch logs, from:toTimestamp(\"2026-06-14T09:30:00Z\"), to:toTimestamp(\"2026-06-14T10:30:00Z\")",
+    "grail_canonical_effective_query": "fetch logs, from:toTimestamp(\"2026-06-14T09:30:00Z\"), to:toTimestamp(\"2026-06-14T10:30:00Z\")",
+    "sources": [
+      {
+        "ordinal": 0,
+        "path": "root.children[0]",
+        "name": "logs",
+        "class": "record",
+        "boundary_policy": "exact_half_open",
+        "requested_from": "2026-06-14T09:30:00Z",
+        "requested_to": "2026-06-14T10:30:00Z",
+        "effective_from": "2026-06-14T09:30:00Z",
+        "effective_to": "2026-06-14T10:30:00Z",
+        "physical_from": "2026-06-14T09:30:00Z",
+        "physical_to": "2026-06-14T10:30:00Z"
+      }
+    ],
+    "warnings": [
+      "synthetic historical-resolution warning"
+    ]
+  },
+  "format": "jsonl",
+  "rows": 1,
+  "bytes": 32,
+  "context_name": "historical-window",
+  "sample_rows": [
+    {
+      "message": "synthetic record"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"ok":true,"envelope_version":1,"result":{"kind":"records","records":[{"message":"synthetic record"}]},"context":{"verb":"query","resource":"logs","decided":"inline"}}

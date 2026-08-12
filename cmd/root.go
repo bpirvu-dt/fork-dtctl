@@ -162,6 +162,14 @@ func execute() int {
 	applyProfile(rootCmd, prof)
 	// --- End command profile filter ---
 
+	// Resolve disclosure before any help, catalog, or completion surface can
+	// render. Restricted disclosure hides replay-only discovery while keeping
+	// explicit lifecycle verbs callable.
+	if err := applyReplayDisclosureDiscovery(rootCmd, spanArgs); err != nil {
+		output.PrintHumanError("%s", err)
+		return exitCodeForError(err)
+	}
+
 	// The replay guard is installed after profile shaping so it remains the
 	// outermost enforcement boundary even when a profile replaced a handler.
 	// It derives policy from Cobra's resolved command object and runs before
@@ -568,8 +576,12 @@ func errorToDetail(err error) *output.ErrorDetail {
 	// ReplayGuardError — hard context boundary independent of profile shaping.
 	var replayGuardErr *ReplayGuardError
 	if errors.As(err, &replayGuardErr) {
+		code := "replay_guard_blocked"
+		if replayGuardErr.Restricted {
+			code = "command_unavailable"
+		}
 		return &output.ErrorDetail{
-			Code:        "replay_guard_blocked",
+			Code:        code,
 			Message:     replayGuardErr.Error(),
 			Suggestions: replayGuardErr.Suggestions(),
 		}
