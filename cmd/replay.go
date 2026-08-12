@@ -60,12 +60,20 @@ type ReplayStatusOutput struct {
 func newReplayCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "replay",
-		Short: "Manage a local historical replay session",
+		Short: "Manage the local clock for historical DQL replay",
 		Long: `Manage the local clock and state snapshot for a historical replay context.
 
 Replay lifecycle operations read configuration and mutate only private local
 state. They never contact the selected Dynatrace environment and remain usable
 when the context safety level is readonly.
+
+The context must use safety-level readonly and the reserved replay profile.
+Realtime is the default clock mode. Full is the default disclosure mode. For
+automation, store a complete replay block and select clock_mode manual with
+disclosure restricted explicitly.
+
+Run normal DQL after start. dtctl prepares and audits effective DQL for the
+current virtual now. Unsupported sources and time semantics fail closed.
 
 A replay block stored in the context keeps real-time DQL guarded before start
 and after stop. A session started only from flags loses that configured signal
@@ -74,8 +82,11 @@ after stop; automation should store the complete replay block in the context.
 Leave a replay context with 'dtctl ctx <name>', select another context for one
 invocation with '--context <name>', or set DTCTL_CONTEXT=<name>. Switching away
 does not stop the local replay session.`,
-		Example: `  # Start from replay values stored in the selected context
+		Example: `  # Automated context: clock_mode: manual; disclosure: restricted
   dtctl replay start --context historical-window
+
+  # Run normal DQL at the current virtual now
+  dtctl query 'fetch logs, from:now()-1h' --context historical-window
 
   # Move a manual clock and inspect the resulting snapshot
   dtctl replay advance 10m --context historical-window
@@ -108,8 +119,30 @@ func newReplayStartCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start a local historical replay session",
-		Args:  cobra.NoArgs,
+		Short: "Start or restart the local historical replay clock",
+		Long: `Start the local replay clock from context values and optional flag overrides.
+
+The context must use safety-level readonly and the reserved replay profile.
+Flags override data_start, data_end, virtual_start, and clock_mode. Disclosure
+and provenance_path remain context-only. Realtime and full are the defaults.
+
+If virtual_start equals data_start, the visible replay interval starts empty.
+Realtime reveals stored telemetry as host time advances. Manual mode requires
+'dtctl replay advance'. Use --restart to replace any earlier session and reset
+virtual now to virtual_start.`,
+		Example: `  # Automated context: clock_mode: manual; disclosure: restricted
+  dtctl replay start --context historical-window
+
+  # Interactive example using the realtime and full defaults
+  dtctl replay start --context interactive-history \
+    --data-start 2026-06-14T08:00:00Z \
+    --data-end 2026-06-14T12:00:00Z \
+    --virtual-start 2026-06-14T10:00:00Z \
+    --clock-mode realtime
+
+  # Replace the current local session
+  dtctl replay start --context historical-window --restart`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateReplayOutputOptions(); err != nil {
 				return err
@@ -185,7 +218,17 @@ func newReplayAdvanceCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "advance <duration>",
 		Short: "Advance the local replay clock by a fixed duration",
-		Args:  cobra.ExactArgs(1),
+		Long: `Advance the active replay clock by one positive fixed duration.
+
+Manual mode moves to the new virtual time and remains fixed. Realtime mode
+jumps forward and then continues at the host-clock rate. An advance may reach
+data_end exactly, which makes the session terminal-ready. An advance that would
+pass data_end fails without changing state. Calendar-aware steps are not
+supported.`,
+		Example: `  dtctl replay advance 10m --context historical-window
+  dtctl replay advance 2h --context historical-window
+  dtctl replay status --context historical-window`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			by, err := time.ParseDuration(args[0])
 			if err != nil {
@@ -219,7 +262,16 @@ func newReplayStatusCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show the local replay session without a network call",
-		Args:  cobra.NoArgs,
+		Long: `Show a lock-free snapshot of the local replay session.
+
+Status reports the clock anchors, virtual now, replay boundaries, visible end,
+terminal or completion state, and configuration drift. Restricted management
+output also reports the authoritative disclosure mode and provenance path.
+This command makes no network call and does not write replay state.`,
+		Example: `  dtctl replay status --context historical-window
+  dtctl replay status --context historical-window -o json
+  dtctl replay status --context historical-window -o yaml`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateReplayOutputOptions(); err != nil {
 				return err
@@ -261,7 +313,15 @@ func newReplayStopCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the local replay session",
-		Args:  cobra.NoArgs,
+		Long: `Stop the local replay session and preserve its final status snapshot.
+
+Stopping does not contact the tenant and does not cancel a query that was
+already submitted. A context-backed replay block keeps later DQL fail-closed
+until another start. A flags-only session in a context without a replay block
+loses that configured protection after stop.`,
+		Example: `  dtctl replay stop --context historical-window
+  dtctl replay status --context historical-window`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateReplayOutputOptions(); err != nil {
 				return err

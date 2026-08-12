@@ -472,6 +472,9 @@ func TestReplayHardGuardExactLeavesAndCatalogRegistration(t *testing.T) {
 	if verb == nil {
 		t.Fatal("replay command missing from dtctl commands catalog")
 	}
+	if verb.Description != "Manage the local clock for historical DQL replay" {
+		t.Fatalf("replay catalog description = %q", verb.Description)
+	}
 	for _, child := range []string{"start", "advance", "status", "stop"} {
 		found := false
 		for _, resource := range verb.Resources {
@@ -483,6 +486,11 @@ func TestReplayHardGuardExactLeavesAndCatalogRegistration(t *testing.T) {
 		if !found {
 			t.Fatalf("replay %s missing from command catalog", child)
 		}
+	}
+	queryVerb := listing.Verbs["query"]
+	if queryVerb == nil || queryVerb.Flags["--explain-replay"] == nil ||
+		queryVerb.Flags["--explain-replay"].Description != "explain replay query preparation without executing data" {
+		t.Fatalf("full catalog omitted replay explanation flag: %#v", queryVerb)
 	}
 }
 
@@ -595,6 +603,9 @@ func TestReplayContextBackedStoppedSessionKeepsConfiguredGuard(t *testing.T) {
 func TestReplayHelpDocumentsExitRoutesAndFlagsOnlyLimitation(t *testing.T) {
 	command := newReplayCommand()
 	text := command.Long + "\n" + command.Example
+	for _, child := range command.Commands() {
+		text += "\n" + child.Long + "\n" + child.Example
+	}
 	for _, required := range []string{
 		"dtctl ctx <name>",
 		"--context <name>",
@@ -602,6 +613,11 @@ func TestReplayHelpDocumentsExitRoutesAndFlagsOnlyLimitation(t *testing.T) {
 		"started only from flags",
 		"after stop",
 		"does not stop the local replay session",
+		"clock_mode manual",
+		"disclosure restricted",
+		"virtual_start equals data_start",
+		"terminal-ready",
+		"no network call",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("replay help omits %q:\n%s", required, text)

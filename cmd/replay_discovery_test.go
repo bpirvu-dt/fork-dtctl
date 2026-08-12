@@ -46,6 +46,14 @@ func TestRestrictedReplayDiscoveryHidesManagementAndExplain(t *testing.T) {
 	assertNoRestrictedGeneratedWords(t, "query help", queryHelp.String())
 
 	listing := commands.Build(root)
+	if _, ok := listing.Verbs["replay"]; ok {
+		t.Fatal("restricted command catalog exposed replay management")
+	}
+	if query := listing.Verbs["query"]; query != nil {
+		if _, ok := query.Flags["--explain-replay"]; ok {
+			t.Fatal("restricted command catalog exposed --explain-replay")
+		}
+	}
 	listing.Version = "synthetic-version"
 	rawListing, err := json.Marshal(listing)
 	if err != nil {
@@ -88,6 +96,13 @@ func TestFullReplayDiscoveryRemainsUnchanged(t *testing.T) {
 	}
 	if flag := queryCommand.Flags().Lookup("explain-replay"); flag == nil || flag.Hidden {
 		t.Fatal("full disclosure hid --explain-replay")
+	}
+	listing := commands.Build(root)
+	if _, ok := listing.Verbs["replay"]; !ok {
+		t.Fatal("full command catalog omitted replay management")
+	}
+	if query := listing.Verbs["query"]; query == nil || query.Flags["--explain-replay"] == nil {
+		t.Fatal("full command catalog omitted --explain-replay")
 	}
 }
 
