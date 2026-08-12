@@ -1476,6 +1476,83 @@ func TestDQLExecutorExplainReplayAuditsWithoutExecutingOrClaimingTerminal(t *tes
 	}
 }
 
+func TestDQLExecutorVerifyReplayCompatibilityNeverExecutesOrCompletes(t *testing.T) {
+	api := newReplayMockAPI(t)
+	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull, replayRecordDataStart, replayRecordDataEnd, replayRecordDataEnd, nil)
+
+	compatibility, err := fixture.executor.VerifyReplayCompatibilityWithContext(
+		context.Background(), replayRecordOriginal, DQLVerifyOptions{Timezone: "UTC", Locale: "en_US"}, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || !compatibility.FullDisclosure() || !compatibility.OriginalDQLValid ||
+		!compatibility.CompilerSupported || !compatibility.EffectiveQueryValid || len(compatibility.UnsupportedConstructs) != 0 {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+	parseCalls, executeCalls, _ := api.counts()
+	if parseCalls != 2 || executeCalls != 0 {
+		t.Fatalf("verify compatibility parse=%d execute=%d, want two parses and no execute", parseCalls, executeCalls)
+	}
+	state, stateErr := fixture.store.Status(fixture.locator)
+	if stateErr != nil || state.Status != session.ReplayStatusTerminalReady || state.CompletedAt != nil {
+		t.Fatalf("verification claimed terminal: state=%#v err=%v", state, stateErr)
+	}
+}
+
+func TestDQLExecutorVerifyReplayCompatibilityNamesUnsupportedConstruct(t *testing.T) {
+	api := newReplayMockAPI(t)
+	api.originalBody = bytes.Replace(api.originalBody,
+		[]byte(`"canonicalString": "filter"`), []byte(`"canonicalString": "unapprovedCommand"`), 1)
+	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, nil)
+
+	compatibility, err := fixture.executor.VerifyReplayCompatibilityWithContext(context.Background(), replayRecordOriginal, DQLVerifyOptions{Timezone: "UTC"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || compatibility.CompilerSupported || compatibility.EffectiveQueryValid ||
+		len(compatibility.UnsupportedConstructs) != 1 || compatibility.UnsupportedConstructs[0] != "unapprovedcommand" {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+	parseCalls, executeCalls, _ := api.counts()
+	if parseCalls != 1 || executeCalls != 0 {
+		t.Fatalf("unsupported compatibility parse=%d execute=%d, want one parse and no execute", parseCalls, executeCalls)
+	}
+}
+
+func TestDQLExecutorVerifyReplayCompatibilityRestrictedRecordsDetails(t *testing.T) {
+	api := newReplayMockAPI(t)
+	sink := &replayTestSink{}
+	fixture := newReplayExecutorFixture(
+		t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+		replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd,
+		func(string) session.ProvenanceSink { return sink },
+	)
+
+	compatibility, err := fixture.executor.VerifyReplayCompatibilityWithContext(context.Background(), replayRecordOriginal, DQLVerifyOptions{Timezone: "UTC"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || compatibility.FullDisclosure() || !compatibility.CompilerSupported || !compatibility.EffectiveQueryValid {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+	preflights, appends, records := sink.snapshot()
+	if preflights != 1 || appends != 1 || len(records) != 1 || records[0].Event != "query_verification" {
+		t.Fatalf("sink preflights=%d appends=%d records=%#v", preflights, appends, records)
+	}
+	if records[0].Fields["original_dql"] != replayRecordOriginal || records[0].Fields["effective_dql"] != replayRecordEffective {
+		t.Fatalf("query forms = %#v", records[0].Fields)
+	}
+	verification, ok := records[0].Fields["verification"].(map[string]any)
+	if !ok || verification["original_dql_valid"] != true || verification["compiler_supported"] != true || verification["effective_query_valid"] != true {
+		t.Fatalf("verification provenance = %#v", records[0].Fields["verification"])
+	}
+	parseCalls, executeCalls, _ := api.counts()
+	if parseCalls != 2 || executeCalls != 0 {
+		t.Fatalf("restricted compatibility parse=%d execute=%d, want two parses and no execute", parseCalls, executeCalls)
+	}
+}
+
 func mustReplayTestTime(value string) time.Time {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {

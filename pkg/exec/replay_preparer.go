@@ -71,6 +71,18 @@ func (p *ReplayQueryPreparer) Disclosure(_ context.Context) (string, bool) {
 	return p.config.FallbackDisclosure, true
 }
 
+// ReplaySessionActive performs the lock-free state read used by verify query
+// to decide whether compatibility checks apply. State-read failures are not
+// exposed here; a command that executes data still reaches Prepare and fails
+// closed through the normal disclosure router.
+func (p *ReplayQueryPreparer) ReplaySessionActive(_ context.Context) bool {
+	state, err := p.config.Store.Status(p.config.Locator)
+	if err != nil {
+		return false
+	}
+	return state.Status == session.ReplayStatusActive || state.Status == session.ReplayStatusTerminalReady
+}
+
 // Prepare performs the fail-closed sequence from plan section 11.1. The only
 // reusable artifact is the immutable original parse supplied by input.
 func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (PreparedQuery, error) {
@@ -84,8 +96,10 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 	state, stateErr := p.config.Store.Status(p.config.Locator)
 	disclosure, provenancePath := p.authoritativeRoute(state, stateErr)
 	info := ReplayExecutionInfo{Active: true, Disclosure: disclosure, OriginalQuery: input.OriginalQuery}
+	info.verificationOriginalValid = input.OriginalDQLValid
 	if stateErr == nil {
 		info = replayInfoFromSession(state, input.OriginalQuery, disclosure)
+		info.verificationOriginalValid = input.OriginalDQLValid
 	}
 
 	sink, err := p.preflightSink(ctx, disclosure, provenancePath, info)
@@ -190,6 +204,7 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		candidateProvenance.Compilation = &compilation
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
 	}
+	info.EffectiveQuery = compilation.EffectiveDQL
 
 	effectiveRequest := sdkquery.ParseRequest{
 		Query:        compilation.EffectiveDQL,
@@ -230,8 +245,6 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		Explain: compilation.Explain, sink: sink, provenance: provenance,
 	}
 	prepared.executeDefaultTimeframe = intersectGlobalDefault(globalDefault, execreplay.Interval{Start: state.DataStart.UTC(), End: visibleEnd})
-	info.EffectiveQuery = prepared.EffectiveQuery
-
 	if sink != nil && len(compilation.Notices) > 0 {
 		record := provenanceRecord("query_notice", provenance, map[string]any{
 			"notices": replayNotices(compilation.Notices),
@@ -326,7 +339,13 @@ func (p *ReplayQueryPreparer) failBeforeExecute(ctx context.Context, sink sessio
 				provenance.HostNow = p.config.Clock.Now().UTC()
 			}
 		}
-		if err := sink.Append(ctx, provenanceRecord("query_pre_execution", *provenance, nil)); err != nil {
+		additional := map[string]any(nil)
+		if info.verificationOriginalValid != nil {
+			additional = map[string]any{"verification": replayVerificationFields(
+				replayVerificationFromError(info, detail),
+			)}
+		}
+		if err := sink.Append(ctx, provenanceRecord("query_pre_execution", *provenance, additional)); err != nil {
 			return newReplayAttemptError(replayErrorSink, err, info, false, 0, false)
 		}
 	}

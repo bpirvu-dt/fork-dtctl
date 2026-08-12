@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -13,6 +14,114 @@ import (
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
+
+// VerifyReplayCompatibilityWithContext performs the same original parse,
+// transformation, effective parse, and audit as execution, but never submits a
+// query and never completes a terminal session. A nil result means no active
+// replay session exists and verify query must preserve its ordinary response.
+func (e *DQLExecutor) VerifyReplayCompatibilityWithContext(ctx context.Context, query string, opts DQLVerifyOptions, originalValid bool) (*ReplayVerification, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if e.preparer == nil || e.originalASTs == nil {
+		return nil, nil
+	}
+	reader, ok := e.preparer.(replaySessionReader)
+	if !ok || !reader.ReplaySessionActive(ctx) {
+		return nil, nil
+	}
+
+	parseHandler := e.sdkHandler(opts.ClientContext).WithFirstRateLimitResponse()
+	prepared, err := e.preparer.Prepare(ctx, PrepareInput{
+		OriginalQuery:    query,
+		Options:          DQLExecuteOptions{Timezone: opts.Timezone, Locale: opts.Locale, ClientContext: opts.ClientContext},
+		Mode:             ReplayExecutionVerify,
+		OriginalDQLValid: &originalValid,
+		OriginalASTs:     e.originalASTs,
+		Parse: func(parseCtx context.Context, request sdkquery.ParseRequest) (*sdkquery.ParseResponse, error) {
+			return parseHandler.Parse(parseCtx, request)
+		},
+	})
+	if err != nil {
+		var attempt *ReplayAttemptError
+		if errors.As(err, &attempt) && attempt.category == replayErrorSink {
+			return nil, err
+		}
+		verification := replayVerificationFromError(ReplayExecutionInfo{
+			Active: true, OriginalQuery: query, verificationOriginalValid: &originalValid,
+		}, err)
+		return &verification, nil
+	}
+
+	verification := ReplayVerification{
+		Active: true, OriginalDQLValid: originalValid, CompilerSupported: true,
+		EffectiveQueryValid: true, UnsupportedConstructs: []string{}, Disclosure: prepared.Disclosure,
+	}
+	if prepared.sink != nil {
+		provenance := prepared.provenance
+		provenance.Outcome = "verified"
+		info := replayInfoFromPrepared(prepared)
+		if err := prepared.sink.Append(ctx, provenanceRecord("query_verification", provenance, map[string]any{
+			"verification": replayVerificationFields(verification),
+		})); err != nil {
+			return nil, newReplayAttemptError(replayErrorSink, err, info, false, 0, false)
+		}
+	}
+	return &verification, nil
+}
+
+func replayVerificationFromError(fallback ReplayExecutionInfo, err error) ReplayVerification {
+	info := fallback
+	detail := err
+	var attempt *ReplayAttemptError
+	if errors.As(err, &attempt) {
+		if attempt.info.Active {
+			info = attempt.info
+		}
+		if attempt.detail != nil {
+			detail = attempt.detail
+		}
+	}
+
+	originalValid := false
+	if info.verificationOriginalValid != nil {
+		originalValid = *info.verificationOriginalValid
+	}
+	result := ReplayVerification{
+		Active: true, OriginalDQLValid: originalValid,
+		UnsupportedConstructs: replayUnsupportedConstructs(detail),
+		Disclosure:            info.Disclosure,
+	}
+	var compilerErr *execreplay.ReplayError
+	if errors.As(detail, &compilerErr) && compilerErr.Code == execreplay.ErrorAudit && info.EffectiveQuery != "" {
+		result.EffectiveQueryValid = true
+	}
+	return result
+}
+
+func replayUnsupportedConstructs(err error) []string {
+	if err == nil {
+		return []string{}
+	}
+	var compilerErr *execreplay.ReplayError
+	if errors.As(err, &compilerErr) && compilerErr.Construct != "" {
+		return []string{compilerErr.Construct}
+	}
+	var davisErr *execreplay.DavisCurrentViewError
+	if errors.As(err, &davisErr) && davisErr.View != "" {
+		return []string{davisErr.View}
+	}
+	return []string{}
+}
+
+func replayVerificationFields(value ReplayVerification) map[string]any {
+	return map[string]any{
+		"original_dql_valid":     value.OriginalDQLValid,
+		"compiler_supported":     value.CompilerSupported,
+		"effective_query_valid":  value.EffectiveQueryValid,
+		"unsupported_constructs": append([]string(nil), value.UnsupportedConstructs...),
+	}
+}
 
 // ExecuteQueryWithContext executes a DQL query with a cancellable context.
 // If ctx is cancelled while the query is polling, a best-effort cancel request

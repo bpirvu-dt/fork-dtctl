@@ -23,6 +23,7 @@ const (
 	ReplayExecutionWait    ReplayExecutionMode = "wait"
 	ReplayExecutionLive    ReplayExecutionMode = "live"
 	ReplayExecutionExplain ReplayExecutionMode = "explain"
+	ReplayExecutionVerify  ReplayExecutionMode = "verify"
 )
 
 // MinReplayExecutionInterval is the evidence-backed floor for distinct parse
@@ -35,8 +36,12 @@ type PrepareInput struct {
 	OriginalQuery string
 	Options       DQLExecuteOptions
 	Mode          ReplayExecutionMode
-	Parse         QueryParseFunc
-	OriginalASTs  OriginalASTProvider
+	// OriginalDQLValid is set only by verify query. It lets restricted
+	// disclosure persist compatibility facts in the same pre-execution record
+	// that already captures a compiler rejection.
+	OriginalDQLValid *bool
+	Parse            QueryParseFunc
+	OriginalASTs     OriginalASTProvider
 }
 
 // PreparedQuery is the audited text and typed replay contract for exactly one
@@ -80,6 +85,10 @@ type replayDisclosureReader interface {
 	Disclosure(context.Context) (string, bool)
 }
 
+type replaySessionReader interface {
+	ReplaySessionActive(context.Context) bool
+}
+
 // ReplayExecutionInfo is safe loop-control metadata returned beside a query
 // response. It contains no token or returned telemetry.
 type ReplayExecutionInfo struct {
@@ -94,6 +103,27 @@ type ReplayExecutionInfo struct {
 	CompletionDisposition session.CompletionDisposition
 	OriginalQuery         string
 	EffectiveQuery        string
+
+	verificationOriginalValid *bool
+}
+
+// ReplayVerification reports execution-free compatibility checks performed
+// for verify query while a replay session is active.
+type ReplayVerification struct {
+	Active                bool     `json:"active" yaml:"active"`
+	OriginalDQLValid      bool     `json:"original_dql_valid" yaml:"original_dql_valid"`
+	CompilerSupported     bool     `json:"compiler_supported" yaml:"compiler_supported"`
+	EffectiveQueryValid   bool     `json:"effective_query_valid" yaml:"effective_query_valid"`
+	UnsupportedConstructs []string `json:"unsupported_constructs" yaml:"unsupported_constructs"`
+
+	Disclosure string `json:"-" yaml:"-"`
+}
+
+// FullDisclosure reports whether compatibility details may appear in ordinary
+// output. Restricted callers still receive the value internally so they can
+// prove the checks ran, but must serialize only the normal verification result.
+func (v *ReplayVerification) FullDisclosure() bool {
+	return v != nil && v.Disclosure == session.ReplayDisclosureFull
 }
 
 // DQLExecutionResult keeps replay loop control out of the SDK response type.

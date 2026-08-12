@@ -35,6 +35,7 @@ type replayCLIQueryAPI struct {
 	mu       sync.Mutex
 	parses   int
 	executes int
+	verifies int
 	queries  []string
 }
 
@@ -91,6 +92,18 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(sdkquery.Response{
 			State: "SUCCEEDED", Result: &sdkquery.Result{Records: []map[string]interface{}{{"matched": float64(1)}}},
 		})
+	case "/platform/storage/query/v1/query:verify":
+		var request sdkquery.VerifyRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			a.t.Errorf("decode verify request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		a.mu.Lock()
+		a.verifies++
+		a.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sdkquery.VerifyResponse{Valid: true, CanonicalQuery: request.Query})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -106,6 +119,12 @@ func (a *replayCLIQueryAPI) executedQueries() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.queries...)
+}
+
+func (a *replayCLIQueryAPI) verifyCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.verifies
 }
 
 type replayCLIQueryFixture struct {
@@ -204,6 +223,26 @@ func setReplayWaitQueryFlags(t *testing.T, interval time.Duration) {
 	t.Cleanup(func() {
 		for name, value := range previous {
 			_ = waitQueryCmd.Flags().Set(name, value)
+		}
+	})
+}
+
+func setReplayVerifyQueryFlags(t *testing.T) {
+	t.Helper()
+	values := map[string]string{
+		"file": "", "canonical": "false", "timezone": "UTC", "locale": "", "fail-on-warn": "false", "client-context": "",
+	}
+	previous := make(map[string]string, len(values))
+	for name, value := range values {
+		flag := verifyQueryCmd.Flags().Lookup(name)
+		previous[name] = flag.Value.String()
+		if err := verifyQueryCmd.Flags().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for name, value := range previous {
+			_ = verifyQueryCmd.Flags().Set(name, value)
 		}
 	})
 }
@@ -332,6 +371,50 @@ func TestReplayQueryCLIExplainAndRestrictedUnknownFlag(t *testing.T) {
 			t.Fatalf("parse=%d execute=%d", parses, executes)
 		}
 	})
+}
+
+func TestReplayVerifyQueryCLICompatibilityDisclosureAndNoScan(t *testing.T) {
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		t.Run(disclosure, func(t *testing.T) {
+			api := &replayCLIQueryAPI{
+				t: t, originalQuery: replayCLIRecordOriginal,
+				originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+				validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+			}
+			server := httptest.NewServer(api)
+			defer server.Close()
+			fixture := newReplayCLIQueryFixture(t, server.URL, disclosure, session.ReplayClockManual,
+				mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+			setReplayVerifyQueryFlags(t)
+			var runErr error
+			stdout, stderr := captureReplayQueryStreams(t, func() {
+				runErr = verifyQueryCmd.RunE(verifyQueryCmd, []string{replayCLIRecordOriginal})
+			})
+			if runErr != nil {
+				t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+			}
+			if disclosure == session.ReplayDisclosureFull && !strings.Contains(stderr, "Replay compatibility:") {
+				t.Fatalf("full verification omitted compatibility details: stdout=%q stderr=%q", stdout, stderr)
+			}
+			if disclosure == session.ReplayDisclosureRestricted && strings.Contains(strings.ToLower(stdout+stderr), "replay") {
+				t.Fatalf("restricted verification disclosed compatibility details: stdout=%q stderr=%q", stdout, stderr)
+			}
+			if parses, executes := api.counts(); parses != 2 || executes != 0 || api.verifyCount() != 1 {
+				t.Fatalf("verify=%d parse=%d execute=%d, want 1/2/0", api.verifyCount(), parses, executes)
+			}
+			state, err := fixture.store.Status(fixture.locator)
+			if err != nil || state.Status != session.ReplayStatusActive || state.CompletedAt != nil {
+				t.Fatalf("verify changed state: %#v err=%v", state, err)
+			}
+			if disclosure == session.ReplayDisclosureRestricted {
+				provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+				if err != nil || !strings.Contains(string(provenance), `"event":"query_verification"`) ||
+					!strings.Contains(string(provenance), `"compiler_supported":true`) {
+					t.Fatalf("provenance=%q err=%v", provenance, err)
+				}
+			}
+		})
+	}
 }
 
 func TestReplayQueryCLIForeignUnreadableStateStaysSilent(t *testing.T) {
