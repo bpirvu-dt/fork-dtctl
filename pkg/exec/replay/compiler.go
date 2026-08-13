@@ -357,10 +357,14 @@ func newMetricResultContract(source *sourceAnalysis, logical Interval) ReplayRes
 }
 
 func (e *DavisCurrentViewError) Error() string {
-	return fmt.Sprintf(
+	message := fmt.Sprintf(
 		"%s is a current-state Davis view. dtctl cannot reproduce its value at virtual now.\n"+
 			"The query was not executed. Fetch %s over the visible replay interval, then reduce to the latest snapshot per %s ID.\n"+
 			"Pattern: %s",
 		e.View, e.SnapshotTable, e.IdentityKind, e.LatestPerIDPattern,
 	)
+	if e.View == "dt.davis.problems" {
+		message += "\n" + davisProblemsWarmupCaveat
+	}
+	return message
 }

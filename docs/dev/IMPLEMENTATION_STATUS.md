@@ -173,7 +173,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Automatic and fixed-duration metrics with one-natural-bucket boundary tolerance
 - [x] Tested metric forms: plain `avg`, `sum(...,rate:1s)`, `avg(...,rollup:avg)`, one `dt.entity.host` split, and paired `avg`/`max`
 - [x] `interval:1d` fixed-`24h` notification; calendar intervals and all shifts rejected
-- [x] Davis snapshot warm-up warning and helpful current-view rejection with latest-per-ID guidance
+- [x] Davis snapshot warm-up warning and helpful current-view rejection with lifetime-overlap guidance for problems and latest-per-ID guidance for events
 - [x] Fail-closed source, pipeline-command, scalar-function, current-state, and AST allowlists
 - [x] Server-AST-assisted Method B compiler with UTF-16 inclusive-position editing
 - [x] Effective DQL reparse, validation-AST audit, and metric result-contract validation
