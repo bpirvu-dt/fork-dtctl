@@ -32,6 +32,10 @@ type LivePrinter struct {
 // DataFetcher is a function that fetches fresh data for live updates
 type DataFetcher func(ctx context.Context) (interface{}, error)
 
+// LiveWaiter blocks until the next replay-aware refresh point. It may shorten
+// the final wait to reach a data boundary or lengthen it for Retry-After.
+type LiveWaiter func(ctx context.Context) error
+
 // NewLivePrinter creates a new live printer that wraps an existing printer
 func NewLivePrinter(printer Printer, interval time.Duration, writer io.Writer) *LivePrinter {
 	return NewLivePrinterWithOpts(printer, interval, writer, PrinterOptions{})
@@ -142,6 +146,92 @@ func (p *LivePrinter) RunLive(ctx context.Context, fetcher DataFetcher) error {
 			if err := p.fetchAndPrint(ctx, fetcher); err != nil {
 				fmt.Fprintf(p.writer, "\nError fetching data: %v\n", err)
 			}
+		}
+	}
+}
+
+// RunLiveScheduled is the dynamic-cadence counterpart used by replay-aware
+// live queries. The fetcher absorbs retryable no-execution attempts; any error
+// it returns is terminal. Resize signals never trigger an extra query.
+func (p *LivePrinter) RunLiveScheduled(ctx context.Context, fetcher DataFetcher, waiter LiveWaiter, completed func() bool) error {
+	if waiter == nil {
+		return fmt.Errorf("scheduled live mode requires a waiter")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	p.setupResizeSignal()
+	defer p.stopResizeSignal()
+
+	keyCh := make(chan rune, 1)
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		oldState, err := term.MakeRaw(fd)
+		if err == nil {
+			defer func() { _ = term.Restore(fd, oldState) }()
+			go func() {
+				buf := make([]byte, 1)
+				for {
+					n, readErr := os.Stdin.Read(buf)
+					if readErr != nil || n == 0 {
+						return
+					}
+					key := rune(buf[0])
+					if key == 'q' || key == 'Q' || key == '\x03' {
+						cancel()
+						select {
+						case keyCh <- key:
+						default:
+						}
+						return
+					}
+				}
+			}()
+		}
+	}
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	for {
+		if err := p.fetchAndPrint(ctx, fetcher); err != nil {
+			return err
+		}
+		if completed != nil && completed() {
+			_, _ = fmt.Fprintln(p.writer, "\nLive mode completed.")
+			return nil
+		}
+		if ctx.Err() != nil {
+			_, _ = fmt.Fprintln(p.writer, "\nLive mode stopped.")
+			return nil
+		}
+		if err := waiter(ctx); err != nil {
+			if ctx.Err() != nil {
+				_, _ = fmt.Fprintln(p.writer, "\nLive mode stopped.")
+				return nil
+			}
+			return err
+		}
+		select {
+		case key := <-keyCh:
+			if key == 'q' || key == 'Q' || key == '\x03' {
+				_, _ = fmt.Fprintln(p.writer, "\nLive mode stopped.")
+				return nil
+			}
+		default:
+		}
+		// Coalesce any number of resize notifications into one dimension
+		// update. The next scheduled fetch redraws at the new size.
+		select {
+		case <-p.resizeCh:
+			p.updatePrinterForResize()
+		default:
 		}
 	}
 }

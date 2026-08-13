@@ -108,6 +108,12 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		SamplingRatio: samplingRatio,
 		SampleRows:    sampleRows,
 	}
+	replayMetadata := fullReplayOutput(opts.replay)
+	if replayMetadata != nil {
+		manifest.EffectiveQuery = replayMetadata.EffectiveQuery
+		manifest.GrailCanonicalEffectiveQuery = replayMetadata.GrailCanonicalEffectiveQuery
+		manifest.Replay = replayMetadata
+	}
 	manifest.SetStats(envCols, sampled)
 	manifest.ColumnsOmitted = omittedCols
 
@@ -146,17 +152,20 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 			// complete data file. Best-effort: a sidecar failure must not fail
 			// the query.
 			_ = output.WriteSidecar(targetPath, &output.SidecarManifest{
-				EnvelopeVersion: output.EnvelopeVersion,
-				Format:          format,
-				Sampled:         sampled,
-				SamplingRatio:   samplingRatio,
-				TenantID:        opts.TenantID,
-				ContextName:     opts.ContextName,
-				Query:           query,
-				Rows:            len(records),
-				Bytes:           written,
-				Created:         time.Now().UTC(),
-				Columns:         cols,
+				EnvelopeVersion:              output.EnvelopeVersion,
+				Format:                       format,
+				Sampled:                      sampled,
+				SamplingRatio:                samplingRatio,
+				TenantID:                     opts.TenantID,
+				ContextName:                  opts.ContextName,
+				Query:                        query,
+				EffectiveQuery:               manifest.EffectiveQuery,
+				GrailCanonicalEffectiveQuery: manifest.GrailCanonicalEffectiveQuery,
+				Replay:                       replayMetadata,
+				Rows:                         len(records),
+				Bytes:                        written,
+				Created:                      time.Now().UTC(),
+				Columns:                      cols,
 			})
 
 			// Opportunistic, throttled TTL prune of the managed cache (D11).
@@ -192,9 +201,11 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 	// sampling) into the envelope. Their advice leads the suggestions because a
 	// PARTIAL result is more consequential to an agent than the spill/inspect
 	// follow-ups — an agent parsing stdout must learn the result is incomplete.
-	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
-	warnings = append(warnings, notifWarnings...)
-	suggestions = append(notifSuggestions, suggestions...)
+	if !restrictedReplayOutput(opts) {
+		notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
+		warnings = append(warnings, notifWarnings...)
+		suggestions = append(notifSuggestions, suggestions...)
+	}
 	scanWarnings, scanSuggestions := heavyScanAdvice(result)
 	warnings = append(warnings, scanWarnings...)
 	suggestions = append(suggestions, scanSuggestions...)
@@ -220,6 +231,7 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		Result:          manifest,
 		Context:         ctx,
 		Metadata:        envelopeMetadata(result, opts),
+		Replay:          replayMetadata,
 	}
 	return resp, true, nil
 }
@@ -246,7 +258,10 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 	// Even an inline (small) result can be PARTIAL — a scan-limit stop can leave
 	// few rows. Surface the same notification advice so the agent isn't misled
 	// into treating a truncated scan as the complete answer.
-	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
+	var notifWarnings, notifSuggestions []string
+	if !restrictedReplayOutput(opts) {
+		notifWarnings, notifSuggestions = notificationAdvice(result.GetNotifications())
+	}
 	scanWarnings, scanSuggestions := heavyScanAdvice(result)
 	notifWarnings = append(notifWarnings, scanWarnings...)
 	notifSuggestions = append(notifSuggestions, scanSuggestions...)
@@ -271,6 +286,7 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 		Result:          res,
 		Context:         ctx,
 		Metadata:        envelopeMetadata(result, opts),
+		Replay:          fullReplayOutput(opts.replay),
 	}, true, nil
 }
 
@@ -285,7 +301,7 @@ func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interfac
 	if len(opts.MetadataFields) == 0 {
 		return nil
 	}
-	meta := extractQueryMetadata(result)
+	meta := outputQueryMetadata(result, opts)
 	if meta == nil {
 		return nil
 	}

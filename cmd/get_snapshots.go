@@ -136,7 +136,10 @@ behavior may change in future releases.`,
 			}
 		}
 
-		executor := NewDQLExecutorFromConfig(cfg, c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()

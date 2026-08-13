@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/aidetect"
@@ -18,6 +19,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/version"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // Re-export SDK types so existing callers continue to compile.
@@ -47,6 +49,9 @@ type DQLExecutor struct {
 	client         *client.Client
 	sdk            *sdkquery.Handler
 	tokenRefresher func() (string, error)
+	preparer       QueryPreparer
+	originalASTs   OriginalASTProvider
+	replayNotice   sync.Once
 }
 
 // NewDQLExecutor creates a new DQL executor
@@ -62,6 +67,37 @@ func NewDQLExecutor(c *client.Client) *DQLExecutor {
 func (e *DQLExecutor) WithTokenRefresher(refresher func() (string, error)) *DQLExecutor {
 	e.tokenRefresher = refresher
 	return e
+}
+
+// WithQueryPreparer enables replay preparation for this top-level executor and
+// creates its sole invocation-local original-parse memo.
+func (e *DQLExecutor) WithQueryPreparer(preparer QueryPreparer) *DQLExecutor {
+	e.preparer = preparer
+	if preparer == nil {
+		e.originalASTs = nil
+	} else if e.originalASTs == nil {
+		e.originalASTs = NewMemoizedOriginalASTProvider()
+	}
+	return e
+}
+
+// WithOriginalASTProvider replaces the invocation-local provider for tests.
+// Production callers should let WithQueryPreparer create the memo.
+func (e *DQLExecutor) WithOriginalASTProvider(provider OriginalASTProvider) *DQLExecutor {
+	e.originalASTs = provider
+	return e
+}
+
+// ReplayEnabled reports whether this executor performs replay preparation.
+func (e *DQLExecutor) ReplayEnabled() bool { return e.preparer != nil }
+
+// ReplayDisclosure resolves the authoritative current disclosure route.
+func (e *DQLExecutor) ReplayDisclosure(ctx context.Context) (string, bool) {
+	reader, ok := e.preparer.(replayDisclosureReader)
+	if !ok {
+		return "", false
+	}
+	return reader.Disclosure(ctx)
 }
 
 // dtClientContextHeader builds the JSON value for the dt-client-context HTTP header.
@@ -145,6 +181,13 @@ type DQLExecuteOptions struct {
 	// Localization options
 	Locale   string // Query locale (e.g., "en_US")
 	Timezone string // Query timezone (e.g., "UTC", "Europe/Paris")
+	// ParserOptions are internal Query API language-service settings. They are
+	// part of replay's complete original-parse key and are not exposed as CLI
+	// flags.
+	ParserOptions sdkquery.QueryOptions
+	// ReplayMode distinguishes one-shot execution from retry-capable wait/live
+	// loops. It is ignored when the executor has no QueryPreparer.
+	ReplayMode ReplayExecutionMode
 
 	// ShowProgress opts in to the live progress bar drawn on stderr while an
 	// asynchronous query is polled. It is off by default so internal/library
@@ -174,6 +217,11 @@ type DQLExecuteOptions struct {
 	// query execution and are only consulted on the spill path.
 	TenantID    string
 	ContextName string
+
+	// replay is populated only by ExecuteWithContext after the detailed replay
+	// pipeline succeeds. Keeping it private prevents callers from fabricating
+	// disclosure metadata and leaves the public execution contract unchanged.
+	replay *ReplayExecutionInfo
 }
 
 // DQLVerifyOptions configures DQL query verification
@@ -266,14 +314,15 @@ func (e *DQLExecutor) ExecuteWithOptions(query string, opts DQLExecuteOptions) e
 
 // ExecuteWithContext executes a DQL query with a cancellable context and prints the results.
 func (e *DQLExecutor) ExecuteWithContext(ctx context.Context, query string, opts DQLExecuteOptions) error {
-	result, err := e.ExecuteQueryWithContext(ctx, query, opts)
+	detailed, err := e.ExecuteQueryDetailedWithContext(ctx, query, opts)
 	if err != nil {
 		return err
 	}
-	if result == nil {
+	if detailed == nil || detailed.Response == nil {
 		return nil // context was cancelled; message already printed to stderr
 	}
-	return e.printResults(query, result, opts)
+	opts.replay = detailed.Replay
+	return e.printResults(query, detailed.Response, opts)
 }
 
 // ExecuteQuery executes a DQL query and returns the raw result
@@ -286,12 +335,14 @@ func (e *DQLExecutor) ExecuteQueryWithOptions(query string, opts DQLExecuteOptio
 	return e.ExecuteQueryWithContext(context.Background(), query, opts)
 }
 
-// ExecuteQueryWithContext executes a DQL query with a cancellable context.
-// If ctx is cancelled while the query is polling, a best-effort cancel request is sent
-// to the Grail backend before returning.
-func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string, opts DQLExecuteOptions) (*DQLQueryResponse, error) {
+// executeQueryRequestWithContext is the existing query:execute/poll transport.
+// Replay orchestration calls it only after successful preparation and audit.
+func (e *DQLExecutor) executeQueryRequestWithContext(ctx context.Context, query string, opts DQLExecuteOptions, surfaceFirstRateLimit bool) (*DQLQueryResponse, error) {
 	req := buildExecuteRequest(query, opts)
 	handler := e.sdkHandler(opts.ClientContext)
+	if surfaceFirstRateLimit {
+		handler = handler.WithFirstRateLimitResponse()
+	}
 
 	// Build the token refresher callback for the SDK. The SDK's ExecuteAndPoll will
 	// call this on 401; we refresh the token and update the underlying HTTP client.
@@ -448,6 +499,18 @@ func singleQuoteHint() string {
 
 // VerifyQuery verifies a DQL query without executing it
 func (e *DQLExecutor) VerifyQuery(query string, opts DQLVerifyOptions) (*DQLVerifyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return e.VerifyQueryWithContext(ctx, query, opts)
+}
+
+// VerifyQueryWithContext verifies DQL syntax without submitting a data query.
+// Keeping verification separate from ExecuteQuery is an intentional no-scan
+// boundary and lets replay compatibility tests assert zero execute requests.
+func (e *DQLExecutor) VerifyQueryWithContext(ctx context.Context, query string, opts DQLVerifyOptions) (*DQLVerifyResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	req := sdkquery.VerifyRequest{
 		Query:                  query,
 		GenerateCanonicalQuery: opts.GenerateCanonicalQuery,
@@ -456,11 +519,6 @@ func (e *DQLExecutor) VerifyQuery(query string, opts DQLVerifyOptions) (*DQLVeri
 	}
 
 	handler := e.sdkHandler(opts.ClientContext)
-
-	// Create context with 30-second timeout (verify is fast)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	return handler.Verify(ctx, req)
 }
 
@@ -724,8 +782,10 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		effectiveFormat = output.NormalizeJQOutputFormat(effectiveFormat)
 	}
 
-	// Print any notifications/warnings first
-	if notifications := result.GetNotifications(); len(notifications) > 0 {
+	// Restricted disclosure records query notifications in private provenance
+	// and emits none of them on ordinary output. Full and non-replay execution
+	// retain the existing human route.
+	if notifications := result.GetNotifications(); len(notifications) > 0 && !restrictedReplayOutput(opts) {
 		e.PrintNotifications(notifications)
 	}
 
@@ -777,7 +837,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	// Extract metadata if requested
 	var meta *output.QueryMetadata
 	if len(opts.MetadataFields) > 0 {
-		meta = extractQueryMetadata(result)
+		meta = outputQueryMetadata(result, opts)
 	}
 
 	printer := output.NewPrinterWithOpts(output.PrinterOptions{
@@ -949,6 +1009,30 @@ func extractQueryMetadata(result *DQLQueryResponse) *output.QueryMetadata {
 	}
 
 	return meta
+}
+
+// outputQueryMetadata prevents Grail's effective query text from being
+// mistaken for user input. Full disclosure labels all three forms in the
+// replay block; restricted disclosure retains only user-authored query text in
+// ordinary metadata and omits a differing canonical effective form.
+func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *output.QueryMetadata {
+	meta := extractQueryMetadata(result)
+	if meta == nil || opts.replay == nil || !opts.replay.Active {
+		return meta
+	}
+	clone := *meta
+	if clone.Query != "" && opts.replay.OriginalQuery != "" {
+		clone.Query = opts.replay.OriginalQuery
+	}
+	if opts.replay.Disclosure == session.ReplayDisclosureRestricted &&
+		clone.CanonicalQuery != "" && clone.CanonicalQuery != opts.replay.OriginalQuery {
+		clone.CanonicalQuery = ""
+	}
+	return &clone
+}
+
+func restrictedReplayOutput(opts DQLExecuteOptions) bool {
+	return opts.replay != nil && opts.replay.Active && opts.replay.Disclosure == session.ReplayDisclosureRestricted
 }
 
 // CancelQuery sends a best-effort cancellation request for a running query.

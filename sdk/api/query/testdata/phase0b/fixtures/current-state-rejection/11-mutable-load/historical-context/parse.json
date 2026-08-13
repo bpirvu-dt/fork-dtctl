@@ -1,0 +1,39 @@
+{
+  "http_status": 400,
+  "elapsed_ms": 161.71,
+  "response_headers": {
+    "Content-Type": "application/json",
+    "Date": "Mon, 10 Aug 2026 11:04:12 GMT"
+  },
+  "response_body": {
+    "error": {
+      "code": 400,
+      "details": {
+        "arguments": [
+          "\"/lookups/phase0b-never-executed\""
+        ],
+        "errorMessage": "The tabular file \"/lookups/phase0b-never-executed\" doesn't exist.",
+        "errorMessageFormat": "The tabular file %1$s doesn't exist.",
+        "errorMessageFormatSpecifierTypes": [
+          "INPUT_QUERY_PART"
+        ],
+        "errorType": "UNKNOWN_TABULAR_FILE",
+        "exceptionType": "DQL-SYNTAX-ERROR",
+        "queryString": "fetch logs, from:toTimestamp(\"2026-08-10T09:54:05Z\"), to:toTimestamp(\"2026-08-10T10:54:05Z\") | limit 1 | append [ load \"/lookups/phase0b-never-executed\" | limit 1 ] | summarize count()",
+        "syntaxErrorPosition": {
+          "end": {
+            "column": 152,
+            "index": 151,
+            "line": 1
+          },
+          "start": {
+            "column": 120,
+            "index": 119,
+            "line": 1
+          }
+        }
+      },
+      "message": "UNKNOWN_TABULAR_FILE"
+    }
+  }
+}

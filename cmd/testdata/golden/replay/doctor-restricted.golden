@@ -1,0 +1,2 @@
+[OK]   Configuration    /synthetic/config.yaml
+[OK]   Current context  historical-window (environment: https://tenant.example.invalid, safety: readonly)

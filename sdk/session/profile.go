@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -13,6 +14,9 @@ const ProfileEnvVar = "DTCTL_PROFILE"
 // ProfileFull is the reserved name for the unrestricted command tree. Selecting
 // it (via env or context) is equivalent to selecting no profile at all.
 const ProfileFull = "full"
+
+// ProfileReplay is the reserved built-in surface for historical replay.
+const ProfileReplay = "replay"
 
 // Profile is a default-deny allowlist of commands. It shapes every discovery
 // surface at once (--help, `dtctl commands`, shell completion) and hard-blocks
@@ -53,7 +57,8 @@ var alwaysAvailableCommands = []string{
 // like "readonly" — that axis belongs to safety levels). The "full" profile is
 // handled specially (no filtering) and is therefore not listed here.
 //
-// User-defined profiles in config take precedence over a preset of the same name.
+// User-defined profiles ordinarily take precedence over a preset of the same
+// name. The replay name is reserved and is rejected during config validation.
 var builtinProfiles = map[string]Profile{
 	"query": {
 		Description: "DQL queries plus Davis analyzers for investigation agents",
@@ -62,6 +67,25 @@ var builtinProfiles = map[string]Profile{
 	"investigate": {
 		Description: "Read-only incident triage: query, logs, and resource discovery",
 		Commands:    []string{"query", "logs", "get", "find", "describe", "inventory"},
+	},
+	ProfileReplay: {
+		Description: "Historical replay lifecycle and replay-aware read-only commands",
+		Commands: []string{
+			"query",
+			"wait query",
+			"verify query",
+			"exec dql",
+			"inventory",
+			"inspect",
+			"replay start",
+			"replay advance",
+			"replay status",
+			"replay stop",
+			"ctx current",
+			"ctx describe",
+			"doctor",
+			"auth status",
+		},
 	},
 }
 
@@ -72,6 +96,7 @@ func BuiltinProfileNames() []string {
 	for name := range builtinProfiles {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -90,6 +115,9 @@ func (c *Config) ResolveProfile() (*Profile, error) {
 // resolveProfile is the testable core of ResolveProfile with the environment
 // value injected explicitly.
 func (c *Config) resolveProfile(envProfile string) (*Profile, error) {
+	if err := c.validateReservedProfiles(); err != nil {
+		return nil, err
+	}
 	name := strings.TrimSpace(envProfile)
 	source := ProfileEnvVar
 	if name == "" {
@@ -117,6 +145,11 @@ func (c *Config) resolveProfile(envProfile string) (*Profile, error) {
 // lookupProfile resolves a profile name to its definition. User-defined profiles
 // take precedence over built-in presets of the same name.
 func (c *Config) lookupProfile(name string) (Profile, bool) {
+	if name == ProfileReplay {
+		p := builtinProfiles[name]
+		p.Name = name
+		return p, true
+	}
 	if p, ok := c.Profiles[name]; ok {
 		p.Name = name
 		return p, true
@@ -126,6 +159,42 @@ func (c *Config) lookupProfile(name string) (Profile, bool) {
 		return p, true
 	}
 	return Profile{}, false
+}
+
+func (c *Config) validateReservedProfiles() error {
+	if _, exists := c.Profiles[ProfileReplay]; exists {
+		return fmt.Errorf("profile %q is now reserved for dtctl's built-in replay profile; rename the user-defined profile before using this config", ProfileReplay)
+	}
+	return nil
+}
+
+// ReplayProfileAllows reports whether a canonical Cobra path is an exact
+// reserved replay leaf, an ancestor needed to reach one, or an always-available
+// discovery path. Unlike generic user profiles, an allowlisted replay leaf does
+// not automatically allow a future child. It ignores DTCTL_PROFILE by design.
+func ReplayProfileAllows(path string) bool {
+	p := builtinProfiles[ProfileReplay]
+	for _, entry := range alwaysAvailableCommands {
+		if segmentPrefix(entry, path) {
+			return true
+		}
+	}
+	for _, entry := range p.Commands {
+		if path == entry || segmentPrefix(path, entry) {
+			return true
+		}
+	}
+	return false
+}
+
+// BuiltinReplayProfile returns an independent copy of the reserved replay
+// profile. Callers use it when replay activation must override an attempted
+// DTCTL_PROFILE surface widening.
+func BuiltinReplayProfile() Profile {
+	p := builtinProfiles[ProfileReplay]
+	p.Name = ProfileReplay
+	p.Commands = append([]string(nil), p.Commands...)
+	return p
 }
 
 // ProfileExists reports whether a profile name is resolvable — either "full",

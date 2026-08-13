@@ -8,6 +8,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 func TestFormatVerifyResultHuman_ValidQuery(t *testing.T) {
@@ -381,5 +382,46 @@ func TestVerifyQuery_StructuredOutputFormats(t *testing.T) {
 				t.Errorf("expected %s output to contain %q, got:\n%s", tt.format, tt.expect, out)
 			}
 		})
+	}
+}
+
+func TestVerifyQueryStructuredResultDisclosure(t *testing.T) {
+	result := &exec.DQLVerifyResponse{Valid: true, CanonicalQuery: "fetch logs"}
+	printJSON := func(value any) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := output.NewPrinterWithWriter("json", &buf).Print(value); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	normal := printJSON(verifyQueryStructuredResult(result, nil))
+	restricted := printJSON(verifyQueryStructuredResult(result, &exec.ReplayVerification{
+		Active: true, OriginalDQLValid: true, CompilerSupported: true, EffectiveQueryValid: true,
+		Disclosure: session.ReplayDisclosureRestricted,
+	}))
+	if restricted != normal {
+		t.Fatalf("restricted verification output changed the normal schema:\nnormal: %s\nrestricted: %s", normal, restricted)
+	}
+
+	fullValue := verifyQueryStructuredResult(result, &exec.ReplayVerification{
+		Active: true, OriginalDQLValid: true, CompilerSupported: true, EffectiveQueryValid: true,
+		UnsupportedConstructs: []string{}, Disclosure: session.ReplayDisclosureFull,
+	})
+	full := printJSON(fullValue)
+	for _, field := range []string{`"replay"`, `"original_dql_valid"`, `"compiler_supported"`, `"effective_query_valid"`, `"unsupported_constructs"`} {
+		if !strings.Contains(full, field) {
+			t.Fatalf("full verification output missing %s: %s", field, full)
+		}
+	}
+	for _, format := range []string{"yaml", "toon"} {
+		var buf bytes.Buffer
+		if err := output.NewPrinterWithWriter(format, &buf).Print(fullValue); err != nil {
+			t.Fatalf("Print(%s): %v", format, err)
+		}
+		if !strings.Contains(buf.String(), "replay") || !strings.Contains(buf.String(), "compiler_supported") {
+			t.Fatalf("full %s verification output omitted compatibility details: %s", format, buf.String())
+		}
 	}
 }

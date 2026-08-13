@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dynatrace-oss/dtctl/pkg/commands"
+	"github.com/dynatrace-oss/dtctl/pkg/config"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 var (
@@ -146,7 +148,11 @@ func annotateListingContext(l *commands.Listing) {
 	if err != nil {
 		return
 	}
-	if p, err := cfg.ResolveProfile(); err == nil && p != nil {
+	if activation, activationErr := replayActivationForConfig(cfg); activationErr == nil && activation.Active {
+		if activation.Disclosure != session.ReplayDisclosureRestricted {
+			l.Profile = config.ProfileReplay
+		}
+	} else if p, err := cfg.ResolveProfile(); err == nil && p != nil {
 		l.Profile = p.Name
 	}
 	if ctx, err := cfg.CurrentContextObj(); err == nil {

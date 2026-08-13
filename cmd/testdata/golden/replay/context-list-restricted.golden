@@ -1,0 +1,10 @@
+[
+  {
+    "Current": "*",
+    "Name": "historical-window",
+    "Environment": "https://tenant.example.invalid",
+    "SafetyLevel": "readonly",
+    "Profile": "",
+    "Description": ""
+  }
+]

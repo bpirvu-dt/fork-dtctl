@@ -143,6 +143,174 @@ dtctl get workflows --watch --watch-only
 - Advanced options available via flags
 - Comprehensive help at every level
 
+## Historical Replay Design
+
+Replay keeps the normal DQL authoring model:
+
+```bash
+dtctl replay start --context historical-window
+dtctl query 'fetch logs, from:now()-1h' --context historical-window
+```
+
+There is no replay query language and no replay template function. For one DQL
+execution, every semantic `now()` resolves to one virtual now. Text in strings
+and comments stays text.
+
+The replay interval is `[data_start, data_end)`. The visible replay interval is
+`[data_start, min(virtual_now, data_end))`. Record sources use exact half-open
+effective ranges. A source request is intersected with the visible replay
+interval, so partial overlap is supported.
+
+Completely non-overlapping sources have three proof classes:
+
+- temporary means the source can be proven to overlap later;
+- permanent means it can never overlap; and
+- unknown means dtctl cannot prove either case.
+
+One-shot and manual execution reject all three classes. A realtime `wait query`
+or `query --live` loop retries only temporary non-overlap. Permanent, unknown,
+and terminal non-overlap fail closed. dtctl never substitutes an empty source,
+fabricates an empty result, emits equal endpoints, or uses a one-nanosecond
+window.
+
+The milestone 1 record allowlist is exact:
+
+| Table | Record-time field |
+|---|---|
+| `logs` | `timestamp` |
+| `spans` | `start_time` |
+| `events` | `timestamp` |
+| `bizevents` | `timestamp` |
+| `dt.system.events` | `timestamp` |
+| `dt.davis.events.snapshots` | `timestamp` |
+| `dt.davis.problems.snapshots` | `timestamp` |
+
+Phase 0B established from-inclusive and to-exclusive behavior for every table.
+The compiler also accepts the tested nested `append`, `join`, and
+source-bearing `lookup` shapes, but it classifies and bounds each nested source
+independently.
+
+Metrics support automatic intervals and parser-accepted positive fixed
+durations. The advanced metric allowlist is one plain `avg`,
+`sum(..., rate:1s)`, `avg(..., rollup:avg)`, the tested single
+`dt.entity.host` split, and the tested `avg` plus `max` pair over one metric.
+`interval:1d` means fixed `24h`, not a calendar day, and produces a user
+notification. Genuine calendar intervals such as `1M`, calendar or DST-aligned
+intervals, and every `shift:` form are rejected.
+
+A metric result can spill by at most one natural metric bucket across either
+logical boundary. Post-execution validation proves the actual natural interval,
+bucket intersection, and spill before output. It does not inspect the
+measurements inside an aggregate. The newest natural metric bucket can already
+contain its final stored aggregate while virtual now traverses that bucket.
+Only that bucket is affected. An exact bucket boundary has no partial-bucket
+look-ahead. A fixed 24-hour bucket can look ahead by almost 24 hours.
+
+Pipeline commands and scalar functions use separate exact allowlists. Every
+entry needs a sanitized `query:parse` fixture and a recorded safety rationale.
+Unknown pipeline commands, functions, sources, and semantic AST roles fail
+closed. AST structure by itself is not evidence of safety.
+
+The server-provided DQL AST is the semantic contract. Phase 0 established that
+Method B can use its UTF-16, inclusive-end source positions to edit semantic
+time expressions without changing strings, comments, or unrelated formatting.
+dtctl adapts the server tree into a private internal representation. It emits
+effective DQL text because `query:execute` accepts text, not an AST. It then
+parses the effective DQL and audits the validation AST before execution.
+
+Only a successful immutable original parse can be memoized. The memo belongs to
+one top-level command invocation and uses the complete original-parse key.
+There is no persistent, process-global, or cross-invocation replay cache.
+Effective parses, transformed DQL, checked plans, and audit results are never
+reused.
+
+Replay lifecycle commands are `start`, `advance`, `status`, and `stop`.
+`start --restart` replaces any earlier state. Realtime mode is the default and
+advances with host time. Manual mode is explicit and advances only through a
+positive fixed `replay advance` duration. Advance may reach `data_end` exactly
+and cannot pass it.
+
+At `data_end`, the next real query is the terminal execution. Success performs
+one guarded completion write for the same terminal-ready session. Failure
+writes no state. A duplicate read-only terminal query is allowed in a race and
+can consume duplicate query budget. It cannot complete a stopped or replacement
+session. Wait and live loops exit after their terminal result and do not run an
+empty tail.
+
+Automated contexts use explicit manual mode and restricted disclosure:
+
+```yaml
+contexts:
+  - name: historical-window
+    context:
+      environment: https://example.apps.dynatrace.com
+      token-ref: readonly-reader
+      safety-level: readonly
+      profile: replay
+      replay:
+        data_start: "2026-06-14T08:00:00Z"
+        data_end: "2026-06-14T12:00:00Z"
+        virtual_start: "2026-06-14T10:00:00Z"
+        clock_mode: manual
+        disclosure: restricted
+```
+
+`full` is the unchanged disclosure default. It exposes replay notices and
+specific failures. Explain output, agent metadata, and spill metadata expose
+effective DQL.
+
+`restricted` changes only routing and wording. It uses normal non-replay output
+schemas, hides replay discovery entries, and writes complete replay facts to a
+required private provenance file. Sink preflight failure prevents execution.
+A post-execution append failure suppresses the result. Returned telemetry and
+user DQL are never altered.
+
+Restricted disclosure prevents incidental disclosure. It is not a security
+sandbox or counter-forensics mechanism. Same-user processes can inspect
+accessible state or invoke hidden management verbs. Stored timestamps remain
+historical. Stronger containment belongs outside dtctl.
+
+Replay requires `safety-level: readonly` and the reserved `replay` profile.
+The profile shapes discovery. A separate canonical-path hard guard blocks
+unsafe built-ins and plugin dispatch even with `DTCTL_PROFILE=full`. It also
+blocks `ctx set`, `ctx delete`, `ctx rm`, and `ctx token` before their side
+effects.
+
+Humans can leave with `ctx <name>`, `--context <name>`, or
+`DTCTL_CONTEXT=<name>`. Switching does not stop the session. A flags-only
+session in a context without a replay block loses configured protection after
+stop, so it is not a complete automation setup.
+
+Davis event and problem snapshot tables are historical records. The DQL author
+must sort and reduce them to the latest snapshot per `event.id`. A shorter than
+six-hour warm-up produces a non-blocking warning. The current Davis views are
+rejected with snapshot guidance in full disclosure and provenance-only detail
+in restricted disclosure.
+
+RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
+automatic Davis current-view mapping are milestone 2 candidates. They are not
+supported and have no promised delivery date. Current topology, entity
+enrichment, mutable lookup state, current schema state, and current or
+on-demand analyzer and model state also remain rejected.
+
+Replay controls time semantics. It does not freeze retention, ingestion,
+authorization, engine behavior, rollups, sampling, or query limits. Manual mode
+makes virtual now repeatable, not the tenant data immutable.
+
+Before stored telemetry execution, one bounded best-effort inspection reads
+current aggregate retention bounds. The result is cached for one command
+invocation. A replay interval older than a known current boundary produces a
+warning. An unavailable or failed inspection produces a `not verified`
+warning. Neither condition blocks execution. Current metadata cannot prove
+past availability or past metric-resolution transitions. Metric replay
+therefore also carries a historical-resolution warning. `verify query` and
+`--explain-replay` remain execution-free and skip this inspection. Restricted
+disclosure routes every such notice only to provenance. Grail query
+notifications remain warnings too. dtctl never changes tenant retention.
+
+The replay interval is a semantic correctness boundary. It is not a physical
+storage-scan, privacy, authorization, or billing boundary.
+
 ## Command Structure
 
 ### Core Verbs
@@ -160,6 +328,7 @@ exec        - Execute a workflow or function
 history     - Show version history (snapshots) of a document
 restore     - Restore a document to a previous version
 wait        - Wait for a specific condition (query results, resource state)
+replay      - Manage the local historical DQL clock and session state
 alias       - Manage command aliases (set, list, delete, import, export)
 ctx         - Quick context management (list, switch, describe, set, delete)
 doctor      - Health check (config, context, token, connectivity, auth)
@@ -250,7 +419,7 @@ dtctl get workflows --debug
 
 # Shows:
 # ===> REQUEST <===
-# GET https://abc12345.apps.dynatrace.com/platform/automation/v1/workflows
+# GET https://example.apps.dynatrace.com/platform/automation/v1/workflows
 # HEADERS:
 #     User-Agent: dtctl/0.12.0
 #     Authorization: [REDACTED]
@@ -1162,7 +1331,7 @@ See [../TOKEN_SCOPES.md](../TOKEN_SCOPES.md) for complete scope reference.
 ```bash
 # Email templates and sending (not implemented yet)
 # dtctl get email-templates                        # List templates
-# dtctl send email --template <id> --to user@ex.com # Send email
+# dtctl send email --template <id> --to analyst@example.invalid # Send email
 ```
 
 ### 19. State Management
@@ -1270,11 +1439,11 @@ dtctl get gcp connections -o json
 dtctl get gcp connections -o yaml
 
 # Imperative create from flags
-dtctl create gcp connection --name "my-gcp-conn" --serviceAccountId "reader@project.iam.gserviceaccount.com"
+dtctl create gcp connection --name "my-gcp-conn" --serviceAccountId "reader@example.invalid"
 
 # Imperative update by name or ID
-dtctl update gcp connection --name "my-gcp-conn" --serviceAccountId "reader@project.iam.gserviceaccount.com"
-dtctl update gcp connection <object-id> --serviceAccountId "reader@project.iam.gserviceaccount.com"
+dtctl update gcp connection --name "my-gcp-conn" --serviceAccountId "reader@example.invalid"
+dtctl update gcp connection <object-id> --serviceAccountId "reader@example.invalid"
 
 # Delete by name or ID
 dtctl delete gcp connection <name-or-id>
@@ -1457,14 +1626,14 @@ current-context: prod
 contexts:
 - name: dev
   context:
-    environment: https://dev.apps.dynatrace.com
+    environment: https://example.apps.dynatrace.com
     token-ref: dev-token
     safety-level: dangerously-unrestricted  # Full access for dev
     description: "Development sandbox"
 
 - name: prod
   context:
-    environment: https://prod.apps.dynatrace.com
+    environment: https://example.apps.dynatrace.com
     token-ref: prod-token
     safety-level: readonly                   # Read-only for production
     description: "Production - read only"
@@ -1497,13 +1666,13 @@ Safety levels provide **client-side** protection against accidental destructive 
 ```bash
 # Create a read-only production context
 dtctl config set-context prod-viewer \
-  --environment https://prod.dynatrace.com \
+  --environment https://example.apps.dynatrace.com \
   --token-ref prod-token \
   --safety-level readonly
 
 # Create an unrestricted dev context
 dtctl config set-context dev \
-  --environment https://dev.dynatrace.com \
+  --environment https://example.apps.dynatrace.com \
   --token-ref dev-token \
   --safety-level dangerously-unrestricted
 
@@ -1601,14 +1770,14 @@ The `auth whoami` command displays information about the currently authenticated
 dtctl auth whoami
 # Output:
 # User ID:    621321d-1231-dsad-652321829b50
-# User Name:  John Doe
-# Email:      john.doe@example.com
+# User Name:  Synthetic User
+# Email:      analyst@example.invalid
 # Context:    prod
-# Environment: https://abc12345.apps.dynatrace.com
+# Environment: https://example.apps.dynatrace.com
 
 # Machine-readable output
 dtctl auth whoami -o json
-# {"userId":"621321d-...","userName":"John Doe","emailAddress":"john.doe@example.com"}
+# {"userId":"00000000-0000-0000-0000-000000000001","userName":"Synthetic User","emailAddress":"analyst@example.invalid"}
 
 dtctl auth whoami -o yaml
 
@@ -2159,7 +2328,7 @@ dtctl get users -o wide
 dtctl get groups
 
 # (not implemented yet)
-# dtctl get permissions --user user@example.com
+# dtctl get permissions --user analyst@example.invalid
 # dtctl create policy -f service-account.yaml
 # dtctl get policies -o yaml > iam-audit.yaml
 ```

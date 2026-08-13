@@ -1,0 +1,16 @@
+Root help:
+Usage:
+  dtctl [command]
+
+Available Commands:
+  query
+
+Use "dtctl [command] --help" for more information about a command.
+
+Query help:
+Usage:
+  dtctl query
+
+Catalog:
+{"schema_version":2,"tool":"dtctl","version":"synthetic-version","description":"kubectl-inspired CLI for the Dynatrace platform","command_model":"verb-noun","verbs":{"query":{"mutating":false,"access":"read","required_scopes":["storage:logs:read","storage:events:read","storage:metrics:read","storage:spans:read","storage:bizevents:read","storage:entities:read","storage:smartscape:read","storage:system:read","storage:security.events:read"]}},"resource_aliases":{"ad":"anomaly-detectors","bkt":"buckets","dash":"dashboards","db":"dashboards","ec":"edgeconnect","fn":"functions","func":"functions","nb":"notebooks","wf":"workflows"},"time_formats":{"relative":["1h","30m","7d","5min"],"absolute":"RFC3339 (e.g., 2024-01-15T10:00:00Z)","unix":"Unix timestamp (e.g., 1705312800)"},"patterns":["Use 'dtctl apply -f' for idempotent resource management","Use 'dtctl diff' before 'dtctl apply' to preview changes","Use 'dtctl query' for ad-hoc DQL queries, not resource-specific flags","Use '--dry-run' to validate apply operations without executing","Use '--agent' for JSON output with operational metadata","Use 'dtctl wait' in CI/CD to poll for conditions","Always specify '--context' in automation scripts","Query Smartscape topology nodes with: dtctl query 'smartscapeNodes \"\u003cTYPE\u003e\" | limit 50'","Discover all Smartscape node types in the tenant with: dtctl query 'smartscapeNodes \"*\" | dedup type | fields type'"],"antipatterns":["Don't use 'dtctl create' followed by 'dtctl edit' — use 'dtctl apply -f' instead","Don't parse table output — use '-o json' or '--agent'","Don't hardcode resource IDs — use 'dtctl get' to discover them","Don't skip 'dtctl diff' before 'dtctl apply' in production contexts","Don't guess Smartscape node type IDs — run 'smartscapeNodes \"*\" | dedup type | fields type' first to enumerate valid types"]}
+Completion disclosure entries: <none>

@@ -104,7 +104,14 @@ func execute() int {
 	// not the pre-expansion alias. Load config quietly; if it fails, skip alias
 	// resolution (the real command will produce the proper error later).
 	spanArgs := os.Args[1:]
-	if cfg, err := config.Load(); err == nil {
+	var aliasCfg *config.Config
+	var aliasCfgErr error
+	if path := extractFlagValue(spanArgs, "config"); path != "" {
+		aliasCfg, aliasCfgErr = config.LoadFrom(path)
+	} else {
+		aliasCfg, aliasCfgErr = config.Load()
+	}
+	if cfg, err := aliasCfg, aliasCfgErr; err == nil {
 		// Security: warn when an auto-discovered local .dtctl.yaml carries
 		// code-execution keys (aliases / apply hooks) that are ignored. This
 		// makes adoption of an untrusted per-project config visible instead of
@@ -124,6 +131,10 @@ func execute() int {
 		}
 
 		if isShell {
+			if err := replayShellAliasGuard(cfg, spanArgs); err != nil {
+				output.PrintHumanError("%s", err)
+				return exitCodeForError(err)
+			}
 			if err := execShellAlias(expanded[0]); err != nil {
 				return 1
 			}
@@ -150,6 +161,20 @@ func execute() int {
 	}
 	applyProfile(rootCmd, prof)
 	// --- End command profile filter ---
+
+	// Resolve disclosure before any help, catalog, or completion surface can
+	// render. Restricted disclosure hides replay-only discovery while keeping
+	// explicit lifecycle verbs callable.
+	if err := applyReplayDisclosureDiscovery(rootCmd, spanArgs); err != nil {
+		output.PrintHumanError("%s", err)
+		return exitCodeForError(err)
+	}
+
+	// The replay guard is installed after profile shaping so it remains the
+	// outermost enforcement boundary even when a profile replaced a handler.
+	// It derives policy from Cobra's resolved command object and runs before
+	// scope checks, credential resolution, client construction, or mutation.
+	installReplayGuard(rootCmd)
 
 	// Initialise OpenTelemetry tracing. Done after alias resolution so that
 	// the span name reflects the actual command (not a pre-alias invocation).
@@ -548,6 +573,20 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
+	// ReplayGuardError — hard context boundary independent of profile shaping.
+	var replayGuardErr *ReplayGuardError
+	if errors.As(err, &replayGuardErr) {
+		code := "replay_guard_blocked"
+		if replayGuardErr.Restricted {
+			code = "command_unavailable"
+		}
+		return &output.ErrorDetail{
+			Code:        code,
+			Message:     replayGuardErr.Error(),
+			Suggestions: replayGuardErr.Suggestions(),
+		}
+	}
+
 	// apply.HookRejectedError — pre-apply hook rejected the resource
 	var hookErr *apply.HookRejectedError
 	if errors.As(err, &hookErr) {
@@ -558,6 +597,18 @@ func errorToDetail(err error) *output.ErrorDetail {
 				"check hook stderr output for details",
 				"use --no-hooks to skip pre-apply hooks",
 			},
+		}
+	}
+
+	// ReplayAttemptError must be routed first: it may intentionally wrap the
+	// same QueryError while exposing a restricted generic message.
+	var replayAttemptErr *exec.ReplayAttemptError
+	if errors.As(err, &replayAttemptErr) {
+		if !exec.ReplayPreservesRemoteError(err) {
+			return &output.ErrorDetail{
+				Code:    "query_failed",
+				Message: replayAttemptErr.Error(),
+			}
 		}
 	}
 
@@ -745,6 +796,11 @@ func exitCodeForError(err error) int {
 	var profileErr *ProfileError
 	if errors.As(err, &profileErr) {
 		return client.ExitUsageError
+	}
+
+	var replayGuardErr *ReplayGuardError
+	if errors.As(err, &replayGuardErr) {
+		return client.ExitPermissionError
 	}
 
 	var cmdErr *suggest.CommandError
@@ -1171,24 +1227,6 @@ func extractSafeArgs(args []string) []string {
 		}
 	}
 	return parts
-}
-
-// NewDQLExecutorFromConfig creates a DQL executor from a config and client, with OAuth
-// token refresh support. When the OAuth token expires during a long-running query poll
-// (which can exceed the 5-minute token lifetime), the executor automatically fetches a
-// fresh token and retries without aborting the query.
-func NewDQLExecutorFromConfig(cfg *config.Config, c *client.Client) *exec.DQLExecutor {
-	executor := exec.NewDQLExecutor(c)
-	if config.IsOAuthStorageAvailable() {
-		ctx, err := cfg.CurrentContextObj()
-		if err == nil && ctx.TokenRef != "" {
-			tokenRef := ctx.TokenRef
-			executor = executor.WithTokenRefresher(func() (string, error) {
-				return client.GetTokenWithOAuthSupport(cfg, tokenRef)
-			})
-		}
-	}
-	return executor
 }
 
 func init() {

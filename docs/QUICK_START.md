@@ -10,6 +10,7 @@ This guide provides practical examples for using dtctl to manage your Dynatrace 
 2. [Workflows](#workflows)
 3. [Dashboards & Notebooks](#dashboards--notebooks)
 4. [DQL Queries](#dql-queries)
+   - [Historical Replay](#historical-replay)
 5. [Environment Inventory](#environment-inventory)
 6. [Service Level Objectives (SLOs)](#service-level-objectives-slos)
 7. [Notifications](#notifications)
@@ -46,7 +47,7 @@ Set up your first Dynatrace environment:
 The easiest way to authenticate — uses your Dynatrace SSO credentials, no token management needed:
 
 ```bash
-dtctl auth login --context my-env --environment "https://abc12345.apps.dynatrace.com"
+dtctl auth login --context my-env --environment "https://example.apps.dynatrace.com"
 # Opens your browser for Dynatrace SSO login
 # Tokens are stored securely and refreshed automatically
 
@@ -66,7 +67,7 @@ If you prefer API tokens (e.g. for CI/CD or headless environments):
 ```bash
 # Create a context with your environment details
 dtctl config set-context my-env \
-  --environment "https://abc12345.apps.dynatrace.com" \
+  --environment "https://example.apps.dynatrace.com" \
   --token-ref my-token
 
 # Store your platform token securely
@@ -97,7 +98,7 @@ Manage multiple Dynatrace environments easily:
 ```bash
 # Set up dev environment with unrestricted access
 dtctl config set-context dev \
-  --environment "https://dev.apps.dynatrace.com" \
+  --environment "https://example.apps.dynatrace.com" \
   --token-ref dev-token \
   --safety-level dangerously-unrestricted \
   --description "Development sandbox"
@@ -107,7 +108,7 @@ dtctl config set-credentials dev-token \
 
 # Set up prod environment with read-only safety
 dtctl config set-context prod \
-  --environment "https://prod.apps.dynatrace.com" \
+  --environment "https://example.apps.dynatrace.com" \
   --token-ref prod-token \
   --safety-level readonly \
   --description "Production - read only"
@@ -210,7 +211,7 @@ This allows teams to commit `.dtctl.yaml` files to repositories **without secret
 ```bash
 # In a project directory with .dtctl.yaml
 cd my-project/
-export DT_ENVIRONMENT_URL="https://abc12345.apps.dynatrace.com"
+export DT_ENVIRONMENT_URL="https://example.apps.dynatrace.com"
 export DT_API_TOKEN="dt0c01.xxx"
 dtctl get workflows  # Uses .dtctl.yaml with expanded env vars
 
@@ -232,7 +233,7 @@ Safety levels provide **client-side** protection against accidental destructive 
 ```bash
 # Set safety level when creating a context
 dtctl config set-context prod \
-  --environment "https://prod.apps.dynatrace.com" \
+  --environment "https://example.apps.dynatrace.com" \
   --token-ref prod-token \
   --safety-level readonly
 
@@ -252,10 +253,10 @@ dtctl auth whoami
 
 # Output:
 # User ID:     621321d-1231-dsad-652321829b50
-# User Name:   John Doe
-# Email:       john.doe@example.com
+# User Name:   Synthetic User
+# Email:       analyst@example.invalid
 # Context:     prod
-# Environment: https://abc12345.apps.dynatrace.com
+# Environment: https://example.apps.dynatrace.com
 
 # Get just the user ID (useful for scripting)
 dtctl auth whoami --id-only
@@ -275,7 +276,7 @@ dtctl auth status
 
 # Output:
 # Context:       prod
-# Environment:   https://abc12345.apps.dynatrace.com
+# Environment:   https://example.apps.dynatrace.com
 # Auth type:     OAuth
 # Storage:       macOS Keychain
 # Access token:  valid for 42m10s (expires 2026-04-17T14:32:00Z)
@@ -715,7 +716,7 @@ dtctl apply -f dashboard.yaml --id $DASHBOARD_ID
 
 # Both commands show tile count and URL:
 # Dashboard "My Dashboard" (abc-123) created successfully [18 tiles]
-# URL: https://env.apps.dynatrace.com/ui/apps/dynatrace.dashboards/dashboard/abc-123
+# URL: https://example.apps.dynatrace.com/ui/apps/dynatrace.dashboards/dashboard/example-dashboard
 ```
 
 **When to use which:**
@@ -761,11 +762,11 @@ Share dashboards and notebooks with users and groups:
 
 ```bash
 # Share with a user (read access by default)
-dtctl share dashboard dash-123 --user user@example.com
+dtctl share dashboard example-dashboard --user analyst@example.invalid
 
 # Share with write access
 dtctl share dashboard dash-123 \
-  --user user@example.com \
+  --user analyst@example.invalid \
   --access read-write
 
 # Share with a group
@@ -775,7 +776,7 @@ dtctl share notebook nb-456 --group "Platform Team"
 dtctl describe dashboard dash-123
 
 # Remove user access
-dtctl unshare dashboard dash-123 --user user@example.com
+dtctl unshare dashboard example-dashboard --user analyst@example.invalid
 
 # Remove all shares
 dtctl unshare dashboard dash-123 --all
@@ -885,7 +886,7 @@ dtctl get trash -o yaml
 **Example output:**
 ```
 ID                                    TYPE        NAME                DELETED BY    DELETED AT           EXPIRES IN
-abc123-def456-ghi789-jkl012-mno345    dashboard   Prod Overview       john.doe      2024-01-15 10:30:00  29 days
+example-dashboard-id                  dashboard   Prod Overview       synthetic.user 2024-01-15 10:30:00  29 days
 xyz987-uvw654-rst321-opq098-lmn765    notebook    Debug Session       jane.smith    2024-01-20 14:45:00  24 days
 ```
 
@@ -1406,6 +1407,351 @@ echo "Canonical:"
 dtctl verify query -f query.dql --canonical 2>&1 | grep -A 999 "Canonical Query:"
 ```
 
+### Historical Replay
+
+Historical replay lets normal DQL use a controlled historical clock. The
+original DQL stays valid Dynatrace DQL. dtctl prepares effective DQL for each
+execution and sends that text to Grail only after a fail-closed audit.
+
+#### Configure an automated replay
+
+Automation must store a complete replay block in the context. Use manual clock
+mode and restricted disclosure explicitly:
+
+```yaml
+apiVersion: dtctl.io/v1
+kind: Config
+current-context: historical-window
+contexts:
+  - name: historical-window
+    context:
+      environment: https://example.apps.dynatrace.com
+      token-ref: readonly-reader
+      safety-level: readonly
+      profile: replay
+      replay:
+        data_start: "2026-06-14T08:00:00Z"
+        data_end: "2026-06-14T12:00:00Z"
+        virtual_start: "2026-06-14T10:00:00Z"
+        clock_mode: manual
+        disclosure: restricted
+```
+
+`data_start` and `data_end` define the half-open replay interval
+`[data_start, data_end)`. `virtual_start` defaults to `data_start`. The visible
+replay interval is `[data_start, min(virtual_now, data_end))`.
+
+Replay contexts require `safety-level: readonly` and the reserved built-in
+`replay` profile. Replay changes DQL reads. It does not virtualize mutations.
+
+`realtime` is the clock default. It advances with host time. `manual` stays
+fixed until `replay advance`. `full` is the disclosure default. The example
+above is for automation, so it selects `manual` and `restricted` explicitly.
+Use `realtime` with `full` only as an explicitly chosen interactive workflow.
+
+#### Manage the replay session
+
+```bash
+# Start from the context values
+dtctl replay start --context historical-window
+
+# Run normal DQL at the current virtual now
+dtctl query 'fetch logs, from:now()-1h' --context historical-window
+
+# Move a manual clock by a positive fixed duration
+dtctl replay advance 10m --context historical-window
+
+# Read the local state without a network call
+dtctl replay status --context historical-window
+dtctl replay status --context historical-window -o json
+
+# Replace the session and reset virtual now to virtual_start
+dtctl replay start --context historical-window --restart
+
+# Stop the local session
+dtctl replay stop --context historical-window
+```
+
+`replay start` can override `data_start`, `data_end`, `virtual_start`, and
+`clock_mode`. A flag wins over the context field. It cannot override
+`disclosure` or `provenance_path`.
+
+```bash
+# Interactive example. Realtime and full disclosure are the documented defaults.
+dtctl replay start \
+  --context interactive-history \
+  --data-start 2026-06-14T08:00:00Z \
+  --data-end 2026-06-14T12:00:00Z \
+  --virtual-start 2026-06-14T10:00:00Z \
+  --clock-mode realtime
+```
+
+If `virtual_start` equals `data_start`, the visible replay interval starts
+empty. `replay start` warns about this. Realtime mode reveals stored telemetry
+as the clock advances. Manual mode needs `replay advance`. To give a query its
+complete lookback on the first execution, set `virtual_start` after
+`data_start` by at least the largest required lookback.
+
+Virtual time never passes `data_end`. A query at exactly `data_end` is the
+terminal execution. Success completes the same terminal-ready session. Failure
+does not change state and can be retried. In a rare race, two processes can run
+the same read-only terminal query. This consumes duplicate query budget, but
+guarded completion cannot complete a stopped or replacement session.
+
+`wait query` and `query --live` schedule their own terminal execution at
+`data_end` and then exit. They do not run an empty tail. Replay loops require a
+cadence of at least five seconds. A faster cadence is rejected. A returned
+`Retry-After` delay is honored.
+
+#### Supported record sources
+
+The milestone 1 record allowlist is exact:
+
+| Record table | Record-time field | Boundary |
+|---|---|---|
+| `logs` | `timestamp` | Exact `[from, to)` |
+| `spans` | `start_time` | Exact `[from, to)` |
+| `events` | `timestamp` | Exact `[from, to)` |
+| `bizevents` | `timestamp` | Exact `[from, to)` |
+| `dt.system.events` | `timestamp` | Exact `[from, to)` |
+| `dt.davis.events.snapshots` | `timestamp` | Exact `[from, to)` |
+| `dt.davis.problems.snapshots` | `timestamp` | Exact `[from, to)` |
+
+A record at `from` is included. A record at `to` is excluded. The same rule
+applies at the replay interval boundaries. Nested historical sources in the
+tested `append`, `join`, and source-bearing `lookup` forms are each classified
+and bounded independently.
+
+Pipeline support is also an exact allowlist. A pipeline command or scalar
+function is allowed only after a sanitized parse fixture and a recorded safety
+rationale show that it does not escape the source contract. Unknown commands,
+functions, sources, and semantic AST forms fail closed. AST shape alone is not
+evidence that a new construct is safe.
+
+The DQL `data` command is supported because it creates records and reads no
+tenant telemetry. Semantic `now()` inside it still becomes virtual now.
+
+#### Partial overlap and non-overlap
+
+For each source, dtctl intersects the requested range with the visible replay
+interval. Partial overlap returns the overlap. A query with several sources
+does not execute if any source has a hard non-overlap.
+
+| Non-overlap class | Meaning | Behavior |
+|---|---|---|
+| Temporary | The range can be proven to overlap later, no later than `data_end`. | Only a realtime `wait query` or `query --live` loop retries. |
+| Permanent | The range can never overlap. | Hard error. No execution. |
+| Unknown | dtctl cannot prove either outcome. | Fail-closed hard error. No execution. |
+
+A one-shot query rejects every non-overlap. Manual mode also rejects every
+non-overlap because its clock does not move by itself. At `data_end`, every
+remaining non-overlap is permanent. A realtime loop retries only when every
+non-overlapping source is proven temporary. It reports that no data is visible
+yet, waits for its normal cadence, and recalculates every source range.
+
+dtctl never creates fake empty telemetry. It does not fabricate an empty
+result, emit equal endpoints, or use a one-nanosecond workaround.
+
+#### Metrics
+
+Milestone 1 supports automatic intervals and parser-accepted positive fixed
+durations. It supports only these tested aggregation shapes:
+
+- one plain `avg` aggregation;
+- `sum(..., rate:1s)`;
+- `avg(..., rollup:avg)`;
+- the tested single `dt.entity.host` split; and
+- paired `avg` and `max` aggregations over the same metric.
+
+`interval:1d` is a fixed `24h` interval. It is not a calendar day. dtctl emits
+a notification whenever the query uses that spelling. Genuine calendar
+intervals such as `1M` are rejected. Calendar and DST-aligned intervals are not
+supported. Every fixed, calendar, and aligned `shift:` form is rejected.
+
+Grail can align a metric result beyond either logical boundary by at most one
+natural metric bucket. dtctl validates the returned natural interval and bucket
+placement before it presents the result. The validator checks placement and
+spill. It cannot inspect which measurements contributed to an aggregate.
+
+> **Metric look-ahead:** The newest natural metric bucket shows its final stored
+> aggregate while virtual now is still inside that bucket. Only the bucket being
+> traversed is affected. There is no partial-bucket look-ahead when virtual now
+> is exactly on a bucket boundary. A fixed 24-hour natural metric bucket can
+> therefore look ahead by almost 24 hours.
+
+#### Davis snapshot history
+
+Use the two snapshot tables for Davis history. dtctl bounds their records. Your
+DQL reconstructs the state at virtual now. A latest-per-ID pattern is:
+
+```dql
+fetch dt.davis.problems.snapshots, from:now()-6h, to:now()
+| sort timestamp desc
+| dedup event.id
+```
+
+Use `dt.davis.events.snapshots` for event history with the same `event.id`
+reduction. The current views `dt.davis.problems` and `dt.davis.events` are
+rejected. Under full disclosure, the error names the matching snapshot table
+and shows the latest-per-ID pattern. Under restricted disclosure, that detail
+goes only to provenance.
+
+Dynatrace documents a six-hour refresh cadence for open problem snapshots. Set
+`data_start` at least six hours before `virtual_start` when reconstructing
+problem state. This is guidance, not an execution requirement. The short-gap
+hazard was not observed in the Phase 0B evidence. A Davis snapshot query with a
+shorter gap produces a non-blocking warning and continues. Restricted
+disclosure writes the warning only to provenance.
+
+#### Disclosure and provenance
+
+Disclosure changes routing and wording. It never changes DQL preparation,
+source boundaries, returned telemetry, command guarding, non-overlap handling,
+or terminal completion.
+
+| Mode | Output | Discovery | Provenance |
+|---|---|---|---|
+| `full` | Default. Keeps replay notices, detailed errors, agent metadata, and replay fields in spill output. | Replay verbs and `--explain-replay` are visible. | No provenance file is required. |
+| `restricted` | Uses normal non-replay schemas and generic messages. Replay warnings are suppressed. Returned data and user DQL are unchanged. | Replay verbs and `--explain-replay` are hidden. Explicit management verbs still work. Explain behaves like an unknown flag. | Complete replay facts go to a required private JSON Lines file. |
+
+Restricted `ctx current`, `ctx describe`, and `doctor` output omits replay
+fields. Restricted `verify query` still performs replay compatibility checks,
+but it omits their details from ordinary output.
+
+Restricted ordinary output uses these generic messages. The detailed reason
+and remedy are written to provenance first:
+
+| Category | Message |
+|---|---|
+| Hard non-overlap | `No data is available for the requested timeframe. The query was not executed.` |
+| Temporary realtime-loop non-overlap | `no data yet for the requested timeframe; retrying` |
+| Blocked command or plugin | `this command is not available in this context` |
+| State readiness failure | `this context is not ready for queries` |
+| Parse, compatibility, transform, or audit failure | `The query could not be prepared. It was not executed.` |
+| Result-contract failure | `The returned data could not be validated. No result was returned.` |
+| Terminal finalization failure | `The result could not be finalized. No result was returned.` |
+| Provenance preflight failure | `Required local recording is unavailable. The query was not executed.` |
+| Provenance append failure after execution | `Required local recording failed. No result was returned.` |
+| Remote failure whose normal text would disclose replay state | `The query failed. No result was returned.` |
+
+Warnings such as the fixed-`24h` notice, Davis warm-up warning, and any Grail
+retention or historical-resolution notification produce no restricted ordinary
+output. Their details go to provenance.
+
+The default restricted provenance path is below the private replay state
+directory. On Unix, the directory uses mode `0700`; the provenance file and its
+lock use mode `0600`. On Windows, dtctl uses a private DACL. An override must be
+an absolute safe path. Symlinks are refused. Appends are serialized across
+processes and flushed before output is released. The file contains replay facts
+and original DQL. It contains no token or returned telemetry.
+
+Restricted execution fails closed if the provenance sink cannot be opened or
+locked before preparation. If the append fails after execution, dtctl
+suppresses the result. For a terminal query, durable provenance is written
+before guarded completion.
+
+Use full disclosure to inspect effective DQL without executing data:
+
+```bash
+# Full-disclosure session only
+dtctl query 'fetch logs, from:now()-1h' \
+  --context interactive-history \
+  --explain-replay
+```
+
+Full agent output and full spill manifests also label original DQL, dtctl
+effective DQL, and Grail canonical effective DQL separately. In restricted
+mode, get the private path from the explicit management command and inspect the
+JSON Lines records:
+
+```bash
+dtctl replay status --context historical-window -o json
+jq -r 'select(.fields.effective_dql != "") | .fields.effective_dql' \
+  /private/synthetic/path/context.provenance.jsonl
+```
+
+The path above is synthetic. Use the `provenance_path` printed by your status
+command.
+
+#### Command boundary and context exits
+
+The reserved `replay` profile shapes help, completion, and `dtctl commands`.
+A separate hard guard checks the resolved command path. Setting
+`DTCTL_PROFILE=full`, using an alias, or invoking a plugin does not bypass it.
+Plugin dispatch is blocked because an external plugin does not receive the
+replay preparer.
+
+Safe DQL and management paths remain available. Mutations, live workflow or
+function execution, current-state resource APIs, unsafe context operations,
+and plugins are blocked. `ctx set`, `ctx delete`, its `ctx rm` alias, and
+`ctx token` are blocked before configuration mutation or credential resolution.
+
+Use any of these routes to leave a replay context:
+
+```bash
+# Persist a switch to an existing context
+dtctl ctx production
+
+# Select another context for one invocation
+dtctl --context production query 'fetch logs'
+
+# Select another context through the environment for one invocation
+DTCTL_CONTEXT=production dtctl query 'fetch logs'
+```
+
+Switching context does not stop the replay session. A realtime session keeps
+advancing in its state file. Stop it explicitly with `replay stop`.
+
+A session started only from flags has a narrower guard lifetime. Its active
+state enables the guard. After `replay stop`, a context with no replay block has
+no configured signal, so a later allowed query can use real time. Do not use a
+flags-only session as the sole setup for automation. Keep the complete replay
+block in the automated context.
+
+#### Limits and determinism
+
+Replay controls DQL time semantics. It does not freeze the tenant. Stored
+timestamps remain historical. Restricted disclosure does not edit them.
+The replay interval is a semantic correctness boundary. It is not a physical
+storage-scan, privacy, authorization, or billing boundary.
+
+Use manual mode and explicit `replay advance` for deterministic virtual
+timestamps. Results can still change because of retention, late ingestion,
+backfill, deletion, authorization, DQL engine changes, metric rollups,
+sampling, scan limits, unordered `limit`, or new Davis snapshots. Pin the dtctl
+version, use sampling ratio `1`, sort before `limit`, and retain provenance when
+building regression tests.
+
+Before stored telemetry execution, dtctl makes one best-effort read of current
+aggregate retention metadata per command invocation. If the replay interval
+starts before a known current retention boundary, dtctl warns and continues.
+If the read is unavailable or fails, dtctl warns that retention was not
+verified and continues. The read has a five-second limit. It does not run for
+`verify query` or `--explain-replay`.
+
+Current bucket metadata does not prove that one historical instant is still
+available. It also does not expose past metric-resolution transitions. Metric
+replay therefore warns that historical resolution was not verified. Grail
+query notifications about retention or historical metric resolution remain
+warnings too. Full disclosure shows these notices once per executor.
+Restricted disclosure writes them only to provenance. dtctl never changes
+tenant retention and does not guarantee that old fine-grained data still
+exists.
+
+Restricted disclosure prevents incidental disclosure. It is not
+counter-forensics, authentication, containment, or a security sandbox. A
+same-user process can read accessible configuration and private replay state. A
+same-user process that knows a hidden management verb can invoke it. A caller
+that needs containment must enforce process, filesystem, credential, command,
+and network restrictions outside dtctl.
+
+Milestone 1 does not support RUM tables, Dynatrace synthetic telemetry tables,
+security-event tables, any `timeseries shift:` form, or automatic Davis
+current-view mapping. Topology, current entity enrichment, mutable lookup
+state, current schema state, and current or on-demand model and analyzer state
+are also rejected. Support requires separate evidence and a later design
+decision. No date is promised.
+
 ---
 
 ## Environment Inventory
@@ -1855,10 +2201,10 @@ Map service identifiers to team ownership:
 # Create service_owners.csv
 cat > service_owners.csv <<EOF
 service_id,service_name,team,team_email,slack_channel
-svc-001,payment-api,Payments,payments@example.com,#team-payments
-svc-002,user-service,Identity,identity@example.com,#team-identity
-svc-003,order-processor,Fulfillment,fulfillment@example.com,#team-fulfillment
-svc-004,notification-service,Platform,platform@example.com,#team-platform
+svc-001,payment-api,Payments,payments@example.invalid,#team-payments
+svc-002,user-service,Identity,identity@example.invalid,#team-identity
+svc-003,order-processor,Fulfillment,fulfillment@example.invalid,#team-fulfillment
+svc-004,notification-service,Platform,platform@example.invalid,#team-platform
 EOF
 
 # Upload
@@ -2462,7 +2808,7 @@ dtctl exec function dynatrace.automations/execute-dql-query \
 dtctl exec function dynatrace.email/send-email \
   --method POST \
   --payload '{
-    "to": ["user@example.com"],
+    "to": ["analyst@example.invalid"],
     "cc": [],
     "bcc": [],
     "subject": "Test Email",
@@ -2557,7 +2903,7 @@ Find which intents can handle specific data:
 
 ```bash
 # Find intents that match the provided data
-dtctl find intents --data trace_id=d052c9a8772e349d09048355a8891b82
+dtctl find intents --data trace_id=00000000000000000000000000000001
 
 # Output shows match quality (100% = all required properties provided)
 MATCH%  APP                          INTENT_ID        DESCRIPTION
@@ -2577,10 +2923,10 @@ Generate deep links to open specific resources in apps:
 ```bash
 # Generate intent URL with data
 dtctl open intent dynatrace.distributedtracing/view-trace \
-  --data trace_id=d052c9a8772e349d09048355a8891b82
+  --data trace_id=00000000000000000000000000000001
 
 # Output:
-# https://your-env.apps.dynatrace.com/ui/intent/dynatrace.distributedtracing/view-trace#%7B%22trace_id%22%3A%22d052c9a8772e349d09048355a8891b82%22%7D
+# https://example.apps.dynatrace.com/ui/intent/dynatrace.distributedtracing/view-trace#%7B%22trace_id%22%3A%2200000000000000000000000000000001%22%7D
 
 # Generate with multiple properties
 dtctl open intent dynatrace.distributedtracing/view-trace \
@@ -2961,7 +3307,7 @@ curl -fsSLo da-role.yaml https://dynatrace-data-acquisition.s3.amazonaws.com/aws
 aws cloudformation deploy \
   --stack-name "$STACK" \
   --template-file da-role.yaml \
-  --parameter-overrides pDynatraceUrl=https://abc12345.apps.dynatrace.com pRoleExternalId=<connection-object-id> \
+  --parameter-overrides pDynatraceUrl=https://example.apps.dynatrace.com pRoleExternalId=<connection-object-id> \
   --capabilities CAPABILITY_NAMED_IAM
 
 ROLE_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK" \
@@ -3329,7 +3675,7 @@ Fetch snapshots captured by a breakpoint by location or stable rule ID:
 dtctl get snapshots OrderController.java:306
 
 # By stable rule ID (shown after create or in get breakpoints)
-dtctl get snapshots dtctl-rule-5bfb45a29fce7a46
+dtctl get snapshots dtctl-rule-example-snapshot
 
 # Decoded snapshot output (variant wrappers flattened to plain values)
 dtctl get snapshots OrderController.java:306 --decode-snapshots
@@ -4022,7 +4368,7 @@ dtctl get workflows --debug
 
 # Output shows:
 # ===> REQUEST <===
-# GET https://abc12345.apps.dynatrace.com/platform/automation/v1/workflows
+# GET https://example.apps.dynatrace.com/platform/automation/v1/workflows
 # HEADERS:
 #     User-Agent: dtctl/0.12.0
 #     Authorization: [REDACTED]
@@ -4056,7 +4402,7 @@ This means you haven't set up your configuration yet. Run:
 
 ```bash
 dtctl config set-context my-env \
-  --environment "https://YOUR_ENV.apps.dynatrace.com" \
+  --environment "https://example.apps.dynatrace.com" \
   --token-ref my-token
 
 dtctl config set-credentials my-token --token "dt0s16.YOUR_TOKEN"

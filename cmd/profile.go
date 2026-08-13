@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -60,7 +61,12 @@ func applyProfile(root *cobra.Command, p *config.Profile) {
 		if cmd == root {
 			return // never mask the root command itself
 		}
-		if p.Allows(commandPathRelative(cmd, root)) {
+		path := commandPathRelative(cmd, root)
+		allowed := p.Allows(path)
+		if p.Name == config.ProfileReplay {
+			allowed = config.ReplayProfileAllows(path)
+		}
+		if allowed {
 			return
 		}
 		cmd.Hidden = true
@@ -73,7 +79,7 @@ func applyProfile(root *cobra.Command, p *config.Profile) {
 			// guard always wins and the block is the only observable outcome.
 			cmd.Args = cobra.ArbitraryArgs
 			cmd.DisableFlagParsing = true
-			cmd.RunE = blockedRunE(commandPathRelative(cmd, root), p.Name)
+			cmd.RunE = blockedRunE(path, p.Name)
 			cmd.Run = nil
 		}
 	})
@@ -172,8 +178,16 @@ func resolveActiveProfile(args []string) (*config.Profile, error) {
 		// any config error later with proper context.
 		return nil, nil
 	}
-	if ctxOverride := extractContextOverride(args); ctxOverride != "" {
+	ctxOverride := extractContextOverride(args)
+	if ctxOverride == "" {
+		ctxOverride = os.Getenv("DTCTL_CONTEXT")
+	}
+	if ctxOverride != "" {
 		cfg.CurrentContext = ctxOverride
+	}
+	if activation, activationErr := replayActivationForConfig(cfg); activationErr == nil && activation.Active {
+		profile := config.BuiltinReplayProfile()
+		return &profile, nil
 	}
 	return cfg.ResolveProfile()
 }

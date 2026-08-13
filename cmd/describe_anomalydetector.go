@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
@@ -34,7 +33,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		identifier := args[0]
 
-		_, c, printer, err := Setup()
+		cfg, c, printer, err := Setup()
 		if err != nil {
 			return err
 		}
@@ -48,7 +47,11 @@ Examples:
 
 		// For table output, show detailed human-readable information
 		if outputFormat == "table" {
-			printAnomalyDetectorDescribe(c, ad)
+			executor, err := newDQLExecutorFromConfig(cfg, c)
+			if err != nil {
+				return err
+			}
+			printAnomalyDetectorDescribe(executor, ad)
 			return nil
 		}
 
@@ -66,7 +69,7 @@ Examples:
 }
 
 // printAnomalyDetectorDescribe prints detailed human-readable anomaly detector info.
-func printAnomalyDetectorDescribe(c *client.Client, ad *anomalydetector.AnomalyDetector) {
+func printAnomalyDetectorDescribe(executor *exec.DQLExecutor, ad *anomalydetector.AnomalyDetector) {
 	const w = 22
 	output.DescribeKV("Title:", w, "%s", ad.Title)
 	output.DescribeKV("Object ID:", w, "%s", ad.ObjectID)
@@ -153,17 +156,15 @@ func printAnomalyDetectorDescribe(c *client.Client, ad *anomalydetector.AnomalyD
 	}
 
 	// Recent problems cross-reference
-	printAnomalyDetectorRecentProblems(c, ad)
+	printAnomalyDetectorRecentProblems(executor, ad)
 }
 
 // printAnomalyDetectorRecentProblems queries DQL for recent problems triggered by this detector.
-func printAnomalyDetectorRecentProblems(c *client.Client, ad *anomalydetector.AnomalyDetector) {
+func printAnomalyDetectorRecentProblems(executor *exec.DQLExecutor, ad *anomalydetector.AnomalyDetector) {
 	eventName := anomalydetector.ExtractEventName(ad.Value)
 	if eventName == "" {
 		return
 	}
-
-	executor := exec.NewDQLExecutor(c)
 
 	// Build query — use prefix match if event name contains {dims:...} placeholders
 	var query string

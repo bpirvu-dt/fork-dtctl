@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
@@ -156,7 +155,7 @@ var describeAzureMonitoringConfigCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		identifier := args[0]
 
-		_, c, printer, err := Setup()
+		cfg, c, printer, err := Setup()
 		if err != nil {
 			return err
 		}
@@ -197,7 +196,11 @@ var describeAzureMonitoringConfigCmd = &cobra.Command{
 				}
 			}
 
-			printAzureMonitoringConfigStatus(c, item.ObjectID)
+			executor, err := newDQLExecutorFromConfig(cfg, c)
+			if err != nil {
+				return err
+			}
+			printAzureMonitoringConfigStatus(executor, item.ObjectID)
 
 			return nil
 		}
@@ -208,9 +211,7 @@ var describeAzureMonitoringConfigCmd = &cobra.Command{
 	},
 }
 
-func printAzureMonitoringConfigStatus(c *client.Client, configID string) {
-	executor := exec.NewDQLExecutor(c)
-
+func printAzureMonitoringConfigStatus(executor *exec.DQLExecutor, configID string) {
 	smartscapeQuery := fmt.Sprintf(`timeseries sum(dt.sfm.da.azure.smartscape.updates.count), interval:1h, by:{dt.config.id}
 | filter dt.config.id == %q`, configID)
 	metricsQuery := fmt.Sprintf(`timeseries sum(dt.sfm.da.azure.metric.data_points.count), interval:1h, by:{dt.config.id}

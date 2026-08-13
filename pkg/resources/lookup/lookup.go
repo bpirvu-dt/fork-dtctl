@@ -19,11 +19,33 @@ import (
 // Handler handles lookup table resources
 type Handler struct {
 	client *client.Client
+	runner DQLRunner
 }
 
-// NewHandler creates a new lookup handler
-func NewHandler(c *client.Client) *Handler {
-	return &Handler{client: c}
+// DQLRunner is injected by the command layer so lookup operations share the
+// top-level command's context-aware executor and invocation-local parse memo.
+type DQLRunner interface {
+	ExecuteQuery(string) (*exec.DQLQueryResponse, error)
+	ExecuteQueryWithOptions(string, exec.DQLExecuteOptions) (*exec.DQLQueryResponse, error)
+}
+
+// NewHandler creates a new lookup handler. Commands that call List, Get, or
+// GetData must inject their top-level DQL runner. Mutating-only callers may
+// omit it because the resource package never reloads global configuration or
+// constructs an executor on its own.
+func NewHandler(c *client.Client, runner ...DQLRunner) *Handler {
+	h := &Handler{client: c}
+	if len(runner) > 0 {
+		h.runner = runner[0]
+	}
+	return h
+}
+
+func (h *Handler) dqlRunner() (DQLRunner, error) {
+	if h.runner == nil {
+		return nil, fmt.Errorf("lookup DQL operation requires an injected runner")
+	}
+	return h.runner, nil
 }
 
 // Lookup represents a lookup table file
@@ -94,8 +116,11 @@ func (h *Handler) List() ([]Lookup, error) {
 	// Query all files in the system (note: the path field is called 'name' in dt.system.files)
 	query := `fetch dt.system.files | filter startsWith(name, "/lookups/")`
 
-	executor := exec.NewDQLExecutor(h.client)
-	result, err := executor.ExecuteQuery(query)
+	runner, err := h.dqlRunner()
+	if err != nil {
+		return nil, err
+	}
+	result, err := runner.ExecuteQuery(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list lookup tables: %w", err)
 	}
@@ -155,11 +180,14 @@ func (h *Handler) Get(path string) (*Lookup, error) {
 		return nil, err
 	}
 
-	executor := exec.NewDQLExecutor(h.client)
+	runner, err := h.dqlRunner()
+	if err != nil {
+		return nil, err
+	}
 
 	// First, get metadata from dt.system.files
 	metadataQuery := fmt.Sprintf(`fetch dt.system.files | filter name == "%s"`, path)
-	metadataResult, err := executor.ExecuteQuery(metadataQuery)
+	metadataResult, err := runner.ExecuteQuery(metadataQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lookup table metadata %q: %w", path, err)
 	}
@@ -210,7 +238,7 @@ func (h *Handler) Get(path string) (*Lookup, error) {
 
 	// Use DQL to load the lookup and get schema
 	query := fmt.Sprintf("load \"%s\" | limit 1", path)
-	result, err := executor.ExecuteQuery(query)
+	result, err := runner.ExecuteQuery(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lookup table %q: %w", path, err)
 	}
@@ -260,8 +288,11 @@ func (h *Handler) GetData(path string, limit int) (*GetDataResult, error) {
 		MaxResultRecords: maxLookupRecords,
 	}
 
-	executor := exec.NewDQLExecutor(h.client)
-	result, err := executor.ExecuteQueryWithOptions(query, opts)
+	runner, err := h.dqlRunner()
+	if err != nil {
+		return nil, err
+	}
+	result, err := runner.ExecuteQueryWithOptions(query, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lookup data %q: %w", path, err)
 	}

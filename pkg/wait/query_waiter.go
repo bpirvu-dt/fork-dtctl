@@ -24,6 +24,7 @@ type WaitConfig struct {
 	OutputFormat string
 	Quiet        bool
 	Verbose      bool
+	AgentMode    bool
 	ProgressOut  io.Writer // Where to write progress messages (default: stderr)
 }
 
@@ -41,6 +42,7 @@ type Result struct {
 	RecordCount   int64
 	Records       []map[string]any
 	FailureReason string
+	Replay        *exec.ReplayExecutionInfo
 }
 
 // NewQueryWaiter creates a new query waiter
@@ -58,6 +60,9 @@ func NewQueryWaiter(executor *exec.DQLExecutor, config WaitConfig) *QueryWaiter 
 // Wait executes the wait operation
 func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 	startTime := time.Now()
+	if err := w.executor.ValidateReplayCadenceWithContext(ctx, w.config.Backoff.MinInterval); err != nil {
+		return nil, err
+	}
 
 	// Apply timeout to context
 	if w.config.Timeout > 0 {
@@ -131,8 +136,20 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 				attempt+1, attemptsDisplay, attemptStartTime.Format(time.RFC3339))
 		}
 
-		// Execute query
-		result, err := w.executor.ExecuteQueryWithOptions(w.config.Query, w.config.QueryOptions)
+		// Execute query. One executor is deliberately reused so replay's
+		// original-parse memo remains invocation-local across attempts. Preserve
+		// the historical non-replay behavior, whose individual request was not
+		// bound to the wait timeout context.
+		executeCtx := ctx
+		if !w.executor.ReplayEnabled() {
+			executeCtx = context.Background()
+		}
+		detailed, err := w.executor.ExecuteQueryDetailedWithContext(executeCtx, w.config.Query, w.config.QueryOptions)
+		var result *exec.DQLQueryResponse
+		var replayInfo *exec.ReplayExecutionInfo
+		if detailed != nil {
+			result, replayInfo = detailed.Response, detailed.Replay
+		}
 		if err != nil {
 			// Query execution error - retry unless context cancelled
 			if ctx.Err() != nil {
@@ -145,9 +162,25 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 				}, ctx.Err()
 			}
 
-			// Permanent query errors (e.g. a malformed DQL query) can never
+			if exec.ReplayTemporaryNonOverlap(err) {
+				if !w.config.Quiet {
+					fmt.Fprintln(w.config.ProgressOut, err)
+				}
+				info, _ := exec.ReplayErrorInfo(err)
+				interval := CalculateNextInterval(attempt, w.config.Backoff)
+				attempt++
+				if waitErr := w.executor.WaitForNextAttempt(ctx, interval, &info, err); waitErr != nil {
+					return w.timeoutResult(startTime, attempt), waitErr
+				}
+				continue
+			}
+			if info, ok := exec.ReplayErrorInfo(err); ok {
+				replayInfo = &info
+			}
+
+			// Permanent query and replay-preparation errors can never
 			// succeed, so retrying with backoff is pointless — fail fast.
-			if isPermanentQueryError(err) {
+			if exec.ReplayLoopHardFailure(err) || isPermanentQueryError(err) {
 				elapsed := time.Since(startTime)
 				if !w.config.Quiet {
 					fmt.Fprintf(w.config.ProgressOut, "\nQuery error (not retryable): %v\n", err)
@@ -165,7 +198,7 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 			if w.config.Verbose {
 				fmt.Fprintf(w.config.ProgressOut, "  Query error: %v (will retry)\n", err)
 			}
-		} else {
+		} else if result != nil {
 			// Extract records
 			records := result.Records
 			if result.Result != nil && len(result.Result.Records) > 0 {
@@ -177,6 +210,19 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 			if w.config.Verbose {
 				fmt.Fprintf(w.config.ProgressOut, "  Query executed in %s\n", queryDuration.Round(time.Millisecond))
 				fmt.Fprintf(w.config.ProgressOut, "  Result: %d record(s)\n", recordCount)
+			}
+
+			// A loop's own successful terminal attempt ends the command even
+			// when another process won the guarded completion race.
+			if replayInfo != nil && replayInfo.Terminal {
+				elapsed := time.Since(startTime)
+				if !w.config.Quiet {
+					fmt.Fprintf(w.config.ProgressOut, "Reached the end of the available data after %d attempt(s)\n", attempt+1)
+				}
+				return &Result{
+					Success: true, Attempts: attempt + 1, Elapsed: elapsed,
+					RecordCount: recordCount, Records: records, Replay: replayInfo,
+				}, nil
 			}
 
 			// Evaluate condition
@@ -201,6 +247,7 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 					Elapsed:     elapsed,
 					RecordCount: recordCount,
 					Records:     records,
+					Replay:      replayInfo,
 				}, nil
 			}
 
@@ -227,11 +274,10 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 			fmt.Fprintln(w.config.ProgressOut)
 		}
 
-		// Wait for next attempt
-		select {
-		case <-time.After(interval):
-			// Continue to next attempt
-		case <-ctx.Done():
+		// Wait for next attempt. Replay scheduling may shorten only the
+		// final wait so the next virtual timestamp is exactly data_end, or
+		// lengthen it to honor Retry-After.
+		if waitErr := w.executor.WaitForNextAttempt(ctx, interval, replayInfo, err); waitErr != nil {
 			elapsed := time.Since(startTime)
 			if !w.config.Quiet {
 				fmt.Fprintf(w.config.ProgressOut, "\nTimeout reached\n")
@@ -242,10 +288,17 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 				Attempts:      attempt + 1,
 				Elapsed:       elapsed,
 				FailureReason: "timeout",
-			}, ctx.Err()
+			}, waitErr
 		}
 
 		attempt++
+	}
+}
+
+func (w *QueryWaiter) timeoutResult(startTime time.Time, attempt int) *Result {
+	return &Result{
+		Success: false, Attempts: attempt, Elapsed: time.Since(startTime),
+		FailureReason: "timeout",
 	}
 }
 
@@ -272,6 +325,12 @@ func isPermanentQueryError(err error) bool {
 func (w *QueryWaiter) PrintResults(result *Result) error {
 	if w.config.OutputFormat == "" || result.Records == nil {
 		return nil
+	}
+
+	if replayMetadata := exec.ReplayOutputMetadata(result.Replay); w.config.AgentMode && replayMetadata != nil {
+		printer := output.NewAgentPrinter(os.Stdout, &output.ResponseContext{Verb: "wait", Resource: "query"})
+		printer.SetReplay(replayMetadata)
+		return printer.Print(map[string]any{"records": result.Records})
 	}
 
 	printer := output.NewPrinter(w.config.OutputFormat)

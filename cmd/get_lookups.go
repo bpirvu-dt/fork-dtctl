@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -11,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/prompt"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/lookup"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // getLookupsCmd retrieves lookup tables
@@ -49,12 +51,16 @@ Examples:
   dtctl get lookups -o wide
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		_, c, printer, err := Setup()
+		cfg, c, printer, err := Setup()
 		if err != nil {
 			return err
 		}
 
-		handler := lookup.NewHandler(c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
+		handler := lookup.NewHandler(c, executor)
 
 		// Get specific lookup if path provided
 		if len(args) > 0 {
@@ -64,7 +70,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				printLookupNotifications(c, dataResult.Notifications)
+				printLookupNotifications(c, executor, dataResult.Notifications)
 				return printer.PrintList(dataResult.Records)
 			}
 
@@ -74,7 +80,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				printLookupNotifications(c, dataResult.Notifications)
+				printLookupNotifications(c, executor, dataResult.Notifications)
 				return printer.PrintList(dataResult.Records)
 			}
 
@@ -83,7 +89,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			printLookupNotifications(c, notifications)
+			printLookupNotifications(c, executor, notifications)
 			return printer.Print(lookupData)
 		}
 
@@ -117,12 +123,16 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
 
-		_, c, err := SetupWithSafety(safety.OperationDelete)
+		cfg, c, err := SetupWithSafety(safety.OperationDelete)
 		if err != nil {
 			return err
 		}
 
-		handler := lookup.NewHandler(c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
+		handler := lookup.NewHandler(c, executor)
 
 		// Get lookup for confirmation
 		lu, err := handler.Get(path)
@@ -156,10 +166,18 @@ func init() {
 	deleteLookupCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 }
 
-// printLookupNotifications surfaces DQL query notifications (e.g., truncation warnings) to stderr
-func printLookupNotifications(c *client.Client, notifications []exec.QueryNotification) {
+// printLookupNotifications intentionally uses a non-replay executor only as a
+// notification formatter after consulting the factory-built executor's route.
+// It receives an already-completed response, makes no parse or execute request,
+// and cannot bypass replay query preparation or restricted disclosure.
+func printLookupNotifications(c *client.Client, replayAware *exec.DQLExecutor, notifications []exec.QueryNotification) {
 	if len(notifications) == 0 {
 		return
+	}
+	if replayAware != nil {
+		if disclosure, active := replayAware.ReplayDisclosure(context.Background()); active && disclosure == session.ReplayDisclosureRestricted {
+			return
+		}
 	}
 	executor := exec.NewDQLExecutor(c)
 	executor.PrintNotifications(notifications)

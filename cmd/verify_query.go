@@ -114,12 +114,15 @@ Examples:
 			return fmt.Errorf("unsupported output format %q for verify query (supported: json, yaml, toon)", outputFmt)
 		}
 
-		_, c, err := SetupClient()
+		cfg, c, err := SetupClient()
 		if err != nil {
 			return err
 		}
 
-		executor := exec.NewDQLExecutor(c)
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		queryFile, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")
@@ -184,8 +187,10 @@ Examples:
 			ClientContext:          clientContext,
 		}
 
-		// Call VerifyQuery and handle response
-		result, err := executor.VerifyQuery(query, opts)
+		// Verify the user's original DQL first. Replay compatibility, when an
+		// active session exists, is a separate parse/audit-only path below and
+		// never calls query:execute.
+		result, err := executor.VerifyQueryWithContext(cmd.Context(), query, opts)
 
 		// Get exit code first (needed for all output formats)
 		exitCode := getVerifyExitCode(result, err, failOnWarn)
@@ -199,30 +204,39 @@ Examples:
 			return err
 		}
 
+		compatibility, err := executor.VerifyReplayCompatibilityWithContext(cmd.Context(), query, opts, result.Valid)
+		if err != nil {
+			return err
+		}
+		structuredResult := verifyQueryStructuredResult(result, compatibility)
+
 		// Format output based on --output flag (already validated above)
 		switch outputFmt {
 		case "json":
 			// Print full DQLVerifyResponse as JSON
 			printer := output.NewPrinter("json")
-			if err := printer.Print(result); err != nil {
+			if err := printer.Print(structuredResult); err != nil {
 				return fmt.Errorf("failed to print JSON output: %w", err)
 			}
 		case "yaml", "yml":
 			// Print full DQLVerifyResponse as YAML
 			printer := output.NewPrinter("yaml")
-			if err := printer.Print(result); err != nil {
+			if err := printer.Print(structuredResult); err != nil {
 				return fmt.Errorf("failed to print YAML output: %w", err)
 			}
 		case "toon":
 			// Print full DQLVerifyResponse as TOON
 			printer := output.NewPrinter("toon")
-			if err := printer.Print(result); err != nil {
+			if err := printer.Print(structuredResult); err != nil {
 				return fmt.Errorf("failed to print TOON output: %w", err)
 			}
 		default:
 			// Default: human-readable format
 			if err := formatVerifyResultHuman(result, query, canonical); err != nil {
 				return fmt.Errorf("failed to format output: %w", err)
+			}
+			if compatibility.FullDisclosure() {
+				formatReplayVerificationHuman(compatibility)
 			}
 		}
 
@@ -233,6 +247,33 @@ Examples:
 
 		return nil
 	},
+}
+
+type verifyQueryOutput struct {
+	*exec.DQLVerifyResponse `yaml:",inline"`
+	Replay                  *exec.ReplayVerification `json:"replay,omitempty" yaml:"replay,omitempty"`
+}
+
+func verifyQueryStructuredResult(result *exec.DQLVerifyResponse, compatibility *exec.ReplayVerification) any {
+	if compatibility.FullDisclosure() {
+		return verifyQueryOutput{DQLVerifyResponse: result, Replay: compatibility}
+	}
+	return result
+}
+
+func formatReplayVerificationHuman(value *exec.ReplayVerification) {
+	if value == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "\nReplay compatibility:")
+	fmt.Fprintf(os.Stderr, "  Original DQL valid: %t\n", value.OriginalDQLValid)
+	fmt.Fprintf(os.Stderr, "  Replay compiler supported: %t\n", value.CompilerSupported)
+	fmt.Fprintf(os.Stderr, "  Effective query valid: %t\n", value.EffectiveQueryValid)
+	unsupported := "none"
+	if len(value.UnsupportedConstructs) > 0 {
+		unsupported = strings.Join(value.UnsupportedConstructs, ", ")
+	}
+	fmt.Fprintf(os.Stderr, "  Unsupported replay constructs: %s\n", unsupported)
 }
 
 // formatVerifyResultHuman prints verification results in human-readable format

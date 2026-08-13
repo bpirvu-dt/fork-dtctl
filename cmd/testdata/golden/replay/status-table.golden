@@ -1,0 +1,17 @@
+Context:               historical-window
+Status:                active
+Session ID:            0123456789abcdef0123456789abcdef
+Session host start:    2026-08-11T09:00:00Z
+Current host time:     2026-08-11T09:30:00Z
+Clock mode:            realtime
+Host anchor:           2026-08-11T09:00:00Z
+Virtual anchor:        2026-06-14T10:00:00Z
+Virtual start:         2026-06-14T10:00:00Z
+Current virtual time:  2026-06-14T10:30:00Z
+Data start:            2026-06-14T08:00:00Z
+Data end:              2026-06-14T12:00:00Z
+Visible end:           2026-06-14T10:30:00Z
+Position:              inside-replay-interval
+Configuration drift:   false
+State key:             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Unreadable state file: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.state.json

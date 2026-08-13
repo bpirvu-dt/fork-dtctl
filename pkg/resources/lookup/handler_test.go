@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
+	"github.com/dynatrace-oss/dtctl/pkg/exec"
 )
 
 // newLookupTestHandler creates a Handler backed by a test server.
@@ -22,7 +23,7 @@ func newLookupTestHandler(t *testing.T, mux *http.ServeMux) (*Handler, func()) {
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
-	return NewHandler(c), srv.Close
+	return NewHandler(c, exec.NewDQLExecutor(c)), srv.Close
 }
 
 // --- Create ---

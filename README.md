@@ -49,7 +49,7 @@ Binary downloads, building from source, shell completion setup, and more in the 
 
 ```bash
 # OAuth login (recommended, no token management needed)
-dtctl auth login --context my-env --environment "https://abc12345.apps.dynatrace.com"
+dtctl auth login --context my-env --environment "https://example.apps.dynatrace.com"
 
 # Verify everything works
 dtctl doctor
@@ -66,6 +66,84 @@ Token-based authentication and multi-environment configuration are covered in th
 - **DQL passthrough**: Execute queries directly, with template variables and file-based input
 - **[NO_COLOR](https://no-color.org/) support**: Respects `NO_COLOR`, `FORCE_COLOR=1`, and auto-detects TTY
 
+## Historical replay
+
+Historical replay runs normal DQL against a local historical clock. dtctl
+replaces semantic uses of `now()`, bounds every supported source to the visible
+replay interval, reparses the effective DQL, and audits it before execution.
+Unsupported DQL fails closed.
+
+For automation, store the complete replay block in the context. Use manual
+clock mode and restricted disclosure explicitly:
+
+```yaml
+contexts:
+  - name: historical-window
+    context:
+      environment: https://example.apps.dynatrace.com
+      token-ref: readonly-reader
+      safety-level: readonly
+      profile: replay
+      replay:
+        data_start: "2026-06-14T08:00:00Z"
+        data_end: "2026-06-14T12:00:00Z"
+        virtual_start: "2026-06-14T10:00:00Z"
+        clock_mode: manual
+        disclosure: restricted
+```
+
+```bash
+dtctl replay start --context historical-window
+dtctl query 'fetch logs, from:now()-1h' --context historical-window
+dtctl replay advance 10m --context historical-window
+dtctl replay status --context historical-window
+dtctl replay stop --context historical-window
+```
+
+`realtime` and `full` remain the defaults. They are intended for interactive
+exploration. `full` keeps replay details visible in notices, errors, explain,
+agent, and spill output. `restricted` keeps normal output shaped like non-replay
+output and writes replay facts to a private JSON Lines provenance file.
+Restricted disclosure is not a sandbox. A process running as the same
+operating-system user can read accessible state and invoke hidden management
+verbs. Historical timestamps also remain unchanged.
+
+Milestone 1 supports exactly these historical record tables:
+
+| Table | Record-time field |
+|---|---|
+| `logs` | `timestamp` |
+| `spans` | `start_time` |
+| `events` | `timestamp` |
+| `bizevents` | `timestamp` |
+| `dt.system.events` | `timestamp` |
+| `dt.davis.events.snapshots` | `timestamp` |
+| `dt.davis.problems.snapshots` | `timestamp` |
+
+Metrics support automatic and fixed-duration natural metric buckets, plus only
+the tested advanced forms. `interval:1d` means fixed `24h`, not a calendar day,
+and dtctl prints a notification. Calendar intervals and every `shift:` form are
+rejected.
+
+> **Metric look-ahead:** The newest natural metric bucket shows its final stored
+> aggregate even while virtual now is still inside that bucket. Only the bucket
+> being traversed is affected. There is no partial-bucket look-ahead when virtual
+> now is exactly on a bucket boundary. A fixed 24-hour bucket can therefore look
+> ahead by almost 24 hours.
+
+Before stored telemetry execution, dtctl makes one best-effort read of current
+aggregate retention metadata per command invocation. It warns when the replay
+interval starts before a known current retention boundary. If the read fails,
+it warns that retention was not verified. Current metadata cannot report past
+metric-resolution transitions, so metric replay also warns that historical
+resolution was not verified. These warnings never block an otherwise valid
+query. dtctl never changes tenant retention. Restricted disclosure writes the
+warnings only to the provenance file.
+
+See [Historical replay](docs/QUICK_START.md#historical-replay) for source limits,
+Davis snapshot reconstruction, non-overlap behavior, provenance, command
+guardrails, and determinism limits.
+
 ## Supported Resources
 
 | Resource | Operations |
@@ -73,7 +151,7 @@ Token-based authentication and multi-environment configuration are covered in th
 | Workflows | get, describe, create, edit, delete, apply, execute, logs, history, restore, diff, watch |
 | Dashboards & Notebooks | get, describe, create, edit, delete, apply, share, history, restore, diff, watch |
 | Documents & Trash | get, describe, create, edit, delete, share, history, restore |
-| DQL Queries | execute, verify, template variables, live mode, filter segments, wait conditions, spill large results to a file + local `inspect` (rows/schema/stats) |
+| DQL Queries | execute, verify, historical replay, template variables, live mode, filter segments, wait conditions, spill large results to a file + local `inspect` (rows/schema/stats) |
 | SLOs | get, describe, create, edit, delete, apply, evaluate, watch |
 | Settings | get schemas, get/create/update/delete objects |
 | Buckets | get, describe, create, delete, apply, watch |

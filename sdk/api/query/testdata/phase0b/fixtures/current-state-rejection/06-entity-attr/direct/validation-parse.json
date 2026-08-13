@@ -1,0 +1,39 @@
+{
+  "http_status": 400,
+  "elapsed_ms": 165.019,
+  "response_headers": {
+    "Content-Type": "application/json",
+    "Date": "Mon, 10 Aug 2026 11:04:09 GMT"
+  },
+  "response_body": {
+    "error": {
+      "code": 400,
+      "details": {
+        "arguments": [
+          "HOST"
+        ],
+        "errorMessage": "The provided entity type `HOST` doesn't match an entity definition.",
+        "errorMessageFormat": "The provided entity type `%1$s` doesn't match an entity definition.",
+        "errorMessageFormatSpecifierTypes": [
+          "STRING"
+        ],
+        "errorType": "INVALID_ENTITY_TYPE",
+        "exceptionType": "DQL-RESULT_TYPE",
+        "queryString": "fetch dt.entity.host | limit 1 | fieldsAdd resolved=entityAttr(id, \"tags\", type:\"HOST\")",
+        "syntaxErrorPosition": {
+          "end": {
+            "column": 86,
+            "index": 85,
+            "line": 1
+          },
+          "start": {
+            "column": 81,
+            "index": 80,
+            "line": 1
+          }
+        }
+      },
+      "message": "INVALID_ENTITY_TYPE"
+    }
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // ctxCmd is a top-level shortcut for context management.
@@ -199,6 +200,10 @@ func listContexts() error {
 	if err != nil {
 		return err
 	}
+	restrictedDiscovery := false
+	if activation, activationErr := replayActivationForConfig(cfg); activationErr == nil {
+		restrictedDiscovery = activation.Active && activation.Disclosure == session.ReplayDisclosureRestricted
+	}
 
 	var items []ContextListItem
 	for _, nc := range cfg.Contexts {
@@ -206,12 +211,16 @@ func listContexts() error {
 		if nc.Name == cfg.CurrentContext {
 			current = "*"
 		}
+		profile := nc.Context.Profile
+		if restrictedDiscovery && profile == config.ProfileReplay {
+			profile = ""
+		}
 		items = append(items, ContextListItem{
 			Current:     current,
 			Name:        nc.Name,
 			Environment: nc.Context.Environment,
 			SafetyLevel: nc.Context.SafetyLevel.String(),
-			Profile:     nc.Context.Profile,
+			Profile:     profile,
 			Description: nc.Context.Description,
 		})
 	}
@@ -291,7 +300,12 @@ func describeContext(name string) error {
 		fmt.Printf("%*s(All operations including bucket deletion)\n", w, "")
 	}
 
-	if found.Context.Profile != "" {
+	hideReplayProfile := false
+	if activation, activationErr := replayActivationForConfig(cfg); activationErr == nil &&
+		activation.Active && activation.Disclosure == session.ReplayDisclosureRestricted && found.Context.Profile == config.ProfileReplay {
+		hideReplayProfile = true
+	}
+	if found.Context.Profile != "" && !hideReplayProfile {
 		output.DescribeKV("Profile:", w, "%s", found.Context.Profile)
 		fmt.Printf("%*s(Restricts the visible command surface)\n", w, "")
 	}

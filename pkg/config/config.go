@@ -22,6 +22,7 @@ type (
 	ContextOptions = session.ContextOptions
 	Hooks          = session.Hooks
 	SpillConfig    = session.SpillConfig
+	ReplayConfig   = session.ReplayConfig
 	SafetyLevel    = session.SafetyLevel
 	AliasEntry     = session.AliasEntry
 	AliasFile      = session.AliasFile
@@ -109,6 +110,9 @@ type Profile = session.Profile
 const (
 	ProfileEnvVar = session.ProfileEnvVar
 	ProfileFull   = session.ProfileFull
+	ProfileReplay = session.ProfileReplay
 )
 
-func BuiltinProfileNames() []string { return session.BuiltinProfileNames() }
+func BuiltinProfileNames() []string        { return session.BuiltinProfileNames() }
+func ReplayProfileAllows(path string) bool { return session.ReplayProfileAllows(path) }
+func BuiltinReplayProfile() Profile        { return session.BuiltinReplayProfile() }
