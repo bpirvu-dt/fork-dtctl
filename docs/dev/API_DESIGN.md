@@ -282,10 +282,12 @@ session in a context without a replay block loses configured protection after
 stop, so it is not a complete automation setup.
 
 Davis event and problem snapshot tables are historical records. The DQL author
-must sort and reduce them to the latest snapshot per `event.id`. A shorter than
-six-hour warm-up produces a non-blocking warning. The current Davis views are
-rejected with snapshot guidance in full disclosure and provenance-only detail
-in restricted disclosure.
+must sort and reduce them to the latest snapshot per `event.id`. Problem-view
+reconstruction must additionally filter for problem-lifetime overlap, with an
+end-inclusive lower bound. Event-view equivalence remains unverified. A shorter
+than six-hour warm-up produces a non-blocking warning. The current Davis views
+are rejected with snapshot guidance in full disclosure and provenance-only
+detail in restricted disclosure.
 
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
 automatic Davis current-view mapping are milestone 2 candidates. They are not

@@ -1633,7 +1633,15 @@ func TestDQLExecutorDavisCurrentViewGuidanceUsesDisclosureRoute(t *testing.T) {
 				t.Fatal("current Davis view unexpectedly executed")
 			}
 			if disclosure == session.ReplayDisclosureFull {
-				for _, wanted := range []string{"dt.davis.problems.snapshots", "latest snapshot", "dedup event.id"} {
+				for _, wanted := range []string{
+					"dt.davis.problems.snapshots",
+					"latest snapshot",
+					"keep only problems whose lifetime overlaps the visible interval",
+					"dedup event.id",
+					"filter event.start < <visible-end>",
+					"coalesce(event.end, <visible-end>) >= <visible-start>",
+					"at least six hours of warm-up",
+				} {
 					if !strings.Contains(err.Error(), wanted) {
 						t.Fatalf("full Davis guidance missing %q: %v", wanted, err)
 					}

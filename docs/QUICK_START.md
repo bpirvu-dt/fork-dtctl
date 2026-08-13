@@ -1582,19 +1582,23 @@ spill. It cannot inspect which measurements contributed to an aggregate.
 #### Davis snapshot history
 
 Use the two snapshot tables for Davis history. dtctl bounds their records. Your
-DQL reconstructs the state at virtual now. A latest-per-ID pattern is:
+DQL reconstructs the state at virtual now. For problems, use latest-per-ID plus
+problem-lifetime overlap:
 
 ```dql
 fetch dt.davis.problems.snapshots, from:now()-6h, to:now()
 | sort timestamp desc
 | dedup event.id
+| filter event.start < now()
+    and coalesce(event.end, now()) >= now()-6h
 ```
 
-Use `dt.davis.events.snapshots` for event history with the same `event.id`
-reduction. The current views `dt.davis.problems` and `dt.davis.events` are
-rejected. Under full disclosure, the error names the matching snapshot table
-and shows the latest-per-ID pattern. Under restricted disclosure, that detail
-goes only to provenance.
+Use `dt.davis.events.snapshots` for event history with the same sort/dedup
+reduction. Event-view equivalence is not yet verified, so do not copy the
+problem-lifetime filter to events. The current views `dt.davis.problems` and
+`dt.davis.events` are rejected. Under full disclosure, the error names the
+matching snapshot table and shows the appropriate reconstruction pattern.
+Under restricted disclosure, that detail goes only to provenance.
 
 Dynatrace documents a six-hour refresh cadence for open problem snapshots. Set
 `data_start` at least six hours before `virtual_start` when reconstructing

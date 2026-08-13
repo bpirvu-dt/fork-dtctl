@@ -271,9 +271,18 @@ func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
 	tests := []struct {
 		view     string
 		snapshot string
+		pattern  string
 	}{
-		{"dt.davis.problems", "dt.davis.problems.snapshots"},
-		{"dt.davis.events", "dt.davis.events.snapshots"},
+		{
+			"dt.davis.problems",
+			"dt.davis.problems.snapshots",
+			"fetch dt.davis.problems.snapshots, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup event.id | filter event.start < <visible-end> and coalesce(event.end, <visible-end>) >= <visible-start>",
+		},
+		{
+			"dt.davis.events",
+			"dt.davis.events.snapshots",
+			"fetch dt.davis.events.snapshots, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup event.id",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.view, func(t *testing.T) {
@@ -289,11 +298,38 @@ func TestCurrentDavisViewErrorCarriesSnapshotRewrite(t *testing.T) {
 				t.Fatalf("error = %T %v, want *DavisCurrentViewError", err, err)
 			}
 			if davisErr.SnapshotTable != test.snapshot || davisErr.IdentityField != "event.id" ||
-				!strings.Contains(davisErr.LatestPerIDPattern, "dedup event.id") ||
+				davisErr.LatestPerIDPattern != test.pattern ||
 				!strings.Contains(davisErr.Error(), test.snapshot) || !strings.Contains(davisErr.Error(), "Pattern:") {
 				t.Fatalf("Davis error = %#v (%v)", davisErr, davisErr)
 			}
+			if test.view == "dt.davis.events" &&
+				(!strings.Contains(davisErr.Error(), "then reduce to the latest snapshot per event ID.\nPattern:") ||
+					strings.Contains(davisErr.Error(), "lifetime overlaps")) {
+				t.Fatalf("events guidance changed unexpectedly: %v", davisErr)
+			}
 		})
+	}
+}
+
+func TestCurrentDavisProblemsGuidanceRequiresLifetimeOverlap(t *testing.T) {
+	davisErr, ok := currentDavisView("dt.davis.problems", &Node{})
+	if !ok {
+		t.Fatal("dt.davis.problems was not recognized as a current Davis view")
+	}
+
+	// 2026-08-13-01-evidence_davis-equivalence.md: Candidate A's false positive
+	// retained a problem whose lifetime did not overlap the window.
+	for _, wanted := range []string{
+		"keep only problems whose lifetime overlaps the visible interval",
+		"filter event.start < <visible-end>",
+		"coalesce(event.end, <visible-end>) >= <visible-start>",
+	} {
+		if !strings.Contains(davisErr.Error(), wanted) {
+			t.Fatalf("problems guidance missing %q: %v", wanted, davisErr)
+		}
+	}
+	if !strings.Contains(davisErr.Error(), "at least six hours of warm-up") {
+		t.Fatalf("problems guidance missing warm-up caveat: %v", davisErr)
 	}
 }
 
