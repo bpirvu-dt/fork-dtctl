@@ -1636,6 +1636,7 @@ func TestDQLExecutorDavisCurrentViewGuidanceUsesDisclosureRoute(t *testing.T) {
 				for _, wanted := range []string{
 					"dt.davis.problems.snapshots",
 					"latest snapshot",
+					"keep only problems whose lifetime overlaps the visible interval",
 					"dedup event.id",
 					"filter event.start < <visible-end>",
 					"coalesce(event.end, <visible-end>) >= <visible-start>",
