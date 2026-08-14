@@ -274,6 +274,11 @@ func formatReplayVerificationHuman(value *exec.ReplayVerification) {
 		unsupported = strings.Join(value.UnsupportedConstructs, ", ")
 	}
 	fmt.Fprintf(os.Stderr, "  Unsupported replay constructs: %s\n", unsupported)
+	if value.CoverageVerified != nil {
+		fmt.Fprintln(os.Stderr, "  Would-be effective DQL:")
+		fmt.Fprintln(os.Stderr, value.EffectiveQuery)
+		fmt.Fprintln(os.Stderr, value.CoverageMessage)
+	}
 }
 
 // formatVerifyResultHuman prints verification results in human-readable format

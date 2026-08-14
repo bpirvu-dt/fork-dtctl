@@ -10,9 +10,10 @@ import (
 type SourceClass string
 
 const (
-	SourceRecord    SourceClass = "record"
-	SourceMetric    SourceClass = "metric"
-	SourceSynthetic SourceClass = "synthetic"
+	SourceRecord            SourceClass = "record"
+	SourceMetric            SourceClass = "metric"
+	SourceSynthetic         SourceClass = "synthetic"
+	SourceDavisProblemsView SourceClass = "davis_problems_view"
 )
 
 // BoundaryPolicy identifies how source-native results relate to the logical
@@ -85,6 +86,7 @@ type SourceDescriptor struct {
 	RecordTimeField string
 	BoundaryPolicy  BoundaryPolicy
 	Metric          *MetricForm
+	DavisProblems   *DavisProblemsMappingCandidate
 }
 
 type sourceAnalysis struct {
@@ -92,6 +94,7 @@ type sourceAnalysis struct {
 	node       *Node
 	command    commandView
 	parameters []parameterView
+	dataObject *Node
 }
 
 type commandView struct {
@@ -108,7 +111,16 @@ type parameterView struct {
 // ClassifySources applies the milestone policy without reading state, the
 // clock, configuration, or the network.
 func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) {
-	analyses, err := analyzeSources(ast, policy)
+	return ClassifySourcesWithMapping(ast, policy, DavisProblemsMappingPolicy{})
+}
+
+// ClassifySourcesWithMapping applies the ordinary source allowlist plus the
+// separately typed full-disclosure problems-view policy.
+func ClassifySourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, error) {
+	if err := validateDavisMappingPolicy(mapping, false); err != nil {
+		return nil, err
+	}
+	analyses, err := analyzeSources(ast, policy, mapping)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +133,19 @@ func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) 
 			metric.MetricKeys = append([]string(nil), analyses[i].Metric.MetricKeys...)
 			out[i].Metric = &metric
 		}
+		if analyses[i].DavisProblems != nil {
+			candidate := *analyses[i].DavisProblems
+			if analyses[i].DavisProblems.Span != nil {
+				span := *analyses[i].DavisProblems.Span
+				candidate.Span = &span
+			}
+			out[i].DavisProblems = &candidate
+		}
 	}
 	return out, nil
 }
 
-func analyzeSources(ast *AST, policy SourcePolicy) ([]*sourceAnalysis, error) {
+func analyzeSources(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]*sourceAnalysis, error) {
 	if err := ValidateASTContract(ast); err != nil {
 		return nil, err
 	}
@@ -154,9 +174,22 @@ func analyzeSources(ast *AST, policy SourcePolicy) ([]*sourceAnalysis, error) {
 		source.Path = command.node.Path
 		switch command.name {
 		case "fetch":
-			table, err := fetchTable(command.node)
+			dataObject, table, err := fetchDataObject(command.node)
 			if err != nil {
 				return nil, err
+			}
+			source.dataObject = dataObject
+			if candidate, ok := mappingCandidateFor(dataObject.Canonical, dataObject, command.node, mapping); ok {
+				if err := validateParameterKeys(params, "dataobject", "from", "to", "timeframe"); err != nil {
+					return nil, err
+				}
+				source.Class = SourceDavisProblemsView
+				source.Name = davisProblemsView
+				source.RecordTimeField = "timestamp"
+				source.BoundaryPolicy = BoundaryExact
+				source.DavisProblems = candidate
+				sources = append(sources, source)
+				continue
 			}
 			if current, ok := currentDavisView(table, command.node); ok {
 				return nil, current
@@ -227,18 +260,18 @@ func validateParameterKeys(parameters []parameterView, allowed ...string) error 
 	return nil
 }
 
-func fetchTable(command *Node) (string, error) {
-	var tables []string
+func fetchDataObject(command *Node) (*Node, string, error) {
+	var objects []*Node
 	_ = walkOwned(command, func(node *Node) error {
 		if node.Kind == NodeTerminal && node.Role == "DATA_OBJECT" {
-			tables = append(tables, strings.ToLower(node.Canonical))
+			objects = append(objects, node)
 		}
 		return nil
 	})
-	if len(tables) != 1 {
-		return "", replayError(ErrorASTContract, command, "fetch", "A fetch command has no unambiguous data object.", "Update dtctl if the server AST contract changed.")
+	if len(objects) != 1 {
+		return nil, "", replayError(ErrorASTContract, command, "fetch", "A fetch command has no unambiguous data object.", "Update dtctl if the server AST contract changed.")
 	}
-	return tables[0], nil
+	return objects[0], strings.ToLower(objects[0].Canonical), nil
 }
 
 func validateCommandSurface(ast *AST, commands []commandView) error {

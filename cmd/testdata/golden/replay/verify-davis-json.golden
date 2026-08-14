@@ -1,0 +1,14 @@
+{
+  "valid": true,
+  "canonicalQuery": "fetch dt.davis.problems",
+  "replay": {
+    "active": true,
+    "original_dql_valid": true,
+    "compiler_supported": true,
+    "effective_query_valid": true,
+    "unsupported_constructs": [],
+    "effective_query": "fetch dt.davis.problems.snapshots, from:toTimestamp(\"2026-06-14T03:00:00.000000000Z\"), to:toTimestamp(\"2026-06-14T10:00:00.000000000Z\")\n| sort timestamp desc\n| dedup event.id\n| filter event.start \u003c toTimestamp(\"2026-06-14T10:00:00.000000000Z\") and coalesce(event.end, toTimestamp(\"2026-06-14T10:00:00.000000000Z\")) \u003e= toTimestamp(\"2026-06-14T09:00:00.000000000Z\")",
+    "coverage_verified": false,
+    "coverage_message": "Snapshot coverage was not verified. The coverage gate runs only when the query executes."
+  }
+}

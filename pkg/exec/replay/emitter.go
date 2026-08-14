@@ -30,7 +30,21 @@ func buildReplayEdits(ast *AST, original string, analyses map[int]*sourceAnalysi
 		if analysis == nil || sourceResult.Effective == nil {
 			return nil, replayError(ErrorAudit, nil, "source", "An accepted source has no compiler analysis or effective range.", "Do not execute this query; report the replay compiler mismatch.")
 		}
-		sourceEdits, spans, err := sourceBoundaryEdits(analysis, *sourceResult.Effective)
+		boundary := *sourceResult.Effective
+		commandEnd := ""
+		if sourceResult.DavisMapping != nil {
+			if analysis.dataObject == nil {
+				return nil, replayError(ErrorAudit, analysis.node, davisProblemsView, "A mapped Davis problems source has no exact original data-object token.", "Do not execute this query; report the replay compiler mismatch.")
+			}
+			tableEdit, editErr := ReplaceNode(analysis.dataObject, sourceResult.DavisMapping.Candidate.SnapshotToken, fmt.Sprintf("source %d Davis problems snapshot token", sourceResult.Source.Ordinal))
+			if editErr != nil {
+				return nil, editErr
+			}
+			edits = append(edits, tableEdit)
+			boundary = sourceResult.DavisMapping.Physical.interval()
+			commandEnd = emitDavisProblemsReconstruction(*sourceResult.DavisMapping)
+		}
+		sourceEdits, spans, err := sourceBoundaryEdits(analysis, boundary, commandEnd)
 		if err != nil {
 			return nil, err
 		}
@@ -45,7 +59,7 @@ func buildReplayEdits(ast *AST, original string, analyses map[int]*sourceAnalysi
 	return edits, nil
 }
 
-func sourceBoundaryEdits(source *sourceAnalysis, effective Interval) ([]PositionEdit, []Span, error) {
+func sourceBoundaryEdits(source *sourceAnalysis, effective Interval, commandEnd string) ([]PositionEdit, []Span, error) {
 	fromText, toText := emitBounds(effective)
 	byKey := source.parametersByKey()
 	if len(byKey["timeframe"]) == 1 {
@@ -80,14 +94,27 @@ func sourceBoundaryEdits(source *sourceAnalysis, effective Interval) ([]Position
 	case len(byKey["from"]) == 1 && len(byKey["to"]) == 0:
 		missing = ", " + toText
 	}
-	if missing != "" {
-		edit, err := InsertAtCommandEnd(source.command.node, missing, fmt.Sprintf("source %d missing bounds", source.Ordinal))
+	if missing != "" || commandEnd != "" {
+		purpose := fmt.Sprintf("source %d missing bounds", source.Ordinal)
+		if commandEnd != "" {
+			purpose = fmt.Sprintf("source %d composed bounds and Davis reconstruction", source.Ordinal)
+		}
+		edit, err := InsertAtCommandEnd(source.command.node, missing+commandEnd, purpose)
 		if err != nil {
 			return nil, nil, err
 		}
 		edits = append(edits, edit)
 	}
 	return edits, spans, nil
+}
+
+func emitDavisProblemsReconstruction(mapping DavisProblemsMappingCompilation) string {
+	logicalF := emitTimestamp(mapping.Logical.F)
+	logicalT := emitTimestamp(mapping.Logical.T)
+	return "\n| sort timestamp desc" +
+		"\n| dedup event.id" +
+		"\n| filter event.start < " + logicalT +
+		" and coalesce(event.end, " + logicalT + ") >= " + logicalF
 }
 
 func semanticNowEdits(ast *AST, covered []Span, virtualNow time.Time) ([]PositionEdit, error) {

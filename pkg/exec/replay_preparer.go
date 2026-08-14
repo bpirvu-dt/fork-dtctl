@@ -27,6 +27,7 @@ type ReplayPreparerConfig struct {
 	FallbackProvenancePath   string
 	SourcePolicy             execreplay.SourcePolicy
 	RetentionInspector       RetentionInspector
+	DavisCoverage            DavisSnapshotCoverageProvider
 	SinkFactory              func(string) session.ProvenanceSink
 	WaitFunc                 func(context.Context, time.Duration) error
 }
@@ -161,9 +162,35 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 	if err != nil {
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
 	}
-	// Classification deliberately precedes the single clock capture.
-	if _, err := execreplay.ClassifySources(adapted, p.config.SourcePolicy); err != nil {
+	// Classification and any bounded coverage inspection deliberately precede
+	// the single virtual-clock capture.
+	mappingPolicy := replayDavisMappingPolicy(disclosure, input.Mode)
+	descriptors, err := execreplay.ClassifySourcesWithMapping(adapted, p.config.SourcePolicy, mappingPolicy)
+	if err != nil {
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
+	}
+	candidate := firstDavisProblemsCandidate(descriptors)
+	var coverageProvenance *DavisSnapshotCoverageProvenance
+	if candidate != nil {
+		switch mappingPolicy.Mode {
+		case execreplay.DavisProblemsMappingInspection:
+			coverageProvenance = &DavisSnapshotCoverageProvenance{Status: "not_checked", Verified: false}
+		case execreplay.DavisProblemsMappingExecution:
+			key := DavisSnapshotCoverageKey{
+				SessionID: state.SessionID, EnvironmentIdentity: p.config.EnvironmentID,
+				PrincipalIdentity: p.config.ClientIdentity, Table: execreplay.DavisProblemsSnapshotTable,
+				ProbeUpperBound: state.DataEnd.UTC(),
+			}
+			coverage, reuse, coverageErr := p.inspectDavisCoverage(ctx, key)
+			coverageProvenance = davisCoverageProvenance(coverage, reuse, coverageErr)
+			candidateProvenance.DavisCoverage = cloneDavisCoverageProvenance(coverageProvenance)
+			if coverageErr != nil {
+				detail := execreplay.DavisProblemsCoverageError(candidate, execreplay.DavisCoverageInspectionFailed)
+				return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, detail, info, &candidateProvenance, false)
+			}
+			mappingPolicy.Coverage = &coverage
+		}
+		candidateProvenance.DavisCoverage = cloneDavisCoverageProvenance(coverageProvenance)
 	}
 
 	hostNow := p.config.Clock.Now().UTC()
@@ -195,6 +222,7 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		Timezone:      timezone,
 		GlobalDefault: globalDefault,
 		SourcePolicy:  p.config.SourcePolicy,
+		DavisMapping:  mappingPolicy,
 	})
 	if err != nil {
 		var nonOverlap *execreplay.NonOverlapError
@@ -202,12 +230,26 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 			retryable := nonOverlap.Classification == execreplay.OverlapTemporary &&
 				state.ClockMode == session.ReplayClockRealtime && !terminal &&
 				(input.Mode == ReplayExecutionWait || input.Mode == ReplayExecutionLive)
-			prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow)
+			prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 			prov.Compilation = &compilation
 			return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorNonOverlap, err, info, &prov, retryable)
 		}
+		if coverageProvenance != nil {
+			coverageProvenance.Verified = false
+			var davisErr *execreplay.DavisCurrentViewError
+			if errors.As(err, &davisErr) && davisErr.CoverageFailure == execreplay.DavisCoverageInsufficient {
+				coverageProvenance.Status = "insufficient"
+				coverageProvenance.Failure = string(execreplay.DavisCoverageInsufficient)
+			}
+			candidateProvenance.DavisCoverage = cloneDavisCoverageProvenance(coverageProvenance)
+		}
 		candidateProvenance.Compilation = &compilation
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
+	}
+	if coverageProvenance != nil && mappingPolicy.Mode == execreplay.DavisProblemsMappingExecution {
+		coverageProvenance.Status = "verified"
+		coverageProvenance.Verified = true
+		candidateProvenance.DavisCoverage = cloneDavisCoverageProvenance(coverageProvenance)
 	}
 	p.addRetentionNotices(ctx, input.Mode, &compilation, state, hostNow)
 	info.EffectiveQuery = compilation.EffectiveDQL
@@ -220,13 +262,13 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 	}
 	validationRoot, err := input.Parse(ctx, effectiveRequest)
 	if err != nil {
-		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow)
+		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 		prov.EffectiveDQL, prov.Compilation = compilation.EffectiveDQL, &compilation
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &prov, false)
 	}
 	validationAST, err := execreplay.Adapt(validationRoot)
 	if err != nil {
-		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow)
+		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 		prov.EffectiveDQL, prov.Compilation = compilation.EffectiveDQL, &compilation
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &prov, false)
 	}
@@ -237,12 +279,12 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		Timezone:      timezone,
 	})
 	if err != nil {
-		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow)
+		prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 		prov.EffectiveDQL, prov.Compilation, prov.Audit = compilation.EffectiveDQL, &compilation, &audit
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &prov, false)
 	}
 
-	provenance := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow)
+	provenance := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 	provenance.EffectiveDQL, provenance.Compilation, provenance.Audit = compilation.EffectiveDQL, &compilation, &audit
 	prepared := PreparedQuery{
 		OriginalQuery: input.OriginalQuery, EffectiveQuery: compilation.EffectiveDQL,
@@ -358,8 +400,73 @@ func (p *ReplayQueryPreparer) failBeforeExecute(ctx context.Context, sink sessio
 	return newReplayAttemptError(category, detail, info, retryable, sdkRetryAfter(detail), false)
 }
 
-func (p *ReplayQueryPreparer) baseProvenance(state session.ReplaySession, query string, hostNow, virtualNow time.Time) ReplayExecutionProvenance {
-	return ReplayExecutionProvenance{Session: state, HostNow: hostNow, VirtualNow: virtualNow, OriginalDQL: query}
+func (p *ReplayQueryPreparer) baseProvenance(state session.ReplaySession, query string, hostNow, virtualNow time.Time, coverage *DavisSnapshotCoverageProvenance) ReplayExecutionProvenance {
+	return ReplayExecutionProvenance{
+		Session: state, HostNow: hostNow, VirtualNow: virtualNow, OriginalDQL: query,
+		DavisCoverage: cloneDavisCoverageProvenance(coverage),
+	}
+}
+
+func replayDavisMappingPolicy(disclosure string, mode ReplayExecutionMode) execreplay.DavisProblemsMappingPolicy {
+	if disclosure != session.ReplayDisclosureFull {
+		return execreplay.DavisProblemsMappingPolicy{Mode: execreplay.DavisProblemsMappingDisabled}
+	}
+	if mode == ReplayExecutionExplain || mode == ReplayExecutionVerify {
+		return execreplay.DavisProblemsMappingPolicy{Mode: execreplay.DavisProblemsMappingInspection}
+	}
+	return execreplay.DavisProblemsMappingPolicy{Mode: execreplay.DavisProblemsMappingExecution}
+}
+
+func firstDavisProblemsCandidate(sources []execreplay.SourceDescriptor) *execreplay.DavisProblemsMappingCandidate {
+	for _, source := range sources {
+		if source.DavisProblems == nil {
+			continue
+		}
+		candidate := *source.DavisProblems
+		if source.DavisProblems.Span != nil {
+			span := *source.DavisProblems.Span
+			candidate.Span = &span
+		}
+		return &candidate
+	}
+	return nil
+}
+
+func (p *ReplayQueryPreparer) inspectDavisCoverage(ctx context.Context, key DavisSnapshotCoverageKey) (DavisSnapshotCoverage, DavisSnapshotCoverageReuse, error) {
+	if p.config.DavisCoverage == nil {
+		observedAt := time.Now().UTC()
+		return DavisSnapshotCoverage{ObservedAt: observedAt}, DavisSnapshotCoverageMiss,
+			&DavisSnapshotCoverageError{Failure: DavisCoverageUnavailable, ObservedAt: observedAt}
+	}
+	return p.config.DavisCoverage.Coverage(ctx, key)
+}
+
+func davisCoverageProvenance(coverage DavisSnapshotCoverage, reuse DavisSnapshotCoverageReuse, err error) *DavisSnapshotCoverageProvenance {
+	value := &DavisSnapshotCoverageProvenance{
+		Status: "observed", Verified: false, OldestSnapshot: coverage.OldestSnapshot.UTC(),
+		ObservedAt: coverage.ObservedAt.UTC(), Reuse: reuse,
+	}
+	if err == nil {
+		return value
+	}
+	value.Status = "failed"
+	value.Failure = string(DavisCoverageUnavailable)
+	var coverageErr *DavisSnapshotCoverageError
+	if errors.As(err, &coverageErr) {
+		value.Failure = string(coverageErr.Failure)
+		if value.ObservedAt.IsZero() {
+			value.ObservedAt = coverageErr.ObservedAt.UTC()
+		}
+	}
+	return value
+}
+
+func cloneDavisCoverageProvenance(value *DavisSnapshotCoverageProvenance) *DavisSnapshotCoverageProvenance {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func replayInfoFromSession(state session.ReplaySession, query, disclosure string) ReplayExecutionInfo {

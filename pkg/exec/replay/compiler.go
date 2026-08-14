@@ -61,6 +61,7 @@ type DavisCurrentViewError struct {
 	IdentityKind       string
 	IdentityField      string
 	LatestPerIDPattern string
+	CoverageFailure    DavisCoverageFailure
 	Path               string
 	Span               *Span
 }
@@ -80,6 +81,7 @@ type NoticeCode string
 const (
 	NoticeFixedDayInterval               NoticeCode = "fixed_1d_means_24h"
 	NoticeDavisWarmup                    NoticeCode = "davis_snapshot_warmup"
+	NoticeDavisProblemsMapping           NoticeCode = "davis_problems_view_mapping"
 	NoticeRetentionBoundary              NoticeCode = "retention_boundary"
 	NoticeRetentionNotVerified           NoticeCode = "retention_not_verified"
 	NoticeHistoricalResolutionUnverified NoticeCode = "historical_metric_resolution_not_verified"
@@ -109,6 +111,7 @@ type CompileInput struct {
 	Timezone        *time.Location
 	GlobalDefault   *Interval
 	SourcePolicy    SourcePolicy
+	DavisMapping    DavisProblemsMappingPolicy
 }
 
 // ResultSourceIdentity binds post-execution metadata to one compiled metric
@@ -138,6 +141,7 @@ type SourceCompilation struct {
 	ResultContract  *ReplayResultContract
 	PhysicalRange   *Interval
 	PhysicalPending bool
+	DavisMapping    *DavisProblemsMappingCompilation
 }
 
 // ClockExplain contains only caller-supplied clock facts.
@@ -165,14 +169,17 @@ type SourceExplain struct {
 	Classification  OverlapClassification
 	Proof           OverlapProof
 	RecordTimeField string
+	DavisMapping    *DavisProblemsMappingCompilation
 }
 
 // ExplainData is the complete pure compiler explanation payload.
 type ExplainData struct {
-	Clock        ClockExplain
-	Sources      []SourceExplain
-	Notices      []Notice
-	EffectiveDQL string
+	Clock            ClockExplain
+	Sources          []SourceExplain
+	Notices          []Notice
+	EffectiveDQL     string
+	CoverageVerified *bool
+	CoverageMessage  string
 }
 
 // CompileResult is returned even with NonOverlapError so callers can inspect
@@ -186,6 +193,7 @@ type CompileResult struct {
 	Explain         ExplainData
 	AuditPlan       AuditPlan
 	AuditRequired   bool
+	InspectionOnly  bool
 }
 
 // NonOverlapError is the typed whole-query decision when any telemetry source
@@ -208,7 +216,7 @@ func Compile(input CompileInput) (CompileResult, error) {
 	}
 	working := input.AST.Clone()
 	policy := cloneSourcePolicy(input.SourcePolicy)
-	sources, err := analyzeSources(working, policy)
+	sources, err := analyzeSources(working, policy, input.DavisMapping)
 	if err != nil {
 		return CompileResult{}, err
 	}
@@ -227,11 +235,24 @@ func Compile(input CompileInput) (CompileResult, error) {
 		if compileErr != nil {
 			return result, compileErr
 		}
+		if compiled.DavisMapping != nil {
+			mapping := compiled.DavisMapping
+			result.AuditPlan.DavisProblemsMappings = append(result.AuditPlan.DavisProblemsMappings, DavisProblemsMappingExpectation{
+				SourceOrdinal: source.Ordinal, Candidate: mapping.Candidate,
+				Logical: mapping.Logical, Physical: mapping.Physical, Coverage: mapping.Coverage,
+			})
+			verified := mapping.Coverage.Verified
+			result.Explain.CoverageVerified = &verified
+			if !verified {
+				result.Explain.CoverageMessage = DavisCoverageNotVerifiedMessage
+				result.InspectionOnly = true
+			}
+		}
 		if compiled.ResultContract != nil {
 			contract := *compiled.ResultContract
 			result.ResultContracts = append(result.ResultContracts, contract)
 		}
-		notices, noticeErr := sourceNotices(source, input)
+		notices, noticeErr := sourceNotices(source, compiled, input)
 		if noticeErr != nil {
 			return result, noticeErr
 		}
@@ -241,7 +262,7 @@ func Compile(input CompileInput) (CompileResult, error) {
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {
 		return result, nonOverlap
 	}
-	fingerprint, err := semanticFingerprint(working, sources, input.VirtualNow)
+	fingerprint, err := semanticFingerprintWithMappings(working, sources, input.VirtualNow, result.AuditPlan.DavisProblemsMappings, nil)
 	if err != nil {
 		return result, err
 	}
@@ -313,6 +334,9 @@ func validateCompileInput(input CompileInput) (CompileInput, error) {
 	if len(input.SourcePolicy.RecordTables) == 0 {
 		return input, replayError(ErrorUnsupportedSource, nil, "source policy", "The replay source policy is empty.", "Pass the explicit milestone 1 source policy.")
 	}
+	if err := validateDavisMappingPolicy(input.DavisMapping, false); err != nil {
+		return input, err
+	}
 	return input, nil
 }
 
@@ -369,6 +393,12 @@ func (e *DavisCurrentViewError) Error() string {
 	)
 	if e.View == "dt.davis.problems" {
 		message += "\n" + davisProblemsWarmupCaveat
+	}
+	switch e.CoverageFailure {
+	case DavisCoverageInspectionFailed:
+		message += "\n" + DavisCoverageInspectionFailedMessage
+	case DavisCoverageInsufficient:
+		message += "\n" + DavisCoverageInsufficientMessage
 	}
 	return message
 }

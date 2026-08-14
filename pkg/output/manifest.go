@@ -37,42 +37,69 @@ const (
 // range of one compiler-classified source. Empty range endpoints are omitted
 // when the source has no corresponding range (for example synthetic data).
 type ReplaySourceMetadata struct {
-	Ordinal           int    `json:"ordinal"`
-	Path              string `json:"path,omitempty"`
-	Name              string `json:"name,omitempty"`
-	Class             string `json:"class"`
-	BoundaryPolicy    string `json:"boundary_policy"`
-	RequestedFrom     string `json:"requested_from,omitempty"`
-	RequestedTo       string `json:"requested_to,omitempty"`
-	EffectiveFrom     string `json:"effective_from,omitempty"`
-	EffectiveTo       string `json:"effective_to,omitempty"`
-	PhysicalFrom      string `json:"physical_from,omitempty"`
-	PhysicalTo        string `json:"physical_to,omitempty"`
-	NaturalIntervalNS int64  `json:"natural_interval_ns,omitempty"`
-	LowerSpillNS      int64  `json:"lower_spill_ns,omitempty"`
-	UpperSpillNS      int64  `json:"upper_spill_ns,omitempty"`
+	Ordinal              int                           `json:"ordinal"`
+	Path                 string                        `json:"path,omitempty"`
+	Name                 string                        `json:"name,omitempty"`
+	Class                string                        `json:"class"`
+	BoundaryPolicy       string                        `json:"boundary_policy"`
+	RequestedFrom        string                        `json:"requested_from,omitempty"`
+	RequestedTo          string                        `json:"requested_to,omitempty"`
+	EffectiveFrom        string                        `json:"effective_from,omitempty"`
+	EffectiveTo          string                        `json:"effective_to,omitempty"`
+	PhysicalFrom         string                        `json:"physical_from,omitempty"`
+	PhysicalTo           string                        `json:"physical_to,omitempty"`
+	NaturalIntervalNS    int64                         `json:"natural_interval_ns,omitempty"`
+	LowerSpillNS         int64                         `json:"lower_spill_ns,omitempty"`
+	UpperSpillNS         int64                         `json:"upper_spill_ns,omitempty"`
+	DavisProblemsMapping *DavisProblemsMappingMetadata `json:"davis_problems_mapping,omitempty"`
+}
+
+// DavisProblemsMappingMetadata keeps the logical view interval distinct from
+// the physical snapshot-read interval in full-disclosure output.
+type DavisProblemsMappingMetadata struct {
+	Eligible               bool   `json:"eligible"`
+	OriginalView           string `json:"original_view"`
+	EffectiveSnapshotTable string `json:"effective_snapshot_table"`
+	LogicalF               string `json:"logical_f"`
+	LogicalT               string `json:"logical_t"`
+	PhysicalW              string `json:"physical_w"`
+	PhysicalT              string `json:"physical_t"`
+	WarmupClamped          bool   `json:"warmup_clamped"`
+}
+
+// DavisSnapshotCoverageMetadata contains only the typed, non-identifying
+// oldest-snapshot coverage fact used by an automatic mapping.
+type DavisSnapshotCoverageMetadata struct {
+	Status         string `json:"status"`
+	Verified       bool   `json:"coverage_verified"`
+	OldestSnapshot string `json:"oldest_snapshot,omitempty"`
+	ObservedAt     string `json:"observed_at,omitempty"`
+	Reuse          string `json:"reuse,omitempty"`
+	Failure        string `json:"failure,omitempty"`
 }
 
 // ReplayMetadata is the common full-disclosure record used by agent envelopes
 // and spill manifests. Query fields explicitly name all three query forms so a
 // consumer never mistakes Grail's canonical effective text for user input.
 type ReplayMetadata struct {
-	Active                       bool                   `json:"active"`
-	SessionID                    string                 `json:"session_id"`
-	SessionStartedAt             string                 `json:"session_started_at"`
-	ClockMode                    string                 `json:"clock_mode"`
-	AnchorHost                   string                 `json:"anchor_host"`
-	AnchorVirtual                string                 `json:"anchor_virtual"`
-	VirtualNow                   string                 `json:"virtual_now"`
-	DataStart                    string                 `json:"data_start"`
-	DataEnd                      string                 `json:"data_end"`
-	VisibleEnd                   string                 `json:"visible_end"`
-	State                        string                 `json:"state"`
-	OriginalQuery                string                 `json:"original_query"`
-	EffectiveQuery               string                 `json:"effective_query"`
-	GrailCanonicalEffectiveQuery string                 `json:"grail_canonical_effective_query,omitempty"`
-	Sources                      []ReplaySourceMetadata `json:"sources"`
-	Warnings                     []string               `json:"warnings"`
+	Active                       bool                           `json:"active"`
+	SessionID                    string                         `json:"session_id"`
+	SessionStartedAt             string                         `json:"session_started_at"`
+	ClockMode                    string                         `json:"clock_mode"`
+	AnchorHost                   string                         `json:"anchor_host"`
+	AnchorVirtual                string                         `json:"anchor_virtual"`
+	VirtualNow                   string                         `json:"virtual_now"`
+	DataStart                    string                         `json:"data_start"`
+	DataEnd                      string                         `json:"data_end"`
+	VisibleEnd                   string                         `json:"visible_end"`
+	State                        string                         `json:"state"`
+	OriginalQuery                string                         `json:"original_query"`
+	EffectiveQuery               string                         `json:"effective_query"`
+	GrailCanonicalEffectiveQuery string                         `json:"grail_canonical_effective_query,omitempty"`
+	Sources                      []ReplaySourceMetadata         `json:"sources"`
+	Warnings                     []string                       `json:"warnings"`
+	DavisSnapshotCoverage        *DavisSnapshotCoverageMetadata `json:"davis_snapshot_coverage,omitempty"`
+	DavisMappingsAudited         bool                           `json:"davis_mappings_audited,omitempty"`
 }
 
 // Stable spill-file error codes (D32). These are part of the versioned envelope

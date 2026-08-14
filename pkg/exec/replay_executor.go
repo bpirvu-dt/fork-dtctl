@@ -57,6 +57,12 @@ func (e *DQLExecutor) VerifyReplayCompatibilityWithContext(ctx context.Context, 
 		Active: true, OriginalDQLValid: originalValid, CompilerSupported: true,
 		EffectiveQueryValid: true, UnsupportedConstructs: []string{}, Disclosure: prepared.Disclosure,
 	}
+	if prepared.Explain.CoverageVerified != nil {
+		verified := *prepared.Explain.CoverageVerified
+		verification.EffectiveQuery = prepared.Explain.EffectiveDQL
+		verification.CoverageVerified = &verified
+		verification.CoverageMessage = prepared.Explain.CoverageMessage
+	}
 	if prepared.sink != nil {
 		provenance := prepared.provenance
 		provenance.Outcome = "verified"
@@ -115,12 +121,18 @@ func replayUnsupportedConstructs(err error) []string {
 }
 
 func replayVerificationFields(value ReplayVerification) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"original_dql_valid":     value.OriginalDQLValid,
 		"compiler_supported":     value.CompilerSupported,
 		"effective_query_valid":  value.EffectiveQueryValid,
 		"unsupported_constructs": append([]string(nil), value.UnsupportedConstructs...),
 	}
+	if value.CoverageVerified != nil {
+		result["effective_query"] = value.EffectiveQuery
+		result["coverage_verified"] = *value.CoverageVerified
+		result["coverage_message"] = value.CoverageMessage
+	}
+	return result
 }
 
 // ExecuteQueryWithContext executes a DQL query with a cancellable context.
@@ -163,6 +175,10 @@ func (e *DQLExecutor) ExecuteQueryDetailedWithContext(ctx context.Context, query
 	})
 	if err != nil {
 		return nil, err
+	}
+	if prepared.Compilation.InspectionOnly {
+		detail := errors.New("a probe-free replay inspection result cannot reach data execution")
+		return nil, newReplayAttemptError(replayErrorPrepare, detail, replayInfoFromPrepared(prepared), false, 0, false)
 	}
 
 	e.printReplayNoticeOnce(prepared, opts)
@@ -321,9 +337,17 @@ func (e *DQLExecutor) printReplayNoticeOnce(prepared PreparedQuery, opts DQLExec
 				replayDisplayTime(prepared.VirtualNow), replayDisplayTime(prepared.Session.DataStart), replayDisplayTime(prepared.Session.DataEnd))
 		}
 		for _, notice := range prepared.Compilation.Notices {
+			if notice.Code == execreplay.NoticeDavisProblemsMapping {
+				continue
+			}
 			output.PrintWarning("%s", notice.Message)
 		}
 	})
+	for _, notice := range prepared.Compilation.Notices {
+		if notice.Code == execreplay.NoticeDavisProblemsMapping {
+			output.PrintWarning("%s", notice.Message)
+		}
+	}
 }
 
 func replayExecuteOptions(options DQLExecuteOptions, prepared PreparedQuery) DQLExecuteOptions {

@@ -117,6 +117,9 @@ type ReplayVerification struct {
 	CompilerSupported     bool     `json:"compiler_supported" yaml:"compiler_supported"`
 	EffectiveQueryValid   bool     `json:"effective_query_valid" yaml:"effective_query_valid"`
 	UnsupportedConstructs []string `json:"unsupported_constructs" yaml:"unsupported_constructs"`
+	EffectiveQuery        string   `json:"effective_query,omitempty" yaml:"effective_query,omitempty"`
+	CoverageVerified      *bool    `json:"coverage_verified,omitempty" yaml:"coverage_verified,omitempty"`
+	CoverageMessage       string   `json:"coverage_message,omitempty" yaml:"coverage_message,omitempty"`
 
 	Disclosure string `json:"-" yaml:"-"`
 }
@@ -262,6 +265,19 @@ type ReplayExecutionProvenance struct {
 	Outcome               string
 	Detail                string
 	Completion            session.CompletionDisposition
+	DavisCoverage         *DavisSnapshotCoverageProvenance
+}
+
+// DavisSnapshotCoverageProvenance contains only the bounded probe's typed,
+// non-identifying facts. Explain and verify use Status=not_checked with no
+// observation timestamp or reuse disposition.
+type DavisSnapshotCoverageProvenance struct {
+	Status         string
+	Verified       bool
+	OldestSnapshot time.Time
+	ObservedAt     time.Time
+	Reuse          DavisSnapshotCoverageReuse
+	Failure        string
 }
 
 func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {

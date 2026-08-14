@@ -187,7 +187,7 @@ func TestEqualAndOneNanosecondRequestedWindowsAreRejected(t *testing.T) {
 
 func firstSourceAnalysis(t *testing.T, ast *AST) *sourceAnalysis {
 	t.Helper()
-	sources, err := analyzeSources(ast, Milestone1SourcePolicy())
+	sources, err := analyzeSources(ast, Milestone1SourcePolicy(), DavisProblemsMappingPolicy{})
 	if err != nil {
 		t.Fatalf("analyzeSources: %v", err)
 	}

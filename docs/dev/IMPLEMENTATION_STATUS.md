@@ -185,9 +185,20 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Original/effective DQL provenance for full agent/spill output and restricted JSON Lines records
 - [x] Bounded best-effort current retention inspection once per command invocation, known-boundary and `not verified` warnings, historical metric-resolution warning, and disclosure-aware provenance routing
 
-Not supported in milestone 1: RUM tables, Dynatrace synthetic telemetry tables,
-security-event tables, any `timeseries shift:` form, automatic Davis
-current-view mapping, current topology or entity enrichment, mutable lookup or
+### Historical Replay (Milestone 2, deliverable 1)
+
+- [x] Exact full-disclosure-only `dt.davis.problems` mapping without widening the seven-table record allowlist
+- [x] Separately typed logical `[F,T)` and physical `[W,T)` ranges with `W = max(data_start, F - 6h)`
+- [x] Candidate B reconstruction with snapshot fetch, descending timestamp sort, `event.id` deduplication, and inclusive-lower lifetime overlap
+- [x] Five-second bounded oldest-snapshot coverage probe, strict fail-closed decoding, and complete-key invocation-local success/failure memo
+- [x] Probe-free explain and verify compilation/audit with explicit `coverage_verified:false`
+- [x] Mapping notification on every mapped execution, warm-up-clamp warning, typed provenance, and mapping-specific semantic audit
+- [x] Restricted problems views, both-mode events views, and direct user-written snapshots retain their shipped behavior and make no mapping probe
+- [x] Documented duplicate-tie, evidence-scale, one-active-problem, coverage-horizon, and memo-staleness limitations
+
+Not supported: RUM tables, Dynatrace synthetic telemetry tables,
+security-event tables, any `timeseries shift:` form, automatic Davis events-
+view mapping, current topology or entity enrichment, mutable lookup or
 schema state, and current or on-demand analyzer/model state. These items have
 no promised delivery date.
 

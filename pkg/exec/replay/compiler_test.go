@@ -375,7 +375,7 @@ func TestCompilerAndAuditEveryNestedSourceForm(t *testing.T) {
 func TestCompilerRejectsWholeQueryWhenOneNestedSourceHasNoOverlap(t *testing.T) {
 	const original = `fetch logs, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 | append [ fetch spans, from:toTimestamp("2026-08-10T08:54:42Z"), to:toTimestamp("2026-08-10T11:54:42Z") | fields replay_key=1 | limit 1 ] | summarize matched=count()`
 	ast := loadPhase0BFixture(t, "nested/append/parse.json").Clone()
-	sources, err := analyzeSources(ast, Milestone1SourcePolicy())
+	sources, err := analyzeSources(ast, Milestone1SourcePolicy(), DavisProblemsMappingPolicy{})
 	if err != nil || len(sources) != 2 {
 		t.Fatalf("sources = %d, %v", len(sources), err)
 	}
@@ -394,7 +394,7 @@ func TestCompilerRejectsWholeQueryWhenOneNestedSourceHasNoOverlap(t *testing.T) 
 
 func setValidationSourceBounds(t *testing.T, ast *AST, expected []SourceCompilation) {
 	t.Helper()
-	sources, err := analyzeSources(ast, Milestone1SourcePolicy())
+	sources, err := analyzeSources(ast, Milestone1SourcePolicy(), DavisProblemsMappingPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}

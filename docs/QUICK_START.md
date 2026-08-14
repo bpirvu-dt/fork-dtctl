@@ -1594,11 +1594,41 @@ fetch dt.davis.problems.snapshots, from:now()-6h, to:now()
 ```
 
 Use `dt.davis.events.snapshots` for event history with the same sort/dedup
-reduction. Event-view equivalence is not yet verified, so do not copy the
-problem-lifetime filter to events. The current views `dt.davis.problems` and
-`dt.davis.events` are rejected. Under full disclosure, the error names the
-matching snapshot table and shows the appropriate reconstruction pattern.
-Under restricted disclosure, that detail goes only to provenance.
+reduction. Event-view equivalence is not verified, so do not copy the
+problem-lifetime filter to events. Direct queries of either snapshot table keep
+this ordinary milestone 1 behavior and never use automatic view mapping.
+
+Full disclosure can map only an exact original `fetch dt.davis.problems` token.
+It computes the logical view interval `[F,T)` through the ordinary replay
+timeframe rules, then reads physical snapshots over `[W,T)`, where
+`W = max(data_start, F - 6h)`. It emits this reconstruction before any
+user-written downstream pipeline:
+
+```dql
+fetch dt.davis.problems.snapshots, from:toTimestamp("<W>"), to:toTimestamp("<T>")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("<T>")
+    and coalesce(event.end, toTimestamp("<T>")) >= toTimestamp("<F>")
+```
+
+Before data execution, a fixed five-second bounded query must prove that the
+oldest available problem snapshot is at or before `W`. A failure, empty or
+ambiguous response, asynchronous response, scan-limit notification, or oldest
+snapshot after `W` blocks the mapping before effective parse and main execute.
+Configured retention is not substituted for this proof. The typed result is
+memoized only for one command invocation and only under the complete replay
+session, environment, non-secret principal, snapshot table, and probe-upper-
+bound key. A new invocation probes again.
+
+`--explain-replay` and replay-aware `verify query` derive, parse, and audit the
+would-be mapping without probing or executing data. They report exactly:
+`Snapshot coverage was not verified. The coverage gate runs only when the query executes.`
+
+Restricted disclosure keeps rejecting `dt.davis.problems` with the shipped
+generic ordinary error and makes no coverage request. `dt.davis.events` remains
+rejected in both disclosure modes. Full errors name the matching snapshot table
+and reconstruction pattern; restricted detail goes only to provenance.
 
 Dynatrace documents a six-hour refresh cadence for open problem snapshots. Set
 `data_start` at least six hours before `virtual_start` when reconstructing
@@ -1607,11 +1637,17 @@ hazard was not observed in the Phase 0B evidence. A Davis snapshot query with a
 shorter gap produces a non-blocking warning and continues. Restricted
 disclosure writes the warning only to provenance.
 
+For automatic problems mapping, a `data_start` clamp that makes `W` later than
+`F - 6h` also produces a non-blocking full-disclosure warning after independent
+coverage succeeds. The logical lifetime filter still uses `F`; the warning does
+not turn configured retention into proof.
+
 #### Disclosure and provenance
 
-Disclosure changes routing and wording. It never changes DQL preparation,
-source boundaries, returned telemetry, command guarding, non-overlap handling,
-or terminal completion.
+Disclosure normally changes only routing and wording. The narrowly evidenced
+problems-view mapping above is the sole exception: it is available only in
+`full`. Restricted disclosure still preserves returned telemetry, command
+guarding, non-overlap handling, and terminal completion.
 
 | Mode | Output | Discovery | Provenance |
 |---|---|---|---|
@@ -1742,6 +1778,23 @@ Restricted disclosure writes them only to provenance. dtctl never changes
 tenant retention and does not guarantee that old fine-grained data still
 exists.
 
+Automatic Davis problems mapping uses its separate blocking oldest-snapshot
+coverage probe instead of this best-effort retention check. That probe proves
+only that the observed snapshot horizon reaches `W`; it is not a per-problem
+completeness proof. A result reused during one long-running command can become
+stale as retention changes.
+
+The mapping evidence has three additional limits:
+
+- observed duplicate `(event.id,timestamp)` groups were value-identical, but no
+  service guarantee defines a tie-break if future duplicates differ, so the
+  selected tied row would be unspecified;
+- equivalence was measured on one tenant at one initial point, two nearby
+  repetitions, and a one-hour interval, so minutes-scale repetition is not a
+  cross-tenant or long-duration proof; and
+- the warm-up comparison contained one active problem, so it did not prove six
+  hours sufficient—or a shorter read safe—for every active problem.
+
 Restricted disclosure prevents incidental disclosure. It is not
 counter-forensics, authentication, containment, or a security sandbox. A
 same-user process can read accessible configuration and private replay state. A
@@ -1749,9 +1802,9 @@ same-user process that knows a hidden management verb can invoke it. A caller
 that needs containment must enforce process, filesystem, credential, command,
 and network restrictions outside dtctl.
 
-Milestone 1 does not support RUM tables, Dynatrace synthetic telemetry tables,
-security-event tables, any `timeseries shift:` form, or automatic Davis
-current-view mapping. Topology, current entity enrichment, mutable lookup
+Replay does not support RUM tables, Dynatrace synthetic telemetry tables,
+security-event tables, any `timeseries shift:` form, or automatic
+`dt.davis.events` mapping. Topology, current entity enrichment, mutable lookup
 state, current schema state, and current or on-demand model and analyzer state
 are also rejected. Support requires separate evidence and a later design
 decision. No date is promised.

@@ -1,0 +1,12 @@
+
+Replay compatibility:
+  Original DQL valid: true
+  Replay compiler supported: true
+  Effective query valid: true
+  Unsupported replay constructs: none
+  Would-be effective DQL:
+fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")
+Snapshot coverage was not verified. The coverage gate runs only when the query executes.

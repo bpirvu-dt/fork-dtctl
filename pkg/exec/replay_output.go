@@ -45,6 +45,15 @@ func replayOutputMetadata(prepared PreparedQuery, validated []execreplay.Validat
 			item.PhysicalFrom = replayOutputTime(source.PhysicalRange.Start)
 			item.PhysicalTo = replayOutputTime(source.PhysicalRange.End)
 		}
+		if mapping := source.DavisMapping; mapping != nil {
+			item.DavisProblemsMapping = &output.DavisProblemsMappingMetadata{
+				Eligible: true, OriginalView: mapping.Candidate.OriginalToken,
+				EffectiveSnapshotTable: mapping.Candidate.SnapshotToken,
+				LogicalF:               replayOutputTime(mapping.Logical.F), LogicalT: replayOutputTime(mapping.Logical.T),
+				PhysicalW: replayOutputTime(mapping.Physical.W), PhysicalT: replayOutputTime(mapping.Physical.T),
+				WarmupClamped: mapping.WarmupClamped,
+			}
+		}
 		if actual, ok := replayValidatedSource(validated, source.Source.Ordinal); ok {
 			if actual.PhysicalRange != nil {
 				item.PhysicalFrom = replayOutputTime(actual.PhysicalRange.Start)
@@ -58,6 +67,14 @@ func replayOutputMetadata(prepared PreparedQuery, validated []execreplay.Validat
 		}
 		metadata.Sources = append(metadata.Sources, item)
 	}
+	if coverage := prepared.provenance.DavisCoverage; coverage != nil {
+		metadata.DavisSnapshotCoverage = &output.DavisSnapshotCoverageMetadata{
+			Status: coverage.Status, Verified: coverage.Verified,
+			OldestSnapshot: replayOutputTime(coverage.OldestSnapshot), ObservedAt: replayOutputTime(coverage.ObservedAt),
+			Reuse: string(coverage.Reuse), Failure: coverage.Failure,
+		}
+	}
+	metadata.DavisMappingsAudited = prepared.Audit.DavisMappingsAudited
 	for _, notice := range prepared.Compilation.Notices {
 		metadata.Warnings = append(metadata.Warnings, notice.Message)
 	}
@@ -75,7 +92,17 @@ func fullReplayOutput(info *ReplayExecutionInfo) *output.ReplayMetadata {
 	}
 	value := *info.Output
 	value.Sources = append([]output.ReplaySourceMetadata{}, info.Output.Sources...)
+	for index := range value.Sources {
+		if info.Output.Sources[index].DavisProblemsMapping != nil {
+			mapping := *info.Output.Sources[index].DavisProblemsMapping
+			value.Sources[index].DavisProblemsMapping = &mapping
+		}
+	}
 	value.Warnings = append([]string{}, info.Output.Warnings...)
+	if info.Output.DavisSnapshotCoverage != nil {
+		coverage := *info.Output.DavisSnapshotCoverage
+		value.DavisSnapshotCoverage = &coverage
+	}
 	return &value
 }
 
