@@ -1,6 +1,8 @@
 package replay
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +15,9 @@ const (
 	SourceRecord    SourceClass = "record"
 	SourceMetric    SourceClass = "metric"
 	SourceSynthetic SourceClass = "synthetic"
+	// SourceDavisProblemsView stays purpose-specific until a second mapping
+	// passes its own evidence gate; generic view-mapping plumbing is deferred.
+	SourceDavisProblemsView SourceClass = "davis_problems_view"
 )
 
 // BoundaryPolicy identifies how source-native results relate to the logical
@@ -85,6 +90,7 @@ type SourceDescriptor struct {
 	RecordTimeField string
 	BoundaryPolicy  BoundaryPolicy
 	Metric          *MetricForm
+	DavisProblems   *DavisProblemsMappingCandidate
 }
 
 type sourceAnalysis struct {
@@ -92,6 +98,7 @@ type sourceAnalysis struct {
 	node       *Node
 	command    commandView
 	parameters []parameterView
+	dataObject *Node
 }
 
 type commandView struct {
@@ -105,13 +112,57 @@ type parameterView struct {
 	keyOrigin string
 }
 
+// PrecomputedSourceAnalysis is an opaque, preparation-local source analysis
+// that Compile accepts only with the same AST revision, source policy, and
+// mapping mode. It contains no clock values or compiled query artifacts.
+type PrecomputedSourceAnalysis struct {
+	astRevision [sha256.Size]byte
+	ast         *AST
+	sources     []*sourceAnalysis
+	policy      SourcePolicy
+	mappingMode DavisProblemsMappingMode
+}
+
 // ClassifySources applies the milestone policy without reading state, the
 // clock, configuration, or the network.
 func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) {
-	analyses, err := analyzeSources(ast, policy)
-	if err != nil {
-		return nil, err
+	return ClassifySourcesWithMapping(ast, policy, DavisProblemsMappingPolicy{})
+}
+
+// ClassifySourcesWithMapping applies the ordinary source allowlist plus the
+// separately typed full-disclosure problems-view policy.
+func ClassifySourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, error) {
+	descriptors, _, err := AnalyzeSourcesWithMapping(ast, policy, mapping)
+	return descriptors, err
+}
+
+// AnalyzeSourcesWithMapping classifies sources once and returns an opaque
+// analysis that can be handed to Compile during the same preparation.
+func AnalyzeSourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, *PrecomputedSourceAnalysis, error) {
+	if err := validateDavisMappingPolicy(mapping); err != nil {
+		return nil, nil, err
 	}
+	working := ast.Clone()
+	policy = cloneSourcePolicy(policy)
+	analyses, err := analyzeSources(working, policy, mapping)
+	if err != nil {
+		return nil, nil, err
+	}
+	revision, err := replayASTRevision(ast)
+	if err != nil {
+		return nil, nil, replayError(ErrorASTContract, nil, "query", "The adapted DQL AST revision could not be recorded.", "Parse and adapt the original DQL again before compiling it.")
+	}
+	precomputed := &PrecomputedSourceAnalysis{
+		astRevision: revision,
+		ast:         working,
+		sources:     analyses,
+		policy:      policy,
+		mappingMode: mapping.Mode,
+	}
+	return cloneSourceDescriptors(analyses), precomputed, nil
+}
+
+func cloneSourceDescriptors(analyses []*sourceAnalysis) []SourceDescriptor {
 	out := make([]SourceDescriptor, len(analyses))
 	for i := range analyses {
 		out[i] = analyses[i].SourceDescriptor
@@ -121,11 +172,23 @@ func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) 
 			metric.MetricKeys = append([]string(nil), analyses[i].Metric.MetricKeys...)
 			out[i].Metric = &metric
 		}
+		if analyses[i].DavisProblems != nil {
+			candidate := analyses[i].DavisProblems.Clone()
+			out[i].DavisProblems = &candidate
+		}
 	}
-	return out, nil
+	return out
 }
 
-func analyzeSources(ast *AST, policy SourcePolicy) ([]*sourceAnalysis, error) {
+func replayASTRevision(ast *AST) ([sha256.Size]byte, error) {
+	encoded, err := json.Marshal(ast)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
+}
+
+func analyzeSources(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]*sourceAnalysis, error) {
 	if err := ValidateASTContract(ast); err != nil {
 		return nil, err
 	}
@@ -154,9 +217,22 @@ func analyzeSources(ast *AST, policy SourcePolicy) ([]*sourceAnalysis, error) {
 		source.Path = command.node.Path
 		switch command.name {
 		case "fetch":
-			table, err := fetchTable(command.node)
+			dataObject, table, err := fetchDataObject(command.node)
 			if err != nil {
 				return nil, err
+			}
+			source.dataObject = dataObject
+			if candidate, ok := mappingCandidateFor(dataObject.Canonical, dataObject, command.node, mapping); ok {
+				if err := validateParameterKeys(params, "dataobject", "from", "to", "timeframe"); err != nil {
+					return nil, err
+				}
+				source.Class = SourceDavisProblemsView
+				source.Name = davisProblemsView
+				source.RecordTimeField = "timestamp"
+				source.BoundaryPolicy = BoundaryExact
+				source.DavisProblems = candidate
+				sources = append(sources, source)
+				continue
 			}
 			if current, ok := currentDavisView(table, command.node); ok {
 				return nil, current
@@ -227,18 +303,18 @@ func validateParameterKeys(parameters []parameterView, allowed ...string) error 
 	return nil
 }
 
-func fetchTable(command *Node) (string, error) {
-	var tables []string
+func fetchDataObject(command *Node) (*Node, string, error) {
+	var objects []*Node
 	_ = walkOwned(command, func(node *Node) error {
 		if node.Kind == NodeTerminal && node.Role == "DATA_OBJECT" {
-			tables = append(tables, strings.ToLower(node.Canonical))
+			objects = append(objects, node)
 		}
 		return nil
 	})
-	if len(tables) != 1 {
-		return "", replayError(ErrorASTContract, command, "fetch", "A fetch command has no unambiguous data object.", "Update dtctl if the server AST contract changed.")
+	if len(objects) != 1 {
+		return nil, "", replayError(ErrorASTContract, command, "fetch", "A fetch command has no unambiguous data object.", "Update dtctl if the server AST contract changed.")
 	}
-	return tables[0], nil
+	return objects[0], strings.ToLower(objects[0].Canonical), nil
 }
 
 func validateCommandSurface(ast *AST, commands []commandView) error {

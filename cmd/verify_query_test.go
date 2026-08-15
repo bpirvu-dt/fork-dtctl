@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
+	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
@@ -408,9 +409,12 @@ func TestVerifyQueryStructuredResultDisclosure(t *testing.T) {
 	fullValue := verifyQueryStructuredResult(result, &exec.ReplayVerification{
 		Active: true, OriginalDQLValid: true, CompilerSupported: true, EffectiveQueryValid: true,
 		UnsupportedConstructs: []string{}, Disclosure: session.ReplayDisclosureFull,
+		EffectiveQuery:   `fetch dt.davis.problems.snapshots | dedup event.id`,
+		CoverageVerified: func() *bool { value := false; return &value }(),
+		CoverageMessage:  execreplay.DavisCoverageNotVerifiedMessage,
 	})
 	full := printJSON(fullValue)
-	for _, field := range []string{`"replay"`, `"original_dql_valid"`, `"compiler_supported"`, `"effective_query_valid"`, `"unsupported_constructs"`} {
+	for _, field := range []string{`"replay"`, `"original_dql_valid"`, `"compiler_supported"`, `"effective_query_valid"`, `"unsupported_constructs"`, `"effective_query"`, `"coverage_verified": false`, execreplay.DavisCoverageNotVerifiedMessage} {
 		if !strings.Contains(full, field) {
 			t.Fatalf("full verification output missing %s: %s", field, full)
 		}

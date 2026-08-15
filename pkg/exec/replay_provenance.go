@@ -28,8 +28,11 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 		fields["sources"] = replaySources(provenance.Compilation.Sources, provenance.Validated)
 		fields["notices"] = replayNotices(provenance.Compilation.Notices)
 	}
+	if provenance.DavisCoverage != nil {
+		fields["davis_snapshot_coverage"] = replayDavisCoverage(*provenance.DavisCoverage)
+	}
 	if provenance.Audit != nil {
-		fields["audit"] = map[string]any{
+		audit := map[string]any{
 			"ok":                  provenance.Audit.OK,
 			"source_count":        provenance.Audit.SourceCount,
 			"no_semantic_now":     provenance.Audit.NoSemanticNow,
@@ -37,6 +40,10 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 			"structure_matches":   provenance.Audit.StructureMatches,
 			"rules":               append([]string(nil), provenance.Audit.Rules...),
 		}
+		if provenance.Audit.DavisMappingsAudited {
+			audit["davis_mappings_audited"] = true
+		}
+		fields["audit"] = audit
 	}
 	if provenance.Validated != nil {
 		fields["validated_result_contracts"] = replayValidatedContracts(provenance.Validated)
@@ -121,7 +128,61 @@ func replaySources(values []execreplay.SourceCompilation, validated []execreplay
 			item["maximum_lower_spill_ns"] = actual.LowerSpill.Nanoseconds()
 			item["maximum_upper_spill_ns"] = actual.UpperSpill.Nanoseconds()
 		}
+		if mapping := value.DavisMapping; mapping != nil {
+			item["davis_problems_mapping"] = replayDavisProblemsMapping(value.Source.Ordinal, *mapping)
+		}
 		result = append(result, item)
+	}
+	return result
+}
+
+func replayDavisProblemsMapping(ordinal int, value execreplay.DavisProblemsMappingCompilation) map[string]any {
+	coverage := map[string]any{"coverage_verified": value.Coverage.Verified}
+	if !value.Coverage.OldestSnapshot.IsZero() {
+		coverage["oldest_snapshot"] = replayProvenanceTime(value.Coverage.OldestSnapshot)
+	}
+	if !value.Coverage.ObservedAt.IsZero() {
+		coverage["observed_at"] = replayProvenanceTime(value.Coverage.ObservedAt)
+	}
+	return map[string]any{
+		"eligible":                 true,
+		"original_view":            value.Candidate.OriginalToken,
+		"effective_snapshot_table": value.Candidate.SnapshotToken,
+		"logical_view_range": map[string]string{
+			"f": replayProvenanceTime(value.Logical.F), "t": replayProvenanceTime(value.Logical.T),
+		},
+		"physical_snapshot_range": map[string]string{
+			"w": replayProvenanceTime(value.Physical.W), "t": replayProvenanceTime(value.Physical.T),
+		},
+		"warmup_clamped": value.WarmupClamped,
+		"coverage":       coverage,
+		"audit_expectation": map[string]any{
+			"source_ordinal":   ordinal,
+			"source_path":      value.Candidate.SourcePath,
+			"data_object_path": value.Candidate.DataObjectPath,
+			"original_token":   value.Candidate.OriginalToken,
+			"effective_token":  value.Candidate.SnapshotToken,
+			"logical_f":        replayProvenanceTime(value.Logical.F),
+			"logical_t":        replayProvenanceTime(value.Logical.T),
+			"physical_w":       replayProvenanceTime(value.Physical.W),
+			"physical_t":       replayProvenanceTime(value.Physical.T),
+		},
+	}
+}
+
+func replayDavisCoverage(value DavisSnapshotCoverageProvenance) map[string]any {
+	result := map[string]any{"status": value.Status, "coverage_verified": value.Verified}
+	if !value.OldestSnapshot.IsZero() {
+		result["oldest_snapshot"] = replayProvenanceTime(value.OldestSnapshot)
+	}
+	if !value.ObservedAt.IsZero() {
+		result["observed_at"] = replayProvenanceTime(value.ObservedAt)
+	}
+	if value.Reuse != "" {
+		result["reuse"] = value.Reuse
+	}
+	if value.Failure != "" {
+		result["failure"] = value.Failure
 	}
 	return result
 }

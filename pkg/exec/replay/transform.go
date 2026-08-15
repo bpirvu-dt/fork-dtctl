@@ -288,6 +288,47 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 		return compiled, replayError(ErrorTimeframe, source.node, "effective source timeframe", "The intersected source timeframe is only one nanosecond wide.", "Use a wider requested range or advance virtual time before retrying.")
 	}
 	compiled.Effective = cloneInterval(&effective)
+	if source.Class == SourceDavisProblemsView {
+		logical := DavisLogicalViewRange{F: effective.Start.UTC(), T: effective.End.UTC()}
+		unclampedW := logical.F.Add(-davisProblemsWarmup)
+		physical := DavisPhysicalSnapshotRange{W: unclampedW, T: logical.T}
+		clamped := input.ReplayInterval.Start.After(unclampedW)
+		if clamped {
+			physical.W = input.ReplayInterval.Start.UTC()
+		}
+		mapping := &DavisProblemsMappingCompilation{
+			Candidate: source.DavisProblems.Clone(), Logical: logical, Physical: physical,
+			WarmupClamped: clamped,
+		}
+		switch input.DavisMapping.Mode {
+		case DavisProblemsMappingInspection:
+			mapping.Coverage = DavisMappingCoverage{Verified: false}
+		case DavisProblemsMappingExecution:
+			coverage := input.DavisMapping.Coverage
+			if coverage == nil || coverage.OldestSnapshot.IsZero() || coverage.ObservedAt.IsZero() {
+				compiled.DavisMapping = mapping
+				physicalInterval := physical.interval()
+				compiled.PhysicalRange = &physicalInterval
+				return compiled, davisCoverageError(source.DavisProblems, DavisCoverageInspectionFailed)
+			}
+			mapping.Coverage = DavisMappingCoverage{
+				OldestSnapshot: coverage.OldestSnapshot.UTC(), ObservedAt: coverage.ObservedAt.UTC(),
+			}
+			if mapping.Coverage.OldestSnapshot.After(physical.W) {
+				compiled.DavisMapping = mapping
+				physicalInterval := physical.interval()
+				compiled.PhysicalRange = &physicalInterval
+				return compiled, davisCoverageError(source.DavisProblems, DavisCoverageInsufficient)
+			}
+			mapping.Coverage.Verified = true
+		default:
+			return compiled, replayError(ErrorAudit, source.node, davisProblemsView, "An eligible Davis problems view reached compilation without an explicit mapping mode.", "Use full-disclosure execution or probe-free inspection mode.")
+		}
+		compiled.DavisMapping = mapping
+		physicalInterval := physical.interval()
+		compiled.PhysicalRange = &physicalInterval
+		return compiled, nil
+	}
 	if source.Class == SourceRecord {
 		compiled.PhysicalRange = cloneInterval(&effective)
 		return compiled, nil
@@ -310,6 +351,10 @@ func cloneSourceDescriptor(source SourceDescriptor) SourceDescriptor {
 		}
 		clone.Metric = &metric
 	}
+	if source.DavisProblems != nil {
+		candidate := source.DavisProblems.Clone()
+		clone.DavisProblems = &candidate
+	}
 	return clone
 }
 
@@ -319,8 +364,17 @@ func explainSource(source SourceCompilation) SourceExplain {
 		Name: source.Source.Name, BoundaryPolicy: source.Source.BoundaryPolicy,
 		Requested: cloneRequestedRange(source.Requested), Effective: cloneInterval(source.Effective),
 		Classification: source.Overlap.Classification, Proof: cloneOverlapProof(source.Overlap),
-		RecordTimeField: source.Source.RecordTimeField,
+		RecordTimeField: source.Source.RecordTimeField, DavisMapping: cloneDavisMapping(source.DavisMapping),
 	}
+}
+
+func cloneDavisMapping(value *DavisProblemsMappingCompilation) *DavisProblemsMappingCompilation {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Candidate = value.Candidate.Clone()
+	return &clone
 }
 
 func cloneRequestedRange(value *RequestedRange) *RequestedRange {
@@ -337,7 +391,7 @@ func cloneOverlapProof(value OverlapProof) OverlapProof {
 	return clone
 }
 
-func sourceNotices(source *sourceAnalysis, input CompileInput) ([]Notice, error) {
+func sourceNotices(source *sourceAnalysis, compiled SourceCompilation, input CompileInput) ([]Notice, error) {
 	var notices []Notice
 	fixedDay, err := sourceUsesFixedDayLiteral(source, input.OriginalDQL)
 	if err != nil {
@@ -355,6 +409,20 @@ func sourceNotices(source *sourceAnalysis, input CompileInput) ([]Notice, error)
 			Kind: NoticeWarning, Code: NoticeDavisWarmup, SourceOrdinal: source.Ordinal,
 			Message: "The Davis snapshot query has less than six hours of warm-up between data_start and virtual_start. Problem-state reconstruction at virtual_start may be incomplete; Phase 0B did not observe this short-gap hazard live. Compilation continues, and this warning does not change the replay boundaries.",
 		})
+	}
+	if source.Class == SourceDavisProblemsView {
+		if input.DavisMapping.Mode == DavisProblemsMappingExecution {
+			notices = append(notices, Notice{
+				Kind: NoticeNotification, Code: NoticeDavisProblemsMapping, SourceOrdinal: source.Ordinal,
+				Message: "Mapped dt.davis.problems to dt.davis.problems.snapshots with latest-per-event.id lifetime reconstruction.", PerExecution: true,
+			})
+		}
+		if compiled.DavisMapping != nil && compiled.DavisMapping.WarmupClamped {
+			notices = append(notices, Notice{
+				Kind: NoticeWarning, Code: NoticeDavisWarmup, SourceOrdinal: source.Ordinal,
+				Message: "The Davis problems snapshot-read start was clamped to data_start. Open problem snapshots have a documented six-hour refresh cadence, so less than six hours of warm-up can make reconstruction incomplete. Compilation continues only when the independent snapshot coverage gate passes.",
+			})
+		}
 	}
 	return notices, nil
 }

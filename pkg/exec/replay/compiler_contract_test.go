@@ -63,3 +63,57 @@ func TestCompileInputContractFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestCompileAcceptsOnlyMatchingPrecomputedSourceAnalysis(t *testing.T) {
+	ast := loadSDKFixture(t, "phase0/fixtures/01-fetch-explicit-now/parse.json")
+	input := fixedCompileInput(ast, "fetch logs, from:now()-1h")
+	descriptors, analysis, err := AnalyzeSourcesWithMapping(ast, input.SourcePolicy, input.DavisMapping)
+	if err != nil || len(descriptors) != 1 || analysis == nil {
+		t.Fatalf("AnalyzeSourcesWithMapping = %#v, %#v, %v", descriptors, analysis, err)
+	}
+	input.PrecomputedAnalysis = analysis
+	result, err := Compile(input)
+	if err != nil || result.EffectiveDQL == "" {
+		t.Fatalf("Compile with matching analysis = %#v, %v", result, err)
+	}
+
+	t.Run("AST revision", func(t *testing.T) {
+		mismatch := input
+		mismatch.AST = ast.Clone()
+		firstTerminal(mismatch.AST, "DATA_OBJECT").Canonical = "events"
+		_, err := Compile(mismatch)
+		assertReplayErrorCode(t, err, ErrorASTContract)
+	})
+
+	t.Run("source policy", func(t *testing.T) {
+		mismatch := input
+		mismatch.SourcePolicy = cloneSourcePolicy(input.SourcePolicy)
+		mismatch.SourcePolicy.DefaultLookback++
+		_, err := Compile(mismatch)
+		assertReplayErrorCode(t, err, ErrorAudit)
+	})
+
+	t.Run("mapping mode", func(t *testing.T) {
+		mismatch := input
+		mismatch.DavisMapping = DavisProblemsMappingPolicy{Mode: DavisProblemsMappingInspection}
+		_, err := Compile(mismatch)
+		assertReplayErrorCode(t, err, ErrorAudit)
+	})
+}
+
+func TestDavisProblemsMappingCandidateCloneOwnsSpan(t *testing.T) {
+	original := DavisProblemsMappingCandidate{Span: &Span{Start: Position{Index: 1}, End: Position{Index: 2}}}
+	clone := original.Clone()
+	clone.Span.Start.Index = 99
+	if original.Span.Start.Index != 1 {
+		t.Fatalf("Clone shared its span with the original: %#v", original)
+	}
+}
+
+func assertReplayErrorCode(t *testing.T, err error, want ErrorCode) {
+	t.Helper()
+	var replayErr *ReplayError
+	if !errors.As(err, &replayErr) || replayErr.Code != want {
+		t.Fatalf("error = %T %v, want %s", err, err, want)
+	}
+}

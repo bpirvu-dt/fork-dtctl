@@ -1,0 +1,21 @@
+Virtual now: 2026-06-14T10:00:00Z
+Virtual start: 2026-06-14T10:00:00Z
+Replay interval: 2026-06-14T02:00:00Z – 2026-06-14T12:00:00Z
+Visible interval: 2026-06-14T02:00:00Z – 2026-06-14T10:00:00Z
+Locale: en_US
+Timezone: UTC
+Source 0: davis_problems_view dt.davis.problems (exact_half_open; overlap)
+  Requested: 2026-06-14T09:00:00Z – 2026-06-14T10:00:00Z
+  Effective: 2026-06-14T09:00:00Z – 2026-06-14T10:00:00Z
+  Proof: the requested source range intersects the visible replay interval
+  Davis problems mapping eligible: true (dt.davis.problems -> dt.davis.problems.snapshots)
+  Logical Davis problems view interval [F,T): 2026-06-14T09:00:00Z – 2026-06-14T10:00:00Z
+  Physical snapshot interval [W,T): 2026-06-14T03:00:00Z – 2026-06-14T10:00:00Z
+  Warm-up clamped: false
+Coverage verified: false
+Snapshot coverage was not verified. The coverage gate runs only when the query executes.
+Effective DQL:
+fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")

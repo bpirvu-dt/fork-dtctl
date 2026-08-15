@@ -138,6 +138,21 @@ func TestVirtualNowFingerprintRequiresExactTimestampShape(t *testing.T) {
 	}
 }
 
+func TestGeneratedFingerprintNodesSkipsSpaceBeforeGeneratedCommand(t *testing.T) {
+	separator := &Node{Kind: NodeContainer, Role: "COMMAND_SEPARATOR"}
+	space := &Node{Kind: NodeTerminal, Role: "SPACE", Canonical: " "}
+	command := &Node{Kind: NodeContainer, Role: "COMMAND"}
+	root := &Node{Kind: NodeContainer, Role: "QUERY", Children: []*Node{separator, space, command}}
+
+	generated := generatedFingerprintNodes(root, map[*Node]struct{}{command: {}})
+	if _, ok := generated[separator]; !ok {
+		t.Fatal("generated command separator was not skipped across insignificant SPACE terminal")
+	}
+	if _, ok := generated[space]; ok {
+		t.Fatal("insignificant SPACE terminal was incorrectly marked as a generated command node")
+	}
+}
+
 func loadAuditCorpus(t *testing.T) []auditCorpusCase {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/audit_corpus.json")

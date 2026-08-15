@@ -36,8 +36,8 @@ func TestDQLExecutorConstructorAuditHasNoUnwiredProductionPath(t *testing.T) {
 		"cmd/replay_query_executor.go": false, // the central production factory
 	}
 	allowedDirectQueryHandlers := map[string]int{
-		"pkg/exec/dql.go":              1, // handler owned by the central DQL executor
-		"pkg/exec/replay_retention.go": 1, // fixed current-metadata read; intentional replay-compiler bypass
+		"pkg/exec/dql.go":          1, // handler owned by the central DQL executor
+		"pkg/exec/replay_probe.go": 1, // shared fixed bounded reads; intentional replay-compiler bypass
 	}
 
 	var found []string

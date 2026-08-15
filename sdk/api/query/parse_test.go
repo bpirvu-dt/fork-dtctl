@@ -341,8 +341,8 @@ func TestDQLNode_RoundTripsPhase0AndPhase0BFixtures(t *testing.T) {
 		t.Fatalf("walk fixtures: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 243 {
-		t.Fatalf("fixture count = %d, want 243", len(paths))
+	if len(paths) != 245 {
+		t.Fatalf("fixture count = %d, want 245", len(paths))
 	}
 
 	typeCounts := make(map[DQLNodeType]int)
@@ -374,8 +374,8 @@ func TestDQLNode_RoundTripsPhase0AndPhase0BFixtures(t *testing.T) {
 		astFixtures++
 	}
 
-	if astFixtures != 225 || nonASTCaptures != 18 {
-		t.Fatalf("AST fixtures = %d, non-AST captures = %d; want 225 and 18", astFixtures, nonASTCaptures)
+	if astFixtures != 227 || nonASTCaptures != 18 {
+		t.Fatalf("AST fixtures = %d, non-AST captures = %d; want 227 and 18", astFixtures, nonASTCaptures)
 	}
 	for _, nodeType := range []DQLNodeType{DQLNodeTypeTerminal, DQLNodeTypeContainer, DQLNodeTypeAlternative} {
 		if typeCounts[nodeType] == 0 {

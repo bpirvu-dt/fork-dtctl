@@ -82,6 +82,9 @@ func newDQLExecutorFromConfig(cfg *config.Config, c *client.Client) (*pkgexec.DQ
 		FallbackProvenancePath:   fallbackProvenancePath,
 		SourcePolicy:             replay.Milestone1SourcePolicy(),
 		RetentionInspector:       pkgexec.NewGrailRetentionInspector(c),
+		DavisCoverage: pkgexec.NewMemoizedDavisSnapshotCoverageProvider(
+			pkgexec.NewDavisSnapshotCoverageInspector(c),
+		),
 		SinkFactory: func(path string) session.ProvenanceSink {
 			return session.NewFileProvenanceSink(path, replayStateDirectory)
 		},

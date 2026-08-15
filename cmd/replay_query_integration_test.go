@@ -15,6 +15,7 @@ import (
 
 	pkgclient "github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
+	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
@@ -23,6 +24,11 @@ const (
 	replayCLIRecordOriginal  = `fetch logs, from:toTimestamp("2026-08-10T10:45:02.718012207Z"), to:toTimestamp("2026-08-10T11:05:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
 	replayCLIRecordEffective = `fetch logs, from:toTimestamp("2026-08-10T10:50:02.718012207Z"), to:toTimestamp("2026-08-10T10:55:02.718012207Z") | filter timestamp == toTimestamp("2026-08-10T10:55:02.718012207Z") | summarize matched=count()`
 	replayCLILoopOriginal    = `fetch logs, from:toTimestamp("2026-08-09T09:55:03Z"), to:toTimestamp("2026-08-10T10:56:03Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`
+	replayCLIDavisOriginal   = `fetch dt.davis.problems, from:toTimestamp("2026-06-14T09:00:00.000Z"), to:toTimestamp("2026-06-14T10:00:00.000Z")`
+	replayCLIDavisEffective  = `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")`
 )
 
 type replayCLIQueryAPI struct {
@@ -33,14 +39,17 @@ type replayCLIQueryAPI struct {
 	executeFailures  int
 	executeStatus    int
 	inspectionStatus int
+	coverageStatus   int
+	coverageOldest   string
 	executeResponse  *sdkquery.Response
 
-	mu       sync.Mutex
-	parses   int
-	executes int
-	inspects int
-	verifies int
-	queries  []string
+	mu        sync.Mutex
+	parses    int
+	executes  int
+	inspects  int
+	coverages int
+	verifies  int
+	queries   []string
 }
 
 func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +102,24 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"dt.system.table": "metrics", "bucket_count": "1", "minimum_retention_days": "180", "maximum_retention_days": "462"},
 				{"dt.system.table": "dt.system.events", "bucket_count": "1", "minimum_retention_days": "35", "maximum_retention_days": "372"},
 			}}})
+			return
+		}
+		if strings.Contains(request.Query, "oldest_snapshot=min(timestamp)") {
+			a.mu.Lock()
+			a.coverages++
+			status, oldest := a.coverageStatus, a.coverageOldest
+			a.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":{"message":"synthetic coverage failure"}}`))
+				return
+			}
+			records := []map[string]interface{}{}
+			if oldest != "" {
+				records = append(records, map[string]interface{}{"oldest_snapshot": oldest})
+			}
+			_ = json.NewEncoder(w).Encode(sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{Records: records}})
 			return
 		}
 		a.mu.Lock()
@@ -160,6 +187,12 @@ func (a *replayCLIQueryAPI) inspectionCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.inspects
+}
+
+func (a *replayCLIQueryAPI) coverageCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.coverages
 }
 
 type replayCLIQueryFixture struct {
@@ -404,6 +437,111 @@ func TestReplayQueryCLIExplainAndRestrictedUnknownFlag(t *testing.T) {
 		}
 		if parses, executes := api.counts(); parses != 0 || executes != 0 {
 			t.Fatalf("parse=%d execute=%d", parses, executes)
+		}
+	})
+}
+
+func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *testing.T) {
+	newAPI := func(t *testing.T, oldest string) *replayCLIQueryAPI {
+		t.Helper()
+		return &replayCLIQueryAPI{
+			t: t, originalQuery: replayCLIDavisOriginal, coverageOldest: oldest,
+			originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/original/parse.json"),
+			validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/effective/parse.json"),
+		}
+	}
+	start := mustReplayCLITime("2026-06-14T02:00:00Z")
+	virtual := mustReplayCLITime("2026-06-14T10:00:00Z")
+	end := mustReplayCLITime("2026-06-14T12:00:00Z")
+
+	t.Run("proven coverage executes exact mapping and announces it", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		var runErr error
+		stdout, stderr := captureReplayQueryStreams(t, func() {
+			runErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		})
+		if runErr != nil || stdout == "" || !strings.Contains(stderr, "Mapped dt.davis.problems to dt.davis.problems.snapshots") {
+			t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 1 || api.coverageCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+		queries := api.executedQueries()
+		if len(queries) != 1 || queries[0] != replayCLIDavisEffective {
+			t.Fatalf("executed queries = %q", queries)
+		}
+	})
+
+	t.Run("insufficient coverage retains guidance and prevents effective parse", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00.000000001Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		if err == nil || !strings.HasSuffix(err.Error(), execreplay.DavisCoverageInsufficientMessage) ||
+			!strings.Contains(err.Error(), "dt.davis.problems.snapshots") {
+			t.Fatalf("error = %v", err)
+		}
+		if parses, executes := api.counts(); parses != 1 || executes != 0 || api.coverageCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+	})
+
+	t.Run("restricted view keeps generic rejection and never probes", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+			t.Fatalf("error = %v", err)
+		}
+		if parses, executes := api.counts(); parses != 1 || executes != 0 || api.coverageCount() != 0 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+	})
+
+	t.Run("explain derives and audits without probing or notification", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, true)
+		var runErr error
+		stdout, stderr := captureReplayQueryStreams(t, func() {
+			runErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		})
+		if runErr != nil || !strings.Contains(stdout, execreplay.DavisCoverageNotVerifiedMessage) ||
+			!strings.Contains(stdout, replayCLIDavisEffective) || strings.Contains(stderr, "Mapped dt.davis.problems") {
+			t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 0 || api.coverageCount() != 0 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+	})
+
+	t.Run("verify derives and audits without probing", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual, start, virtual, end)
+		setReplayVerifyQueryFlags(t)
+		var runErr error
+		_, stderr := captureReplayQueryStreams(t, func() {
+			runErr = verifyQueryCmd.RunE(verifyQueryCmd, []string{replayCLIDavisOriginal})
+		})
+		if runErr != nil || !strings.Contains(stderr, execreplay.DavisCoverageNotVerifiedMessage) ||
+			!strings.Contains(stderr, replayCLIDavisEffective) {
+			t.Fatalf("stderr=%q err=%v", stderr, runErr)
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 0 || api.coverageCount() != 0 || api.verifyCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d verify=%d", parses, api.coverageCount(), executes, api.verifyCount())
 		}
 	})
 }

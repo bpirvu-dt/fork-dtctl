@@ -1,0 +1,2 @@
+Warning: Mapped dt.davis.problems to dt.davis.problems.snapshots with latest-per-event.id lifetime reconstruction.
+Warning: The Davis problems snapshot-read start was clamped to data_start. Open problem snapshots have a documented six-hour refresh cadence, so less than six hours of warm-up can make reconstruction incomplete. Compilation continues only when the independent snapshot coverage gate passes.

@@ -61,6 +61,7 @@ type DavisCurrentViewError struct {
 	IdentityKind       string
 	IdentityField      string
 	LatestPerIDPattern string
+	CoverageFailure    DavisCoverageFailure
 	Path               string
 	Span               *Span
 }
@@ -80,6 +81,7 @@ type NoticeCode string
 const (
 	NoticeFixedDayInterval               NoticeCode = "fixed_1d_means_24h"
 	NoticeDavisWarmup                    NoticeCode = "davis_snapshot_warmup"
+	NoticeDavisProblemsMapping           NoticeCode = "davis_problems_view_mapping"
 	NoticeRetentionBoundary              NoticeCode = "retention_boundary"
 	NoticeRetentionNotVerified           NoticeCode = "retention_not_verified"
 	NoticeHistoricalResolutionUnverified NoticeCode = "historical_metric_resolution_not_verified"
@@ -92,6 +94,7 @@ type Notice struct {
 	Code          NoticeCode
 	Message       string
 	SourceOrdinal int
+	PerExecution  bool
 }
 
 // CompileInput contains every value that can affect one deterministic replay
@@ -109,6 +112,10 @@ type CompileInput struct {
 	Timezone        *time.Location
 	GlobalDefault   *Interval
 	SourcePolicy    SourcePolicy
+	DavisMapping    DavisProblemsMappingPolicy
+	// PrecomputedAnalysis may be supplied only by source analysis performed for
+	// this same AST revision and preparation.
+	PrecomputedAnalysis *PrecomputedSourceAnalysis
 }
 
 // ResultSourceIdentity binds post-execution metadata to one compiled metric
@@ -138,6 +145,7 @@ type SourceCompilation struct {
 	ResultContract  *ReplayResultContract
 	PhysicalRange   *Interval
 	PhysicalPending bool
+	DavisMapping    *DavisProblemsMappingCompilation
 }
 
 // ClockExplain contains only caller-supplied clock facts.
@@ -165,14 +173,17 @@ type SourceExplain struct {
 	Classification  OverlapClassification
 	Proof           OverlapProof
 	RecordTimeField string
+	DavisMapping    *DavisProblemsMappingCompilation
 }
 
 // ExplainData is the complete pure compiler explanation payload.
 type ExplainData struct {
-	Clock        ClockExplain
-	Sources      []SourceExplain
-	Notices      []Notice
-	EffectiveDQL string
+	Clock            ClockExplain
+	Sources          []SourceExplain
+	Notices          []Notice
+	EffectiveDQL     string
+	CoverageVerified *bool
+	CoverageMessage  string
 }
 
 // CompileResult is returned even with NonOverlapError so callers can inspect
@@ -186,6 +197,7 @@ type CompileResult struct {
 	Explain         ExplainData
 	AuditPlan       AuditPlan
 	AuditRequired   bool
+	InspectionOnly  bool
 }
 
 // NonOverlapError is the typed whole-query decision when any telemetry source
@@ -206,9 +218,8 @@ func Compile(input CompileInput) (CompileResult, error) {
 	if err != nil {
 		return CompileResult{}, err
 	}
-	working := input.AST.Clone()
 	policy := cloneSourcePolicy(input.SourcePolicy)
-	sources, err := analyzeSources(working, policy)
+	working, sources, err := sourceAnalysesForCompile(input, policy)
 	if err != nil {
 		return CompileResult{}, err
 	}
@@ -227,11 +238,24 @@ func Compile(input CompileInput) (CompileResult, error) {
 		if compileErr != nil {
 			return result, compileErr
 		}
+		if compiled.DavisMapping != nil {
+			mapping := compiled.DavisMapping
+			result.AuditPlan.DavisProblemsMappings = append(result.AuditPlan.DavisProblemsMappings, DavisProblemsMappingExpectation{
+				SourceOrdinal: source.Ordinal, Candidate: mapping.Candidate,
+				Logical: mapping.Logical, Physical: mapping.Physical, Coverage: mapping.Coverage,
+			})
+			verified := mapping.Coverage.Verified
+			result.Explain.CoverageVerified = &verified
+			if !verified {
+				result.Explain.CoverageMessage = DavisCoverageNotVerifiedMessage
+				result.InspectionOnly = true
+			}
+		}
 		if compiled.ResultContract != nil {
 			contract := *compiled.ResultContract
 			result.ResultContracts = append(result.ResultContracts, contract)
 		}
-		notices, noticeErr := sourceNotices(source, input)
+		notices, noticeErr := sourceNotices(source, compiled, input)
 		if noticeErr != nil {
 			return result, noticeErr
 		}
@@ -241,7 +265,7 @@ func Compile(input CompileInput) (CompileResult, error) {
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {
 		return result, nonOverlap
 	}
-	fingerprint, err := semanticFingerprint(working, sources, input.VirtualNow)
+	fingerprint, err := semanticFingerprintWithMappings(working, sources, input.VirtualNow, result.AuditPlan.DavisProblemsMappings, nil)
 	if err != nil {
 		return result, err
 	}
@@ -313,7 +337,45 @@ func validateCompileInput(input CompileInput) (CompileInput, error) {
 	if len(input.SourcePolicy.RecordTables) == 0 {
 		return input, replayError(ErrorUnsupportedSource, nil, "source policy", "The replay source policy is empty.", "Pass the explicit milestone 1 source policy.")
 	}
+	if err := validateDavisMappingPolicy(input.DavisMapping); err != nil {
+		return input, err
+	}
 	return input, nil
+}
+
+func sourceAnalysesForCompile(input CompileInput, policy SourcePolicy) (*AST, []*sourceAnalysis, error) {
+	precomputed := input.PrecomputedAnalysis
+	if precomputed == nil {
+		working := input.AST.Clone()
+		sources, err := analyzeSources(working, policy, input.DavisMapping)
+		return working, sources, err
+	}
+	if precomputed.ast == nil || precomputed.ast.Root == nil {
+		return nil, nil, replayError(ErrorASTContract, input.AST.Root, "query", "The precomputed source analysis has no adapted DQL AST.", "Analyze this AST again before compiling it.")
+	}
+	revision, err := replayASTRevision(input.AST)
+	if err != nil || revision != precomputed.astRevision {
+		return nil, nil, replayError(ErrorASTContract, input.AST.Root, "query", "The precomputed source analysis does not match this DQL AST revision.", "Analyze this exact adapted AST again before compiling it.")
+	}
+	if !sameSourcePolicy(policy, precomputed.policy) {
+		return nil, nil, replayError(ErrorAudit, input.AST.Root, "source policy", "The precomputed source analysis used a different source policy.", "Analyze and compile with the same explicit source policy.")
+	}
+	if input.DavisMapping.Mode != precomputed.mappingMode {
+		return nil, nil, replayError(ErrorAudit, input.AST.Root, davisProblemsView, "The precomputed source analysis used a different Davis mapping mode.", "Analyze and compile with the same mapping mode.")
+	}
+	return precomputed.ast, precomputed.sources, nil
+}
+
+func sameSourcePolicy(left, right SourcePolicy) bool {
+	if left.DefaultLookback != right.DefaultLookback || len(left.RecordTables) != len(right.RecordTables) {
+		return false
+	}
+	for table, policy := range left.RecordTables {
+		if right.RecordTables[table] != policy {
+			return false
+		}
+	}
+	return true
 }
 
 func newCompileResult(input CompileInput) CompileResult {
@@ -369,6 +431,12 @@ func (e *DavisCurrentViewError) Error() string {
 	)
 	if e.View == "dt.davis.problems" {
 		message += "\n" + davisProblemsWarmupCaveat
+	}
+	switch e.CoverageFailure {
+	case DavisCoverageInspectionFailed:
+		message += "\n" + DavisCoverageInspectionFailedMessage
+	case DavisCoverageInsufficient:
+		message += "\n" + DavisCoverageInsufficientMessage
 	}
 	return message
 }

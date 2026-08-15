@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,102 @@ func TestReplayExplainGolden(t *testing.T) {
 	testutil.AssertGolden(t, "replay/explain-table", got)
 }
 
+func replayDavisExplainGoldenValue() execreplay.ExplainData {
+	coverageVerified := false
+	f := time.Date(2026, 6, 14, 9, 0, 0, 0, time.UTC)
+	timeT := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	w := time.Date(2026, 6, 14, 3, 0, 0, 0, time.UTC)
+	requested := execreplay.RequestedRange{Range: execreplay.Interval{Start: f, End: timeT}, Basis: "explicit absolute from and to"}
+	effective := execreplay.Interval{Start: f, End: timeT}
+	mapping := &execreplay.DavisProblemsMappingCompilation{
+		Candidate: execreplay.DavisProblemsMappingCandidate{
+			OriginalToken: execreplay.DavisProblemsView, SnapshotToken: execreplay.DavisProblemsSnapshotTable,
+		},
+		Logical:  execreplay.DavisLogicalViewRange{F: f, T: timeT},
+		Physical: execreplay.DavisPhysicalSnapshotRange{W: w, T: timeT},
+		Coverage: execreplay.DavisMappingCoverage{Verified: false},
+	}
+	return execreplay.ExplainData{
+		Clock: execreplay.ClockExplain{
+			VirtualNow: timeT, VirtualStart: timeT,
+			ReplayInterval:  execreplay.Interval{Start: time.Date(2026, 6, 14, 2, 0, 0, 0, time.UTC), End: time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)},
+			VisibleInterval: execreplay.Interval{Start: time.Date(2026, 6, 14, 2, 0, 0, 0, time.UTC), End: timeT},
+			Locale:          "en_US", Timezone: "UTC",
+		},
+		Sources: []execreplay.SourceExplain{{
+			Ordinal: 0, Class: execreplay.SourceDavisProblemsView, Name: execreplay.DavisProblemsView,
+			BoundaryPolicy: execreplay.BoundaryExact, Requested: &requested, Effective: &effective,
+			Classification: execreplay.OverlapPresent,
+			Proof:          execreplay.OverlapProof{Reason: "the requested source range intersects the visible replay interval"},
+			DavisMapping:   mapping,
+		}},
+		EffectiveDQL: replayDavisGoldenEffectiveDQL(), CoverageVerified: &coverageVerified,
+		CoverageMessage: execreplay.DavisCoverageNotVerifiedMessage,
+	}
+}
+
+func replayDavisGoldenEffectiveDQL() string {
+	return `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")`
+}
+
+func TestReplayDavisExplainAndVerifyGoldens(t *testing.T) {
+	origFormat, origAgent, origPlain := outputFormat, agentMode, plainMode
+	t.Cleanup(func() { outputFormat, agentMode, plainMode = origFormat, origAgent, origPlain })
+	value := replayDavisExplainGoldenValue()
+	for _, format := range []string{"table", "json"} {
+		t.Run("explain-"+format, func(t *testing.T) {
+			outputFormat, agentMode, plainMode = format, false, true
+			got := captureStdout(t, func() {
+				if err := printReplayExplanation(value); err != nil {
+					t.Fatal(err)
+				}
+			})
+			testutil.AssertGolden(t, "replay/explain-davis-"+format, got)
+		})
+	}
+	verified := false
+	verification := &exec.ReplayVerification{
+		Active: true, OriginalDQLValid: true, CompilerSupported: true, EffectiveQueryValid: true,
+		UnsupportedConstructs: []string{}, EffectiveQuery: value.EffectiveDQL,
+		CoverageVerified: &verified, CoverageMessage: execreplay.DavisCoverageNotVerifiedMessage,
+		Disclosure: session.ReplayDisclosureFull,
+	}
+	_, human := captureReplayQueryStreams(t, func() { formatReplayVerificationHuman(verification) })
+	testutil.AssertGolden(t, "replay/verify-davis-table", human)
+	var structured bytes.Buffer
+	if err := output.NewPrinterWithWriter("json", &structured).Print(verifyQueryStructuredResult(
+		&exec.DQLVerifyResponse{Valid: true, CanonicalQuery: "fetch dt.davis.problems"}, verification,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertGolden(t, "replay/verify-davis-json", structured.String())
+}
+
+func TestReplayDavisCoverageErrorGoldens(t *testing.T) {
+	candidate := &execreplay.DavisProblemsMappingCandidate{
+		OriginalToken: execreplay.DavisProblemsView, SnapshotToken: execreplay.DavisProblemsSnapshotTable,
+	}
+	for _, test := range []struct {
+		name    string
+		failure execreplay.DavisCoverageFailure
+	}{
+		{"inspection-failed", execreplay.DavisCoverageInspectionFailed},
+		{"insufficient", execreplay.DavisCoverageInsufficient},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := execreplay.DavisProblemsCoverageError(candidate, test.failure)
+			if printErr := output.PrintError(&buf, &output.ErrorDetail{Code: "query_failed", Message: err.Error()}); printErr != nil {
+				t.Fatal(printErr)
+			}
+			testutil.AssertGolden(t, "replay/error-davis-coverage-"+test.name, buf.String())
+		})
+	}
+}
+
 func TestReplayErrorGoldens(t *testing.T) {
 	tests := []struct {
 		name string
@@ -238,6 +335,67 @@ func replayGoldenMetadata() *output.ReplayMetadata {
 		}},
 		Warnings: []string{"synthetic historical-resolution warning"},
 	}
+}
+
+func replayDavisGoldenMetadata() *output.ReplayMetadata {
+	return &output.ReplayMetadata{
+		Active: true, SessionID: "0123456789abcdef0123456789abcdef", SessionStartedAt: "2026-08-14T09:00:00Z",
+		ClockMode: session.ReplayClockManual, AnchorHost: "2026-08-14T09:00:00Z", AnchorVirtual: "2026-06-14T10:00:00Z",
+		VirtualNow: "2026-06-14T10:00:00Z", DataStart: "2026-06-14T08:00:00Z", DataEnd: "2026-06-14T12:00:00Z",
+		VisibleEnd: "2026-06-14T10:00:00Z", State: session.ReplayStatusActive,
+		OriginalQuery:  `fetch dt.davis.problems, from:toTimestamp("2026-06-14T09:00:00.000Z"), to:toTimestamp("2026-06-14T10:00:00.000Z")`,
+		EffectiveQuery: strings.Replace(replayDavisGoldenEffectiveDQL(), "03:00:00", "08:00:00", 1),
+		Sources: []output.ReplaySourceMetadata{{
+			Ordinal: 0, Path: "root.children[0]", Name: execreplay.DavisProblemsView,
+			Class: string(execreplay.SourceDavisProblemsView), BoundaryPolicy: string(execreplay.BoundaryExact),
+			RequestedFrom: "2026-06-14T09:00:00Z", RequestedTo: "2026-06-14T10:00:00Z",
+			EffectiveFrom: "2026-06-14T09:00:00Z", EffectiveTo: "2026-06-14T10:00:00Z",
+			PhysicalFrom: "2026-06-14T08:00:00Z", PhysicalTo: "2026-06-14T10:00:00Z",
+			DavisProblemsMapping: &output.DavisProblemsMappingMetadata{
+				Eligible: true, OriginalView: execreplay.DavisProblemsView, EffectiveSnapshotTable: execreplay.DavisProblemsSnapshotTable,
+				LogicalF: "2026-06-14T09:00:00Z", LogicalT: "2026-06-14T10:00:00Z",
+				PhysicalW: "2026-06-14T08:00:00Z", PhysicalT: "2026-06-14T10:00:00Z", WarmupClamped: true,
+			},
+		}},
+		Warnings: []string{
+			"Mapped dt.davis.problems to dt.davis.problems.snapshots with latest-per-event.id lifetime reconstruction.",
+			"The Davis problems snapshot-read start was clamped to data_start. Open problem snapshots have a documented six-hour refresh cadence, so less than six hours of warm-up can make reconstruction incomplete. Compilation continues only when the independent snapshot coverage gate passes.",
+		},
+		DavisSnapshotCoverage: &output.DavisSnapshotCoverageMetadata{
+			Status: "verified", Verified: true, OldestSnapshot: "2026-06-14T07:00:00Z",
+			ObservedAt: "2026-08-14T09:00:01Z", Reuse: "miss",
+		},
+		DavisMappingsAudited: true,
+	}
+}
+
+func TestReplayDavisOutputSurfaceGoldens(t *testing.T) {
+	metadata := replayDavisGoldenMetadata()
+	response := output.Response{
+		OK: true, EnvelopeVersion: output.EnvelopeVersion,
+		Result:  &output.InlineRecords{Kind: output.KindRecords, Records: []map[string]interface{}{{"event.id": "synthetic-problem"}}},
+		Context: &output.ResponseContext{Verb: "query", Resource: "dql", Decided: "inline"}, Replay: metadata,
+	}
+	manifest := &output.ResultFileManifest{
+		Kind: output.KindResultFile, Path: "/synthetic/q-davis.jsonl", Query: metadata.OriginalQuery,
+		EffectiveQuery: metadata.EffectiveQuery, Replay: metadata, Format: "jsonl", Rows: 1, Bytes: 48,
+		ContextName: "historical-window", SampleRows: []map[string]interface{}{{"event.id": "synthetic-problem"}},
+	}
+	var agent bytes.Buffer
+	if err := output.EncodeEnvelope(&agent, response); err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertGolden(t, "replay/agent-davis-mapping", agent.String())
+	testutil.AssertGolden(t, "replay/spill-davis-mapping", string(manifestBytes)+"\n")
+	_, notice := captureReplayQueryStreams(t, func() {
+		output.PrintWarning("%s", metadata.Warnings[0])
+		output.PrintWarning("%s", metadata.Warnings[1])
+	})
+	testutil.AssertGolden(t, "replay/notice-davis-mapping-and-clamp", testutil.StripANSI(notice))
 }
 
 func TestReplayOutputSurfaceGoldens(t *testing.T) {

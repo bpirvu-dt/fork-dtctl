@@ -220,7 +220,9 @@ parses the effective DQL and audits the validation AST before execution.
 
 Only a successful immutable original parse can be memoized. The memo belongs to
 one top-level command invocation and uses the complete original-parse key.
-There is no persistent, process-global, or cross-invocation replay cache.
+The separately typed Davis coverage result described below has its own complete
+invocation-local key. There is no persistent, process-global, or cross-
+invocation replay cache.
 Effective parses, transformed DQL, checked plans, and audit results are never
 reused.
 
@@ -281,23 +283,53 @@ Humans can leave with `ctx <name>`, `--context <name>`, or
 session in a context without a replay block loses configured protection after
 stop, so it is not a complete automation setup.
 
-Davis event and problem snapshot tables are historical records. The DQL author
-must sort and reduce them to the latest snapshot per `event.id`. Problem-view
-reconstruction must additionally filter for problem-lifetime overlap, with an
-end-inclusive lower bound. Event-view equivalence remains unverified. A shorter
-than six-hour warm-up produces a non-blocking warning. The current Davis views
-are rejected with snapshot guidance in full disclosure and provenance-only
-detail in restricted disclosure.
+Davis event and problem snapshot tables are historical records. Direct queries
+remain ordinary milestone 1 sources whose DQL author owns latest-per-`event.id`
+reconstruction. A shorter than six-hour warm-up produces the shipped
+non-blocking warning.
+
+An exact original `fetch dt.davis.problems` is a separately typed, full-
+disclosure-only mapping; the view is not added to the record allowlist. After
+ordinary replay fencing establishes logical `[F,T)`, the compiler sets
+`W = max(data_start, F - 6h)` and emits a physical `[W,T)` snapshot fetch,
+`sort timestamp desc`, `dedup event.id`, and the exact lifetime predicate
+`event.start < T and coalesce(event.end, T) >= F`. Generated reconstruction is
+inserted before byte-preserved downstream user stages.
+
+Before a mapped data execution captures virtual time, one fixed, bounded direct
+Query API read obtains `min(timestamp)` over problem snapshots from 1970 through
+the session `data_end`. Execution is approved only when the strictly decoded
+result proves `oldest_snapshot <= W`. Every probe failure and insufficient
+coverage fails closed before effective parse or main execute; aggregate
+retention is never substituted. Successes and typed failures are memoized only
+inside one command invocation under session, normalized environment,
+non-secret principal, table, and probe-upper-bound identity.
+
+Explain and verify use an explicit probe-free inspection mode. They derive and
+audit the complete would-be mapping and report
+`coverage_verified:false` plus `Snapshot coverage was not verified. The coverage gate runs only when the query executes.`
+Restricted problems views and every `dt.davis.events` view retain their shipped
+rejections and make no coverage request. A clamped `W` warns only in full mode
+after independent coverage succeeds.
 
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
-automatic Davis current-view mapping are milestone 2 candidates. They are not
-supported and have no promised delivery date. Current topology, entity
+automatic Davis events-view mapping are unsupported and have no promised
+delivery date. Current topology, entity
 enrichment, mutable lookup state, current schema state, and current or
 on-demand analyzer and model state also remain rejected.
 
 Replay controls time semantics. It does not freeze retention, ingestion,
 authorization, engine behavior, rollups, sampling, or query limits. Manual mode
 makes virtual now repeatable, not the tenant data immutable.
+
+The Davis mapping evidence does not define a deterministic tie-break if future
+duplicate `(event.id,timestamp)` rows differ. Its equivalence sample covered one
+tenant, one initial point, two nearby repetitions, and a one-hour interval—not
+cross-tenant or long-duration behavior. Its warm-up comparison contained one
+active problem and therefore did not prove six hours sufficient, or a shorter
+read safe, for every active problem. The coverage probe establishes only the
+oldest observed horizon, not per-problem completeness, and an invocation-local
+memo can stale during a long-running command as retention changes.
 
 Before stored telemetry execution, one bounded best-effort inspection reads
 current aggregate retention bounds. The result is cached for one command
