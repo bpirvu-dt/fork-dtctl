@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
-	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
@@ -62,9 +60,7 @@ func NewGrailRetentionInspector(c *client.Client) RetentionInspector {
 	if c == nil {
 		return nil
 	}
-	handler := sdkquery.NewHandler(httpclient.Wrap(c.HTTP())).
-		WithHeaders(map[string]string{"dt-client-context": dtClientContextHeader("replay-retention-inspection")}).
-		WithFirstRateLimitResponse()
+	handler := newReplayProbeHandler(c, "replay-retention-inspection")
 	return &grailRetentionInspector{handler: handler, timeout: replayRetentionInspectionTimeout}
 }
 
@@ -72,20 +68,14 @@ func (i *grailRetentionInspector) Inspect(ctx context.Context) (RetentionInspect
 	if i == nil || i.handler == nil {
 		return RetentionInspection{}, errors.New("retention inspector is unavailable")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	timeout := i.timeout
 	if timeout <= 0 {
 		timeout = replayRetentionInspectionTimeout
 	}
-	inspectionCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	// The evidence query normally completes synchronously. An asynchronous
 	// response is treated as unavailable instead of adding a long poll loop to
 	// the user's command latency.
-	response, err := i.handler.Execute(inspectionCtx, sdkquery.ExecuteRequest{
+	response, err := executeReplayProbe(ctx, i.handler, timeout, sdkquery.ExecuteRequest{
 		Query:                      replayRetentionInspectionDQL,
 		RequestTimeoutMilliseconds: timeout.Milliseconds(),
 		PollingPromiseSeconds:      5,
@@ -96,16 +86,13 @@ func (i *grailRetentionInspector) Inspect(ctx context.Context) (RetentionInspect
 		Timezone:                   "UTC",
 	})
 	if err != nil {
+		if errors.Is(err, errReplayProbeIncomplete) {
+			return RetentionInspection{}, errors.New("current retention metadata did not complete synchronously")
+		}
 		return RetentionInspection{}, fmt.Errorf("inspect current retention metadata: %w", err)
 	}
-	if response == nil || !strings.EqualFold(response.State, "SUCCEEDED") {
-		return RetentionInspection{}, errors.New("current retention metadata did not complete synchronously")
-	}
 
-	records := response.Records
-	if response.Result != nil {
-		records = response.Result.Records
-	}
+	records := replayProbeRecords(response)
 	inspection := RetentionInspection{Tables: make(map[string]RetentionTableBounds, len(records))}
 	for _, record := range records {
 		bounds, err := parseRetentionBounds(record)

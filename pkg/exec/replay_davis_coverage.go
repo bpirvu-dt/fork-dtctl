@@ -54,15 +54,19 @@ const (
 type DavisSnapshotCoverageFailure string
 
 const (
-	DavisCoverageUnavailable  DavisSnapshotCoverageFailure = "unavailable"
-	DavisCoverageTimeout      DavisSnapshotCoverageFailure = "timeout"
-	DavisCoverageRateLimited  DavisSnapshotCoverageFailure = "rate_limited"
-	DavisCoverageUnauthorized DavisSnapshotCoverageFailure = "unauthorized"
-	DavisCoverageForbidden    DavisSnapshotCoverageFailure = "forbidden"
-	DavisCoverageAsync        DavisSnapshotCoverageFailure = "asynchronous"
-	DavisCoverageScanLimited  DavisSnapshotCoverageFailure = "scan_limited"
-	DavisCoverageMalformed    DavisSnapshotCoverageFailure = "malformed"
-	DavisCoverageEmpty        DavisSnapshotCoverageFailure = "empty"
+	DavisCoverageUnavailable            DavisSnapshotCoverageFailure = "unavailable"
+	DavisCoverageTimeout                DavisSnapshotCoverageFailure = "timeout"
+	DavisCoverageCanceled               DavisSnapshotCoverageFailure = "canceled"
+	DavisCoverageRateLimited            DavisSnapshotCoverageFailure = "rate_limited"
+	DavisCoverageUnauthorized           DavisSnapshotCoverageFailure = "unauthorized"
+	DavisCoverageForbidden              DavisSnapshotCoverageFailure = "forbidden"
+	DavisCoverageAsync                  DavisSnapshotCoverageFailure = "asynchronous"
+	DavisCoverageScanLimited            DavisSnapshotCoverageFailure = "scan_limited"
+	DavisCoverageResultLimited          DavisSnapshotCoverageFailure = "result_limited"
+	DavisCoverageTruncated              DavisSnapshotCoverageFailure = "truncated"
+	DavisCoverageUnexpectedNotification DavisSnapshotCoverageFailure = "unexpected_notification"
+	DavisCoverageMalformed              DavisSnapshotCoverageFailure = "malformed"
+	DavisCoverageEmpty                  DavisSnapshotCoverageFailure = "empty"
 )
 
 // DavisSnapshotCoverageError never includes a remote body, tenant value,
@@ -93,9 +97,7 @@ func NewDavisSnapshotCoverageInspector(c *client.Client) DavisSnapshotCoverageIn
 	if c == nil {
 		return nil
 	}
-	handler := sdkquery.NewHandler(httpclient.Wrap(c.HTTP())).
-		WithHeaders(map[string]string{"dt-client-context": dtClientContextHeader("replay-davis-snapshot-coverage")}).
-		WithFirstRateLimitResponse()
+	handler := newReplayProbeHandler(c, "replay-davis-snapshot-coverage")
 	return &grailDavisSnapshotCoverageInspector{handler: handler, timeout: davisSnapshotCoverageTimeout, now: time.Now}
 }
 
@@ -104,17 +106,11 @@ func (i *grailDavisSnapshotCoverageInspector) Inspect(ctx context.Context, sessi
 	if i == nil || i.handler == nil || strings.TrimSpace(sessionID) == "" || dataEnd.IsZero() {
 		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageUnavailable, observedAt)
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	timeout := i.timeout
 	if timeout <= 0 {
 		timeout = davisSnapshotCoverageTimeout
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	response, err := i.handler.Execute(probeCtx, sdkquery.ExecuteRequest{
+	response, err := executeReplayProbe(ctx, i.handler, timeout, sdkquery.ExecuteRequest{
 		Query:                      davisSnapshotCoverageDQL(dataEnd),
 		RequestTimeoutMilliseconds: timeout.Milliseconds(),
 		MaxResultRecords:           1,
@@ -127,19 +123,19 @@ func (i *grailDavisSnapshotCoverageInspector) Inspect(ctx context.Context, sessi
 	})
 	observedAt = i.observedAt()
 	if err != nil {
+		if errors.Is(err, errReplayProbeIncomplete) {
+			return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageAsync, observedAt)
+		}
 		failure := classifyCoverageRequestFailure(err)
 		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(failure, observedAt)
 	}
-	if response == nil || response.State != "SUCCEEDED" || response.RequestToken != "" {
+	if response.RequestToken != "" {
 		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageAsync, observedAt)
 	}
-	if len(response.GetNotifications()) > 0 {
-		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageScanLimited, observedAt)
+	if failure, failed := classifyCoverageNotifications(response.GetNotifications()); failed {
+		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(failure, observedAt)
 	}
-	if response.Result == nil || len(response.Records) != 0 {
-		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageMalformed, observedAt)
-	}
-	records := response.Result.Records
+	records := replayProbeRecords(response)
 	if len(records) == 0 {
 		return DavisSnapshotCoverage{ObservedAt: observedAt}, coverageInspectionError(DavisCoverageEmpty, observedAt)
 	}
@@ -175,7 +171,10 @@ func davisSnapshotCoverageDQL(dataEnd time.Time) string {
 }
 
 func classifyCoverageRequestFailure(err error) DavisSnapshotCoverageFailure {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) {
+		return DavisCoverageCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return DavisCoverageTimeout
 	}
 	if _, rateLimited := sdkquery.RetryAfter(err); rateLimited {
@@ -200,6 +199,26 @@ func classifyCoverageRequestFailure(err error) DavisSnapshotCoverageFailure {
 	default:
 		return DavisCoverageUnavailable
 	}
+}
+
+func classifyCoverageNotifications(notifications []sdkquery.Notification) (DavisSnapshotCoverageFailure, bool) {
+	for _, notification := range notifications {
+		switch classifyNotification(notification.NotificationType, notification.Message) {
+		case notifScanLimit:
+			return DavisCoverageScanLimited, true
+		case notifResultLimit:
+			return DavisCoverageResultLimited, true
+		case notifTimeout:
+			return DavisCoverageTimeout, true
+		case notifConsumption:
+			return DavisCoverageTruncated, true
+		case notifSampling:
+			continue
+		default:
+			return DavisCoverageUnexpectedNotification, true
+		}
+	}
+	return "", false
 }
 
 func coverageInspectionError(failure DavisSnapshotCoverageFailure, observedAt time.Time) error {

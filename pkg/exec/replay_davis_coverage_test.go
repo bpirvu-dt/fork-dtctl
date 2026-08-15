@@ -71,6 +71,42 @@ func TestDavisSnapshotCoverageInspectorUsesExactBoundedReadOnlyRequest(t *testin
 	}
 }
 
+func TestDavisSnapshotCoverageInspectorAcceptsBothRecordResponseShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "top-level backward-compatible records and case-insensitive state",
+			body: `{"state":"succeeded","records":[{"oldest_snapshot":"2026-01-01T00:00:00Z"}]}`,
+			want: "2026-01-01T00:00:00Z",
+		},
+		{
+			name: "result records take precedence when both locations are present",
+			body: `{"state":"SUCCEEDED","records":[{"oldest_snapshot":"2026-01-02T00:00:00Z"}],"result":{"records":[{"oldest_snapshot":"2026-01-01T00:00:00Z"}]}}`,
+			want: "2026-01-01T00:00:00Z",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			transport, err := client.NewForTesting(server.URL, "dt0c01.synthetic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			coverage, err := NewDavisSnapshotCoverageInspector(transport).Inspect(context.Background(), "synthetic-session", mustReplayTestTime("2026-06-14T12:00:00Z"))
+			if err != nil || !coverage.OldestSnapshot.Equal(mustReplayTestTime(test.want)) {
+				t.Fatalf("coverage = %#v, %v", coverage, err)
+			}
+		})
+	}
+}
+
 func TestDavisSnapshotCoverageInspectorRejectsEveryAmbiguousResponse(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -86,7 +122,7 @@ func TestDavisSnapshotCoverageInspectorRejectsEveryAmbiguousResponse(t *testing.
 		{"extra returned field", http.StatusOK, `{"state":"SUCCEEDED","result":{"records":[{"oldest_snapshot":"2026-01-01T00:00:00Z","event.id":"forbidden"}]}}`, DavisCoverageMalformed},
 		{"malformed JSON", http.StatusOK, `{"state":`, DavisCoverageUnavailable},
 		{"asynchronous", http.StatusAccepted, `{"state":"RUNNING","requestToken":"synthetic-request"}`, DavisCoverageAsync},
-		{"scan limited", http.StatusOK, `{"state":"SUCCEEDED","result":{"records":[{"oldest_snapshot":"2026-01-01T00:00:00Z"}],"metadata":{"grail":{"notifications":[{"notificationType":"SCAN_LIMIT","message":"synthetic"}]}}}}`, DavisCoverageScanLimited},
+		{"scan limited", http.StatusOK, `{"state":"SUCCEEDED","result":{"records":[{"oldest_snapshot":"2026-01-01T00:00:00Z"}],"metadata":{"grail":{"notifications":[{"notificationType":"SCAN_LIMIT_GBYTES","message":"synthetic"}]}}}}`, DavisCoverageScanLimited},
 		{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"synthetic"}}`, DavisCoverageUnauthorized},
 		{"forbidden", http.StatusForbidden, `{"error":{"message":"synthetic"}}`, DavisCoverageForbidden},
 		{"service unavailable", http.StatusServiceUnavailable, `{"error":{"message":"synthetic"}}`, DavisCoverageUnavailable},
@@ -116,6 +152,32 @@ func TestDavisSnapshotCoverageInspectorRejectsEveryAmbiguousResponse(t *testing.
 	}
 }
 
+func TestDavisSnapshotCoverageNotificationClassification(t *testing.T) {
+	tests := []struct {
+		name         string
+		notification sdkquery.Notification
+		want         DavisSnapshotCoverageFailure
+		wantFailure  bool
+	}{
+		{"scan limit", sdkquery.Notification{Severity: "WARNING", NotificationType: "SCAN_LIMIT_GBYTES"}, DavisCoverageScanLimited, true},
+		{"record result limit", sdkquery.Notification{Severity: "WARNING", NotificationType: "RESULT_LIMIT_RECORDS"}, DavisCoverageResultLimited, true},
+		{"byte result limit", sdkquery.Notification{Severity: "WARNING", NotificationType: "RESULT_LIMIT_BYTES"}, DavisCoverageResultLimited, true},
+		{"fetch timeout", sdkquery.Notification{Severity: "WARNING", NotificationType: "FETCH_TIMEOUT"}, DavisCoverageTimeout, true},
+		{"consumption truncation", sdkquery.Notification{Severity: "WARNING", NotificationType: "QUERY_CONSUMPTION_LIMIT"}, DavisCoverageTruncated, true},
+		{"unknown type", sdkquery.Notification{Severity: "INFO", NotificationType: "UNKNOWN_TYPE"}, DavisCoverageUnexpectedNotification, true},
+		{"unknown untyped notification", sdkquery.Notification{Severity: "INFO", Message: "synthetic"}, DavisCoverageUnexpectedNotification, true},
+		{"sampling is informational", sdkquery.Notification{Severity: "INFO", NotificationType: "SAMPLING_APPLIED"}, "", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, failed := classifyCoverageNotifications([]sdkquery.Notification{test.notification})
+			if got != test.want || failed != test.wantFailure {
+				t.Fatalf("classification = %q, %t; want %q, %t", got, failed, test.want, test.wantFailure)
+			}
+		})
+	}
+}
+
 func TestDavisSnapshotCoverageInspectorTimeoutIsFiveSecondBounded(t *testing.T) {
 	requestDone := make(chan struct{})
 	transport, err := client.NewForTesting("https://example.invalid", "dt0c01.synthetic")
@@ -140,6 +202,26 @@ func TestDavisSnapshotCoverageInspectorTimeoutIsFiveSecondBounded(t *testing.T) 
 	case <-requestDone:
 	case <-time.After(time.Second):
 		t.Fatal("request did not observe timeout cancellation")
+	}
+}
+
+func TestDavisSnapshotCoverageInspectorCancellationIsNotTimeout(t *testing.T) {
+	transport, err := client.NewForTesting("https://example.invalid", "dt0c01.synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.HTTP().SetTransport(coverageRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, r.Context().Err()
+	}))
+	inspector := &grailDavisSnapshotCoverageInspector{
+		handler: sdkquery.NewHandler(httpclient.Wrap(transport.HTTP())), timeout: time.Second, now: time.Now,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = inspector.Inspect(ctx, "synthetic-session", mustReplayTestTime("2026-06-14T12:00:00Z"))
+	var coverageErr *DavisSnapshotCoverageError
+	if !errors.As(err, &coverageErr) || coverageErr.Failure != DavisCoverageCanceled {
+		t.Fatalf("cancellation error = %T %v", err, err)
 	}
 }
 
