@@ -453,8 +453,14 @@ func generatedFingerprintNodes(root *Node, commands map[*Node]struct{}) map[*Nod
 			return
 		}
 		for index, child := range node.Children {
-			if _, generated := commands[child]; generated && index > 0 && node.Children[index-1].Role == "COMMAND_SEPARATOR" {
-				result[node.Children[index-1]] = struct{}{}
+			if _, generated := commands[child]; generated {
+				previous := index - 1
+				for previous >= 0 && insignificantTerminal(node.Children[previous]) {
+					previous--
+				}
+				if previous >= 0 && node.Children[previous].Role == "COMMAND_SEPARATOR" {
+					result[node.Children[previous]] = struct{}{}
+				}
 			}
 			visit(child)
 		}

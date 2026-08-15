@@ -337,14 +337,14 @@ func (e *DQLExecutor) printReplayNoticeOnce(prepared PreparedQuery, opts DQLExec
 				replayDisplayTime(prepared.VirtualNow), replayDisplayTime(prepared.Session.DataStart), replayDisplayTime(prepared.Session.DataEnd))
 		}
 		for _, notice := range prepared.Compilation.Notices {
-			if notice.Code == execreplay.NoticeDavisProblemsMapping {
+			if notice.PerExecution {
 				continue
 			}
 			output.PrintWarning("%s", notice.Message)
 		}
 	})
 	for _, notice := range prepared.Compilation.Notices {
-		if notice.Code == execreplay.NoticeDavisProblemsMapping {
+		if notice.PerExecution {
 			output.PrintWarning("%s", notice.Message)
 		}
 	}

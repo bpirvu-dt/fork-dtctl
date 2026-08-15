@@ -297,7 +297,7 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 			physical.W = input.ReplayInterval.Start.UTC()
 		}
 		mapping := &DavisProblemsMappingCompilation{
-			Candidate: *source.DavisProblems, Logical: logical, Physical: physical,
+			Candidate: source.DavisProblems.Clone(), Logical: logical, Physical: physical,
 			WarmupClamped: clamped,
 		}
 		switch input.DavisMapping.Mode {
@@ -352,11 +352,7 @@ func cloneSourceDescriptor(source SourceDescriptor) SourceDescriptor {
 		clone.Metric = &metric
 	}
 	if source.DavisProblems != nil {
-		candidate := *source.DavisProblems
-		if source.DavisProblems.Span != nil {
-			span := *source.DavisProblems.Span
-			candidate.Span = &span
-		}
+		candidate := source.DavisProblems.Clone()
 		clone.DavisProblems = &candidate
 	}
 	return clone
@@ -377,10 +373,7 @@ func cloneDavisMapping(value *DavisProblemsMappingCompilation) *DavisProblemsMap
 		return nil
 	}
 	clone := *value
-	if value.Candidate.Span != nil {
-		span := *value.Candidate.Span
-		clone.Candidate.Span = &span
-	}
+	clone.Candidate = value.Candidate.Clone()
 	return &clone
 }
 
@@ -421,7 +414,7 @@ func sourceNotices(source *sourceAnalysis, compiled SourceCompilation, input Com
 		if input.DavisMapping.Mode == DavisProblemsMappingExecution {
 			notices = append(notices, Notice{
 				Kind: NoticeNotification, Code: NoticeDavisProblemsMapping, SourceOrdinal: source.Ordinal,
-				Message: "Mapped dt.davis.problems to dt.davis.problems.snapshots with latest-per-event.id lifetime reconstruction.",
+				Message: "Mapped dt.davis.problems to dt.davis.problems.snapshots with latest-per-event.id lifetime reconstruction.", PerExecution: true,
 			})
 		}
 		if compiled.DavisMapping != nil && compiled.DavisMapping.WarmupClamped {

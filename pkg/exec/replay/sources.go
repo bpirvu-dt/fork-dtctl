@@ -1,6 +1,8 @@
 package replay
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -10,9 +12,11 @@ import (
 type SourceClass string
 
 const (
-	SourceRecord            SourceClass = "record"
-	SourceMetric            SourceClass = "metric"
-	SourceSynthetic         SourceClass = "synthetic"
+	SourceRecord    SourceClass = "record"
+	SourceMetric    SourceClass = "metric"
+	SourceSynthetic SourceClass = "synthetic"
+	// SourceDavisProblemsView stays purpose-specific until a second mapping
+	// passes its own evidence gate; generic view-mapping plumbing is deferred.
 	SourceDavisProblemsView SourceClass = "davis_problems_view"
 )
 
@@ -108,6 +112,17 @@ type parameterView struct {
 	keyOrigin string
 }
 
+// PrecomputedSourceAnalysis is an opaque, preparation-local source analysis
+// that Compile accepts only with the same AST revision, source policy, and
+// mapping mode. It contains no clock values or compiled query artifacts.
+type PrecomputedSourceAnalysis struct {
+	astRevision [sha256.Size]byte
+	ast         *AST
+	sources     []*sourceAnalysis
+	policy      SourcePolicy
+	mappingMode DavisProblemsMappingMode
+}
+
 // ClassifySources applies the milestone policy without reading state, the
 // clock, configuration, or the network.
 func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) {
@@ -117,13 +132,37 @@ func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) 
 // ClassifySourcesWithMapping applies the ordinary source allowlist plus the
 // separately typed full-disclosure problems-view policy.
 func ClassifySourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, error) {
-	if err := validateDavisMappingPolicy(mapping, false); err != nil {
-		return nil, err
+	descriptors, _, err := AnalyzeSourcesWithMapping(ast, policy, mapping)
+	return descriptors, err
+}
+
+// AnalyzeSourcesWithMapping classifies sources once and returns an opaque
+// analysis that can be handed to Compile during the same preparation.
+func AnalyzeSourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, *PrecomputedSourceAnalysis, error) {
+	if err := validateDavisMappingPolicy(mapping); err != nil {
+		return nil, nil, err
 	}
-	analyses, err := analyzeSources(ast, policy, mapping)
+	working := ast.Clone()
+	policy = cloneSourcePolicy(policy)
+	analyses, err := analyzeSources(working, policy, mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	revision, err := replayASTRevision(ast)
+	if err != nil {
+		return nil, nil, replayError(ErrorASTContract, nil, "query", "The adapted DQL AST revision could not be recorded.", "Parse and adapt the original DQL again before compiling it.")
+	}
+	precomputed := &PrecomputedSourceAnalysis{
+		astRevision: revision,
+		ast:         working,
+		sources:     analyses,
+		policy:      policy,
+		mappingMode: mapping.Mode,
+	}
+	return cloneSourceDescriptors(analyses), precomputed, nil
+}
+
+func cloneSourceDescriptors(analyses []*sourceAnalysis) []SourceDescriptor {
 	out := make([]SourceDescriptor, len(analyses))
 	for i := range analyses {
 		out[i] = analyses[i].SourceDescriptor
@@ -134,15 +173,19 @@ func ClassifySourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProb
 			out[i].Metric = &metric
 		}
 		if analyses[i].DavisProblems != nil {
-			candidate := *analyses[i].DavisProblems
-			if analyses[i].DavisProblems.Span != nil {
-				span := *analyses[i].DavisProblems.Span
-				candidate.Span = &span
-			}
+			candidate := analyses[i].DavisProblems.Clone()
 			out[i].DavisProblems = &candidate
 		}
 	}
-	return out, nil
+	return out
+}
+
+func replayASTRevision(ast *AST) ([sha256.Size]byte, error) {
+	encoded, err := json.Marshal(ast)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 func analyzeSources(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]*sourceAnalysis, error) {

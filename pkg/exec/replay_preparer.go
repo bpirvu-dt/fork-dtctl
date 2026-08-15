@@ -165,7 +165,7 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 	// Classification and any bounded coverage inspection deliberately precede
 	// the single virtual-clock capture.
 	mappingPolicy := replayDavisMappingPolicy(disclosure, input.Mode)
-	descriptors, err := execreplay.ClassifySourcesWithMapping(adapted, p.config.SourcePolicy, mappingPolicy)
+	descriptors, sourceAnalysis, err := execreplay.AnalyzeSourcesWithMapping(adapted, p.config.SourcePolicy, mappingPolicy)
 	if err != nil {
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorPrepare, err, info, &candidateProvenance, false)
 	}
@@ -217,12 +217,13 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		VisibleInterval: execreplay.Interval{
 			Start: state.DataStart.UTC(), End: visibleEnd,
 		},
-		Locale:        input.Options.Locale,
-		TimezoneName:  timezoneName,
-		Timezone:      timezone,
-		GlobalDefault: globalDefault,
-		SourcePolicy:  p.config.SourcePolicy,
-		DavisMapping:  mappingPolicy,
+		Locale:              input.Options.Locale,
+		TimezoneName:        timezoneName,
+		Timezone:            timezone,
+		GlobalDefault:       globalDefault,
+		SourcePolicy:        p.config.SourcePolicy,
+		DavisMapping:        mappingPolicy,
+		PrecomputedAnalysis: sourceAnalysis,
 	})
 	if err != nil {
 		var nonOverlap *execreplay.NonOverlapError
@@ -422,11 +423,7 @@ func firstDavisProblemsCandidate(sources []execreplay.SourceDescriptor) *execrep
 		if source.DavisProblems == nil {
 			continue
 		}
-		candidate := *source.DavisProblems
-		if source.DavisProblems.Span != nil {
-			span := *source.DavisProblems.Span
-			candidate.Span = &span
-		}
+		candidate := source.DavisProblems.Clone()
 		return &candidate
 	}
 	return nil

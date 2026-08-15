@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	davisMappingOriginal  = `fetch dt.davis.problems, from:toTimestamp("2026-06-14T09:00:00.000Z"), to:toTimestamp("2026-06-14T10:00:00.000Z")`
-	davisMappingEffective = `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
+	davisMappingOriginal          = `fetch dt.davis.problems, from:toTimestamp("2026-06-14T09:00:00.000Z"), to:toTimestamp("2026-06-14T10:00:00.000Z")`
+	davisMappingTimeframeOriginal = `fetch dt.davis.problems, timeframe:"2026-06-14T09:00:00Z/2026-06-14T10:00:00Z"`
+	davisMappingEffective         = `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")
 | sort timestamp desc
 | dedup event.id
 | filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")`
@@ -77,17 +78,28 @@ func TestDavisProblemsMappingComposesCommandEndInsertionAndPreservesDownstreamBy
 		original   string
 		wantPrefix string
 		wantSuffix string
+		wantExact  string
+		wantError  ErrorCode
+		audit      bool
 	}{
 		{
-			name: "no bounds", fixture: "phase0/fixtures/05-fetch-no-timeframe/parse.json", original: "fetch logs",
+			name: "no bounds", fixture: "phase0/fixtures/05-fetch-no-timeframe/parse.json", original: "fetch dt.davis.problems",
 			wantPrefix: `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T02:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")`,
 		},
 		{
-			name: "from only", fixture: "phase0/fixtures/01-fetch-explicit-now/parse.json", original: "fetch logs, from:now()-1h",
+			name: "from only", fixture: "phase0/fixtures/01-fetch-explicit-now/parse.json", original: "fetch dt.davis.problems, from:now()-1h",
 			wantPrefix: `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:00:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")`,
 		},
 		{
-			name: "downstream", fixture: "pipeline/contains/parse.json", original: `fetch logs, from:now()-5m, to:now() | filter contains(content, "error") | limit 1`,
+			name: "to only", fixture: "phase0/fixtures/06-fetch-to-now/parse.json", original: "fetch dt.davis.problems, to:now()-20m",
+			wantError: ErrorTimeframe,
+		},
+		{
+			name: "timeframe", fixture: "phase0/fixtures/07-fetch-explicit-timeframe/parse.json", original: davisMappingTimeframeOriginal,
+			wantExact: davisMappingEffective, audit: true,
+		},
+		{
+			name: "downstream", fixture: "pipeline/contains/parse.json", original: `fetch dt.davis.problems, from:now()-5m, to:now() | filter contains(content, "error") | limit 1`,
 			wantPrefix: `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-06-14T03:55:00.000000000Z"), to:toTimestamp("2026-06-14T10:00:00.000000000Z")`,
 			wantSuffix: ` | filter contains(content, "error") | limit 1`,
 		},
@@ -95,11 +107,21 @@ func TestDavisProblemsMappingComposesCommandEndInsertionAndPreservesDownstreamBy
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ast := loadSDKFixture(t, test.fixture).Clone()
-			firstTerminal(ast, "DATA_OBJECT").Canonical = davisProblemsView
+			replaceTestSourceToken(ast, "logs", davisProblemsView)
 			input := davisMappingCompileInput(t, ast, test.original, DavisProblemsMappingExecution)
 			result, err := Compile(input)
+			if test.wantError != "" {
+				var replayErr *ReplayError
+				if !errors.As(err, &replayErr) || replayErr.Code != test.wantError {
+					t.Fatalf("error = %T %v, want %s", err, err, test.wantError)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.wantExact != "" && result.EffectiveDQL != test.wantExact {
+				t.Fatalf("effective DQL:\n%s\nwant:\n%s", result.EffectiveDQL, test.wantExact)
 			}
 			if !strings.HasPrefix(result.EffectiveDQL, test.wantPrefix) ||
 				(test.wantSuffix != "" && !strings.HasSuffix(result.EffectiveDQL, test.wantSuffix)) ||
@@ -107,18 +129,16 @@ func TestDavisProblemsMappingComposesCommandEndInsertionAndPreservesDownstreamBy
 				strings.Count(result.EffectiveDQL, "| dedup event.id") != 1 {
 				t.Fatalf("effective DQL = %q", result.EffectiveDQL)
 			}
+			if test.audit {
+				audit, auditErr := Audit(AuditInput{
+					ValidationAST: loadPhase0BFixture(t, "davis/problems-view-mapping/effective/parse.json"),
+					Compilation:   result, SourcePolicy: Milestone1SourcePolicy(), Timezone: time.UTC,
+				})
+				if auditErr != nil || !audit.OK || !audit.DavisMappingsAudited {
+					t.Fatalf("timeframe audit = %#v, %v", audit, auditErr)
+				}
+			}
 		})
-	}
-}
-
-func TestDavisProblemsMappingKeepsToOnlyRejection(t *testing.T) {
-	ast := loadSDKFixture(t, "phase0/fixtures/06-fetch-to-now/parse.json").Clone()
-	firstTerminal(ast, "DATA_OBJECT").Canonical = davisProblemsView
-	input := davisMappingCompileInput(t, ast, "fetch logs, to:now()-20m", DavisProblemsMappingExecution)
-	_, err := Compile(input)
-	var replayErr *ReplayError
-	if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
-		t.Fatalf("error = %T %v, want timeframe rejection", err, err)
 	}
 }
 
@@ -486,6 +506,34 @@ func firstCanonicalTerminal(ast *AST, role, canonical string) *Node {
 		}
 	}
 	panic("test fixture lacks terminal " + role + "=" + canonical)
+}
+
+func replaceTestSourceToken(ast *AST, oldToken, newToken string) {
+	target := firstCanonicalTerminal(ast, "DATA_OBJECT", oldToken)
+	if target.Span == nil {
+		panic("test fixture source token has no span")
+	}
+	oldSpan := *target.Span
+	delta := utf16TestLength(newToken) - utf16TestLength(oldToken)
+	_ = ast.Walk(func(node *Node) error {
+		if node.Span == nil {
+			return nil
+		}
+		if node.Span.Start.Index > oldSpan.End.Index {
+			node.Span.Start.Index += delta
+			if node.Span.Start.Line == oldSpan.Start.Line {
+				node.Span.Start.Column += delta
+			}
+		}
+		if node.Span.End.Index >= oldSpan.End.Index {
+			node.Span.End.Index += delta
+			if node.Span.End.Line == oldSpan.End.Line {
+				node.Span.End.Column += delta
+			}
+		}
+		return nil
+	})
+	target.Canonical = newToken
 }
 
 func davisMappingCompileInput(t *testing.T, ast *AST, original string, mode DavisProblemsMappingMode) CompileInput {

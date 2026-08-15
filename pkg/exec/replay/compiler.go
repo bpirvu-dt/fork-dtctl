@@ -94,6 +94,7 @@ type Notice struct {
 	Code          NoticeCode
 	Message       string
 	SourceOrdinal int
+	PerExecution  bool
 }
 
 // CompileInput contains every value that can affect one deterministic replay
@@ -112,6 +113,9 @@ type CompileInput struct {
 	GlobalDefault   *Interval
 	SourcePolicy    SourcePolicy
 	DavisMapping    DavisProblemsMappingPolicy
+	// PrecomputedAnalysis may be supplied only by source analysis performed for
+	// this same AST revision and preparation.
+	PrecomputedAnalysis *PrecomputedSourceAnalysis
 }
 
 // ResultSourceIdentity binds post-execution metadata to one compiled metric
@@ -214,9 +218,8 @@ func Compile(input CompileInput) (CompileResult, error) {
 	if err != nil {
 		return CompileResult{}, err
 	}
-	working := input.AST.Clone()
 	policy := cloneSourcePolicy(input.SourcePolicy)
-	sources, err := analyzeSources(working, policy, input.DavisMapping)
+	working, sources, err := sourceAnalysesForCompile(input, policy)
 	if err != nil {
 		return CompileResult{}, err
 	}
@@ -334,10 +337,45 @@ func validateCompileInput(input CompileInput) (CompileInput, error) {
 	if len(input.SourcePolicy.RecordTables) == 0 {
 		return input, replayError(ErrorUnsupportedSource, nil, "source policy", "The replay source policy is empty.", "Pass the explicit milestone 1 source policy.")
 	}
-	if err := validateDavisMappingPolicy(input.DavisMapping, false); err != nil {
+	if err := validateDavisMappingPolicy(input.DavisMapping); err != nil {
 		return input, err
 	}
 	return input, nil
+}
+
+func sourceAnalysesForCompile(input CompileInput, policy SourcePolicy) (*AST, []*sourceAnalysis, error) {
+	precomputed := input.PrecomputedAnalysis
+	if precomputed == nil {
+		working := input.AST.Clone()
+		sources, err := analyzeSources(working, policy, input.DavisMapping)
+		return working, sources, err
+	}
+	if precomputed.ast == nil || precomputed.ast.Root == nil {
+		return nil, nil, replayError(ErrorASTContract, input.AST.Root, "query", "The precomputed source analysis has no adapted DQL AST.", "Analyze this AST again before compiling it.")
+	}
+	revision, err := replayASTRevision(input.AST)
+	if err != nil || revision != precomputed.astRevision {
+		return nil, nil, replayError(ErrorASTContract, input.AST.Root, "query", "The precomputed source analysis does not match this DQL AST revision.", "Analyze this exact adapted AST again before compiling it.")
+	}
+	if !sameSourcePolicy(policy, precomputed.policy) {
+		return nil, nil, replayError(ErrorAudit, input.AST.Root, "source policy", "The precomputed source analysis used a different source policy.", "Analyze and compile with the same explicit source policy.")
+	}
+	if input.DavisMapping.Mode != precomputed.mappingMode {
+		return nil, nil, replayError(ErrorAudit, input.AST.Root, davisProblemsView, "The precomputed source analysis used a different Davis mapping mode.", "Analyze and compile with the same mapping mode.")
+	}
+	return precomputed.ast, precomputed.sources, nil
+}
+
+func sameSourcePolicy(left, right SourcePolicy) bool {
+	if left.DefaultLookback != right.DefaultLookback || len(left.RecordTables) != len(right.RecordTables) {
+		return false
+	}
+	for table, policy := range left.RecordTables {
+		if right.RecordTables[table] != policy {
+			return false
+		}
+	}
+	return true
 }
 
 func newCompileResult(input CompileInput) CompileResult {

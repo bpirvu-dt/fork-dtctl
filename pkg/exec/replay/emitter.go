@@ -67,7 +67,15 @@ func sourceBoundaryEdits(source *sourceAnalysis, effective Interval, commandEnd 
 		if err != nil {
 			return nil, nil, err
 		}
-		return []PositionEdit{edit}, []Span{*byKey["timeframe"][0].node.Span}, nil
+		edits := []PositionEdit{edit}
+		if commandEnd != "" {
+			appendEdit, err := InsertAtCommandEnd(source.command.node, commandEnd, fmt.Sprintf("source %d Davis reconstruction", source.Ordinal))
+			if err != nil {
+				return nil, nil, err
+			}
+			edits = append(edits, appendEdit)
+		}
+		return edits, []Span{*byKey["timeframe"][0].node.Span}, nil
 	}
 	var edits []PositionEdit
 	var spans []Span
@@ -111,10 +119,7 @@ func sourceBoundaryEdits(source *sourceAnalysis, effective Interval, commandEnd 
 func emitDavisProblemsReconstruction(mapping DavisProblemsMappingCompilation) string {
 	logicalF := emitTimestamp(mapping.Logical.F)
 	logicalT := emitTimestamp(mapping.Logical.T)
-	return "\n| sort timestamp desc" +
-		"\n| dedup event.id" +
-		"\n| filter event.start < " + logicalT +
-		" and coalesce(event.end, " + logicalT + ") >= " + logicalF
+	return davisProblemsReconstruction(logicalF, logicalT)
 }
 
 func semanticNowEdits(ast *AST, covered []Span, virtualNow time.Time) ([]PositionEdit, error) {

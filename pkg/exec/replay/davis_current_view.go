@@ -2,10 +2,16 @@ package replay
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
 const davisProblemsWarmupCaveat = "When the visible window is short, the snapshot read may need to start before <visible-start> while the lifetime filter bounds stay at <visible-start> and <visible-end>; open problem snapshots have a documented six-hour refresh cadence, so retain at least six hours of warm-up."
+
+const davisProblemsReconstructionTemplate = `
+| sort timestamp desc
+| dedup event.id
+| filter event.start < %[2]s and coalesce(event.end, %[2]s) >= %[1]s`
 
 const (
 	davisProblemsView          = "dt.davis.problems"
@@ -66,6 +72,16 @@ type DavisProblemsMappingCandidate struct {
 	Span           *Span
 }
 
+// Clone returns an independent candidate, including its optional source span.
+func (c DavisProblemsMappingCandidate) Clone() DavisProblemsMappingCandidate {
+	clone := c
+	if c.Span != nil {
+		span := *c.Span
+		clone.Span = &span
+	}
+	return clone
+}
+
 // DavisLogicalViewRange is [F,T). It is intentionally a different type from
 // DavisPhysicalSnapshotRange so compiler and audit code cannot interchange the
 // lifetime window and the snapshot-read window accidentally.
@@ -121,16 +137,13 @@ const (
 	DavisCoverageInsufficient     DavisCoverageFailure = "insufficient"
 )
 
-func validateDavisMappingPolicy(policy DavisProblemsMappingPolicy, compiling bool) error {
+func validateDavisMappingPolicy(policy DavisProblemsMappingPolicy) error {
 	switch policy.Mode {
 	case DavisProblemsMappingDisabled:
 		if policy.Coverage != nil {
 			return replayError(ErrorAudit, nil, davisProblemsView, "A disabled Davis problems mapping policy carries a coverage result.", "Do not reuse mapping coverage outside an eligible full-disclosure compilation.")
 		}
 	case DavisProblemsMappingExecution:
-		if compiling && policy.Coverage == nil {
-			return davisCoverageError(nil, DavisCoverageInspectionFailed)
-		}
 	case DavisProblemsMappingInspection:
 		if policy.Coverage != nil {
 			return replayError(ErrorAudit, nil, davisProblemsView, "Probe-free Davis problems inspection received a coverage result.", "Explain and verify must not consult or reuse the coverage memo.")
@@ -139,6 +152,10 @@ func validateDavisMappingPolicy(policy DavisProblemsMappingPolicy, compiling boo
 		return replayError(ErrorUnsupportedForm, nil, davisProblemsView, fmt.Sprintf("The Davis problems mapping mode %q is unsupported.", policy.Mode), "Use disabled, execution, or probe-free inspection mode.")
 	}
 	return nil
+}
+
+func davisProblemsReconstruction(logicalF, logicalT string) string {
+	return fmt.Sprintf(davisProblemsReconstructionTemplate, logicalF, logicalT)
 }
 
 func mappingCandidateFor(table string, dataObject, command *Node, policy DavisProblemsMappingPolicy) (*DavisProblemsMappingCandidate, bool) {
@@ -184,7 +201,8 @@ func currentDavisView(table string, node *Node) (*DavisCurrentViewError, bool) {
 	switch table {
 	case davisProblemsView:
 		snapshot, identity = davisProblemsSnapshotTable, "problem"
-		pattern = fmt.Sprintf("fetch %s, from:<visible-start>, to:<visible-end> | sort timestamp desc | dedup event.id | filter event.start < <visible-end> and coalesce(event.end, <visible-end>) >= <visible-start>", snapshot)
+		reconstruction := strings.ReplaceAll(davisProblemsReconstruction("<visible-start>", "<visible-end>"), "\n", " ")
+		pattern = fmt.Sprintf("fetch %s, from:<visible-start>, to:<visible-end>%s", snapshot, reconstruction)
 	case "dt.davis.events":
 		snapshot, identity = "dt.davis.events.snapshots", "event"
 		// Event-view equivalence is unverified pending its own spike; do not
