@@ -39,7 +39,7 @@ jobs:
       - name: Run go vet
         working-directory: sdk
         shell: bash
-        run: go vet ./...
+        run: go vet -tags integration ./...
 
       - name: Run SDK tests
         working-directory: sdk

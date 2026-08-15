@@ -37,7 +37,7 @@ jobs:
 
       - name: Run go vet
         shell: bash
-        run: go vet ./...
+        run: go vet -tags integration ./...
 
       - name: Run tests
         shell: bash
