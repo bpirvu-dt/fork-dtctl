@@ -21,8 +21,8 @@ const (
 	ErrorResultContract    ErrorCode = "result_contract"
 )
 
-// ReplayError is a typed, full-disclosure compiler rejection. Later phases can
-// map Code to a restricted message without discarding the detailed reason.
+// ReplayError is a typed compiler rejection. Later phases route its detailed
+// reason to full ordinary output or restricted private provenance.
 type ReplayError struct {
 	Code      ErrorCode
 	Message   string
@@ -53,7 +53,7 @@ func replayError(code ErrorCode, node *Node, construct, message, remedy string) 
 }
 
 // DavisCurrentViewError rejects a mutable Davis view while carrying the safe,
-// author-owned snapshot reconstruction pattern needed by full disclosure and
+// author-owned snapshot reconstruction pattern needed by detailed output and
 // provenance routing.
 type DavisCurrentViewError struct {
 	View               string
@@ -87,8 +87,8 @@ const (
 	NoticeHistoricalResolutionUnverified NoticeCode = "historical_metric_resolution_not_verified"
 )
 
-// Notice is full-disclosure compiler data. Phase 4 decides whether it goes to
-// ordinary output or private provenance.
+// Notice is disclosure-neutral compiler data. Phase 4 decides whether it goes
+// to ordinary output or private provenance.
 type Notice struct {
 	Kind          NoticeKind
 	Code          NoticeCode

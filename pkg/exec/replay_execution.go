@@ -291,6 +291,10 @@ func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {
 }
 
 func restrictedMessage(category replayErrorCategory, detail error, retryable, postExecution bool) string {
+	return restrictedMessageForInfo(category, detail, ReplayExecutionInfo{}, retryable, postExecution)
+}
+
+func restrictedMessageForInfo(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable, postExecution bool) string {
 	switch category {
 	case replayErrorNonOverlap:
 		if retryable {
@@ -309,7 +313,7 @@ func restrictedMessage(category replayErrorCategory, detail error, retryable, po
 		}
 		return restrictedPreflightSinkMessage
 	case replayErrorRemote:
-		if detail != nil && restrictedRemoteTextMayPass(detail) {
+		if detail != nil && restrictedRemoteTextMayPass(detail, info) {
 			return detail.Error()
 		}
 		return restrictedRemoteExecutionMessage
@@ -318,8 +322,11 @@ func restrictedMessage(category replayErrorCategory, detail error, retryable, po
 	}
 }
 
-func restrictedRemoteTextMayPass(detail error) bool {
+func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	generated := detail.Error()
+	if replayInfoHasDavisProblemsMapping(info) && containsDavisMappingText(generated, info) {
+		return false
+	}
 	// QueryError fields are verbatim remote API content wrapped in the normal
 	// non-replay formatter. Remove that exact normal-format portion before
 	// checking any outer dtctl-generated wrapper text.
@@ -339,6 +346,74 @@ func restrictedRemoteTextMayPass(detail error) bool {
 	return !containsRestrictedGeneratedWord(generated)
 }
 
+func replayInfoHasDavisProblemsMapping(info ReplayExecutionInfo) bool {
+	if info.Output == nil {
+		return false
+	}
+	for _, source := range info.Output.Sources {
+		if source.DavisProblemsMapping != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
+	generated := value
+	if info.OriginalQuery != "" {
+		generated = strings.ReplaceAll(generated, info.OriginalQuery, "")
+	}
+	generated = strings.ReplaceAll(generated, `\"`, `"`)
+	lower := strings.ToLower(generated)
+	for _, fragment := range []string{
+		strings.ToLower(execreplay.DavisProblemsSnapshotTable),
+		"sort timestamp desc",
+		"dedup event.id",
+		"filter event.start",
+		"coalesce(event.end",
+	} {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	originalTimestamps := make(map[string]struct{})
+	for _, expression := range dqlToTimestampExpressions(info.OriginalQuery) {
+		originalTimestamps[expression] = struct{}{}
+	}
+	for _, expression := range dqlToTimestampExpressions(info.EffectiveQuery) {
+		if _, userAuthored := originalTimestamps[expression]; !userAuthored && strings.Contains(lower, expression) {
+			return true
+		}
+	}
+	for _, query := range []string{info.EffectiveQuery, info.Output.GrailCanonicalEffectiveQuery} {
+		if query != "" && query != info.OriginalQuery && strings.Contains(value, query) {
+			return true
+		}
+	}
+	return false
+}
+
+func dqlToTimestampExpressions(query string) []string {
+	lower := strings.ToLower(query)
+	const prefix = "totimestamp("
+	var result []string
+	for searchFrom := 0; searchFrom < len(lower); {
+		start := strings.Index(lower[searchFrom:], prefix)
+		if start < 0 {
+			break
+		}
+		start += searchFrom
+		end := strings.IndexByte(lower[start+len(prefix):], ')')
+		if end < 0 {
+			break
+		}
+		end += start + len(prefix) + 1
+		result = append(result, lower[start:end])
+		searchFrom = end
+	}
+	return result
+}
+
 func containsRestrictedGeneratedWord(value string) bool {
 	value = strings.ToLower(value)
 	for _, word := range []string{"replay", "virtual", "session", "clock", "interval", "effective"} {
@@ -353,7 +428,7 @@ func newReplayAttemptError(category replayErrorCategory, detail error, info Repl
 	public := ""
 	switch {
 	case info.Disclosure == session.ReplayDisclosureRestricted:
-		public = restrictedMessage(category, detail, retryable, postExecution)
+		public = restrictedMessageForInfo(category, detail, info, retryable, postExecution)
 	case category == replayErrorNonOverlap && retryable:
 		public = fullTemporaryNonOverlapMessage
 	case detail != nil:

@@ -306,6 +306,7 @@ func (e *DQLExecutor) afterExecutionError(ctx context.Context, prepared Prepared
 	provenance.Outcome = string(category)
 	provenance.Detail = detail.Error()
 	provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
+	info.Output = replayOutputMetadata(prepared, nil, provenance.CanonicalEffectiveDQL, nil)
 	if prepared.sink != nil {
 		if err := prepared.sink.Append(ctx, provenanceRecord("query_execution", provenance, nil)); err != nil {
 			return newReplayAttemptError(replayErrorSink, err, info, false, 0, true)

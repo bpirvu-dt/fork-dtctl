@@ -21,17 +21,17 @@ const (
 	// DavisCoverageNotVerifiedMessage is the exact execution-time-only caveat
 	// shown by probe-free explain and verify operations.
 	DavisCoverageNotVerifiedMessage = "Snapshot coverage was not verified. The coverage gate runs only when the query executes."
-	// DavisCoverageInspectionFailedMessage is the stable full-disclosure suffix
-	// for every bounded-inspection failure mode.
+	// DavisCoverageInspectionFailedMessage is the stable detailed suffix for
+	// every bounded-inspection failure mode.
 	DavisCoverageInspectionFailedMessage = "Snapshot coverage could not be proven because the bounded oldest-snapshot inspection failed."
-	// DavisCoverageInsufficientMessage is the stable full-disclosure suffix when
-	// the oldest observed snapshot is later than W.
+	// DavisCoverageInsufficientMessage is the stable detailed suffix when the
+	// oldest observed snapshot is later than W.
 	DavisCoverageInsufficientMessage = "Snapshot coverage could not be proven because the oldest available snapshot is later than the required snapshot-read start."
 )
 
 const (
 	// DavisProblemsView is the sole exact current-view token eligible for the
-	// v9 full-disclosure mapping.
+	// coverage-gated mapping in either disclosure mode.
 	DavisProblemsView = davisProblemsView
 	// DavisProblemsSnapshotTable is the fixed source used by the mapping and
 	// its bounded oldest-snapshot inspection.
@@ -141,7 +141,7 @@ func validateDavisMappingPolicy(policy DavisProblemsMappingPolicy) error {
 	switch policy.Mode {
 	case DavisProblemsMappingDisabled:
 		if policy.Coverage != nil {
-			return replayError(ErrorAudit, nil, davisProblemsView, "A disabled Davis problems mapping policy carries a coverage result.", "Do not reuse mapping coverage outside an eligible full-disclosure compilation.")
+			return replayError(ErrorAudit, nil, davisProblemsView, "A disabled Davis problems mapping policy carries a coverage result.", "Do not reuse mapping coverage outside an eligible compilation.")
 		}
 	case DavisProblemsMappingExecution:
 	case DavisProblemsMappingInspection:

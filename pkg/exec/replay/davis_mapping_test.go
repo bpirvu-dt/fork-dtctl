@@ -51,7 +51,7 @@ func TestDavisProblemsMappingUsesLiveOriginalAndEffectiveFixtures(t *testing.T) 
 	}
 }
 
-func TestDavisProblemsMappingRequiresExactOriginalTokenAndFullPolicy(t *testing.T) {
+func TestDavisProblemsMappingRequiresExactOriginalTokenAndEligiblePolicy(t *testing.T) {
 	ast := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json")
 	if _, err := ClassifySources(ast, Milestone1SourcePolicy()); err == nil {
 		t.Fatal("disabled mapping accepted the current view")
