@@ -837,7 +837,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	// Extract metadata if requested
 	var meta *output.QueryMetadata
 	if len(opts.MetadataFields) > 0 {
-		meta = outputQueryMetadata(result, opts)
+		meta = visibleQueryMetadata(outputQueryMetadata(result, opts), opts)
 	}
 
 	printer := output.NewPrinterWithOpts(output.PrinterOptions{
@@ -898,6 +898,9 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		if len(records) > 0 {
 			return printer.Print(map[string]interface{}{"records": records})
 		}
+		if restrictedReplayOutput(opts) {
+			return printer.Print(map[string]interface{}{"records": records})
+		}
 		return printer.Print(result)
 
 	default:
@@ -917,6 +920,11 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		if opts.EmitTypes && effectiveFormat != "jsonl" {
 			if types := result.GetTypes(); len(types) > 0 {
 				out["types"] = types
+			}
+		}
+		if restrictedReplayOutput(opts) {
+			if _, hasRecords := out["records"]; !hasRecords {
+				out["records"] = records
 			}
 		}
 		if len(out) > 0 {
@@ -1028,30 +1036,52 @@ func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *outp
 		clone.CanonicalQuery != "" && clone.CanonicalQuery != opts.replay.OriginalQuery {
 		clone.CanonicalQuery = ""
 	}
+	if restrictedMappedReplayOutput(opts) {
+		clone.Contributions = nil
+	}
 	return &clone
 }
 
+// queryMetadataOutputValue removes fields that were suppressed by restricted
+// replay even when an explicit selector would otherwise preserve their zero
+// values. The shared output converter stays unchanged for non-replay callers.
 func queryMetadataOutputValue(meta *output.QueryMetadata, opts DQLExecuteOptions) interface{} {
 	if meta == nil {
 		return nil
 	}
 	value := output.MetadataToMap(meta, opts.MetadataFields)
-	if !restrictedReplayOutput(opts) || meta.CanonicalQuery != "" {
+	if (!restrictedReplayOutput(opts) || meta.CanonicalQuery != "") && !restrictedMappedReplayOutput(opts) {
 		return value
 	}
 	selected, ok := value.(map[string]interface{})
 	if !ok {
 		return value
 	}
-	delete(selected, "canonicalQuery")
+	if restrictedReplayOutput(opts) && meta.CanonicalQuery == "" {
+		delete(selected, "canonicalQuery")
+	}
+	if restrictedMappedReplayOutput(opts) {
+		delete(selected, "contributions")
+	}
 	if len(selected) == 0 {
 		return nil
 	}
 	return selected
 }
 
+func visibleQueryMetadata(meta *output.QueryMetadata, opts DQLExecuteOptions) *output.QueryMetadata {
+	if queryMetadataOutputValue(meta, opts) == nil {
+		return nil
+	}
+	return meta
+}
+
 func restrictedReplayOutput(opts DQLExecuteOptions) bool {
 	return opts.replay != nil && opts.replay.Active && opts.replay.Disclosure == session.ReplayDisclosureRestricted
+}
+
+func restrictedMappedReplayOutput(opts DQLExecuteOptions) bool {
+	return restrictedReplayOutput(opts) && replayInfoHasDavisProblemsMapping(*opts.replay)
 }
 
 // CancelQuery sends a best-effort cancellation request for a running query.

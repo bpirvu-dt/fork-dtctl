@@ -125,7 +125,10 @@ coverage probe, audit, and execution in both disclosure modes. Full disclosure
 announces the mapping and exposes replay details in ordinary output. Restricted
 disclosure writes the mapping notification, clamp warning, coverage reason, and
 effective-query facts only to provenance. The coverage reason is sanitized. A
-restricted coverage failure returns
+mapped restricted result also omits Grail bucket contributions from ordinary
+metadata because their `table` field can name the snapshot source; the returned
+contribution block is retained in private provenance. A restricted coverage
+failure returns
 `The query could not be prepared. It was not executed.` Automatic
 `dt.davis.events` mapping remains unsupported, and direct snapshot queries keep
 their ordinary behavior.

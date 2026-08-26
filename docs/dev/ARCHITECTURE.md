@@ -1005,7 +1005,9 @@ state, sanitized coverage result, and effective-query facts only to private
 provenance. Its coverage failure returns
 `The query could not be prepared. It was not executed.` Automatic
 `dt.davis.events` mapping remains unsupported, and direct snapshot queries do
-not enter this mapping path.
+not enter this mapping path. Mapped restricted results also route returned
+Grail bucket contributions to private provenance because the contribution
+`table` field can identify the reconstruction source.
 
 Replay controls DQL time semantics. It does not freeze retained data, tenant
 configuration, authorization, engine behavior, metric rollups, or late

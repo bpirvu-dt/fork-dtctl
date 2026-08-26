@@ -264,8 +264,9 @@ effective DQL.
 `restricted` changes only routing and wording. It uses normal non-replay output
 schemas, hides replay discovery entries, and writes complete replay facts to a
 required private provenance file. Sink preflight failure prevents execution.
-A post-execution append failure suppresses the result. Returned telemetry and
-user DQL are never altered.
+A post-execution append failure suppresses the result. Returned records and
+user DQL are never altered. Mapped Grail contribution metadata is the narrow
+exception described below.
 
 Restricted disclosure prevents incidental disclosure. It is not a security
 sandbox or counter-forensics mechanism. Same-user processes can inspect
@@ -318,6 +319,11 @@ provenance. A restricted coverage failure returns
 `The query could not be prepared. It was not executed.` Every
 `dt.davis.events` view remains rejected and makes no mapping probe. Direct
 snapshot queries retain their ordinary milestone 1 behavior.
+
+Mapped restricted output omits Grail bucket contributions because the returned
+`table` field can identify the snapshot source. The complete returned
+contribution block is written to private provenance. Full disclosure and
+non-mapped query metadata remain unchanged.
 
 The server-returned `analysisTimeframe` remains ordinary result metadata and is
 excluded from restricted generated-text scans. The restricted extension remains

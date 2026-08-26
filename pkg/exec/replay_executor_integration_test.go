@@ -1995,11 +1995,16 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	}
 
 	for name, remoteMessage := range map[string]string{
-		"snapshot token":  "source dt.davis.problems.snapshots failed",
-		"generated bound": `generated bound toTimestamp("2026-06-14T03:00:00.000000000Z") failed`,
-		"inserted stage":  "inserted stage dedup event.id failed",
-		"inserted token":  "unknown field event.end",
-		"effective query": replayDavisEffective,
+		"snapshot token":        "source dt.davis.problems.snapshots failed",
+		"generated bound":       `generated bound toTimestamp("2026-06-14T03:00:00.000000000Z") failed`,
+		"inserted stage":        "inserted stage dedup event.id failed",
+		"inserted event token":  "unknown field event.end",
+		"inserted sort token":   "unknown command sort",
+		"inserted time token":   "unknown field timestamp",
+		"inserted dedup token":  "unknown command dedup",
+		"inserted filter token": "unknown command filter",
+		"inserted function":     "unknown function coalesce",
+		"effective query":       replayDavisEffective,
 	} {
 		t.Run("mapped "+name, func(t *testing.T) {
 			api := newReplayDavisMockAPI(t)
@@ -2026,8 +2031,9 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	}
 
 	for name, remoteMessage := range map[string]string{
-		"snapshot token": "source dt.davis.problems.snapshots failed",
-		"inserted token": "unknown field event.start",
+		"snapshot token":    "source dt.davis.problems.snapshots failed",
+		"inserted token":    "unknown field event.start",
+		"inserted operator": "unknown function coalesce",
 	} {
 		t.Run("mapped polling "+name, func(t *testing.T) {
 			api := newReplayDavisMockAPI(t)
@@ -2094,7 +2100,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			}
 		})
 	}
-	for _, lexeme := range []string{"event.id", "event.start", "event.end"} {
+	for _, lexeme := range []string{"sort", "timestamp", "dedup", "event.id", "filter", "event.start", "coalesce", "event.end"} {
 		t.Run("user-authored "+lexeme, func(t *testing.T) {
 			userAuthored := mappedInfo
 			userAuthored.OriginalQuery += " | fields " + lexeme

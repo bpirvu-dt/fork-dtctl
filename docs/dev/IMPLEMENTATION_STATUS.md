@@ -193,7 +193,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Five-second bounded oldest-snapshot coverage probe, strict fail-closed decoding, and complete-key invocation-local success/failure memo
 - [x] Probe-free explain and verify compilation/audit with explicit `coverage_verified:false`
 - [x] Identical mapping, coverage gate, semantic audit, and execution in full and restricted disclosure
-- [x] Full mapping notifications and details in ordinary output; restricted notifications, clamp state, coverage detail, and effective-query facts only in provenance with generic coverage errors
+- [x] Full mapping notifications and details in ordinary output; restricted notifications, clamp state, coverage detail, effective-query facts, and Grail contributions only in provenance with generic coverage errors
 - [x] Both-mode events views and direct user-written snapshots retain their shipped behavior and make no mapping probe
 - [ ] Pin mapped Grail `analysisTimeframe` to logical `[F,T)` or physical `[W,T)` from a sanitized live fixture (PR ship gate)
 - [x] Documented duplicate-tie, evidence-scale, one-active-problem, coverage-horizon, and memo-staleness limitations

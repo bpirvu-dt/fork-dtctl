@@ -250,7 +250,9 @@ func ReplayPreservesRemoteError(err error) bool {
 }
 
 // ReplayExecutionProvenance is the complete in-memory record accumulated for
-// one attempt. It deliberately excludes returned telemetry and credentials.
+// one attempt. It excludes returned records and credentials. A mapped
+// restricted attempt retains Grail contributions here because their table
+// field may identify the private reconstruction source.
 type ReplayExecutionProvenance struct {
 	Session               session.ReplaySession
 	HostNow               time.Time
@@ -262,6 +264,7 @@ type ReplayExecutionProvenance struct {
 	Audit                 *execreplay.AuditResult
 	Validated             []execreplay.ValidatedResultContract
 	Notifications         []QueryNotification
+	GrailContributions    *Contributions
 	Outcome               string
 	Detail                string
 	Completion            session.CompletionDisposition
@@ -376,7 +379,7 @@ func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 			return true
 		}
 	}
-	for _, lexeme := range []string{"event.id", "event.start", "event.end"} {
+	for _, lexeme := range []string{"sort", "timestamp", "dedup", "event.id", "filter", "event.start", "coalesce", "event.end"} {
 		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(strings.ToLower(info.EffectiveQuery), lexeme) &&
 			!containsDQLLexeme(strings.ToLower(info.OriginalQuery), lexeme) {
 			return true

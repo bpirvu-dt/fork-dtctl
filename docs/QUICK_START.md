@@ -1653,13 +1653,15 @@ warning does not turn configured retention into proof.
 
 Disclosure changes routing and wording, not mapping eligibility. The problems-
 view mapping, coverage gate, audit, and execution are identical in `full` and
-`restricted`. Restricted disclosure preserves returned telemetry, command
-guarding, non-overlap handling, and terminal completion.
+`restricted`. Restricted disclosure preserves returned records, command
+guarding, non-overlap handling, and terminal completion. A
+mapped result is the narrow exception: Grail bucket contributions move to
+private provenance because their `table` field can name the snapshot source.
 
 | Mode | Output | Discovery | Provenance |
 |---|---|---|---|
 | `full` | Default. Keeps replay notices, detailed errors, agent metadata, and replay fields in spill output. | Replay verbs and `--explain-replay` are visible. | No provenance file is required. |
-| `restricted` | Uses normal non-replay schemas and generic messages. Replay warnings are suppressed. Returned data and user DQL are unchanged. | Replay verbs and `--explain-replay` are hidden. Explicit management verbs still work. Explain behaves like an unknown flag. | Complete replay facts go to a required private JSON Lines file. |
+| `restricted` | Uses normal non-replay schemas and generic messages. Replay warnings are suppressed. Returned records and user DQL are unchanged; mapped Grail contributions go only to provenance. | Replay verbs and `--explain-replay` are hidden. Explicit management verbs still work. Explain behaves like an unknown flag. | Complete replay facts go to a required private JSON Lines file. |
 
 Restricted `ctx current`, `ctx describe`, and `doctor` output omits replay
 fields. Restricted `verify query` still performs replay compatibility checks,
@@ -1688,7 +1690,9 @@ output. Their details go to provenance.
 For a mapped problems query, the mapping notification, clamp state, sanitized
 coverage result, and effective or canonical rewritten DQL also appear only in
 restricted provenance. Ordinary structured output keeps the non-replay schema
-and identifies the query with the original user text.
+and identifies the query with the original user text. If Grail returns bucket
+contributions, mapped restricted output omits them and provenance records the
+returned contribution block.
 
 Grail's returned `analysisTimeframe` remains ordinary metadata. It is treated
 like returned historical timestamps, not generated replay text. Before this
@@ -1700,7 +1704,8 @@ directory. On Unix, the directory uses mode `0700`; the provenance file and its
 lock use mode `0600`. On Windows, dtctl uses a private DACL. An override must be
 an absolute safe path. Symlinks are refused. Appends are serialized across
 processes and flushed before output is released. The file contains replay facts
-and original DQL. It contains no token or returned telemetry.
+and original DQL. For mapped restricted queries, it can also contain returned
+Grail bucket contributions. It contains no token or returned records.
 
 Restricted execution fails closed if the provenance sink cannot be opened or
 locked before preparation. If the append fails after execution, dtctl

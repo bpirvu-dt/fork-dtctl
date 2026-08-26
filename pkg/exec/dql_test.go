@@ -1681,15 +1681,21 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	)
 	result := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{Grail: &GrailMetadata{
 		CanonicalQuery: effective,
+		Contributions: &Contributions{Buckets: []BucketContribution{{
+			Name: "synthetic_bucket", Table: "dt.davis.problems.snapshots", ScannedBytes: 4096, MatchedRecordsRatio: 0.75,
+		}}},
 	}}}}
 	opts := DQLExecuteOptions{
-		MetadataFields: []string{"query", "canonicalQuery"},
+		MetadataFields: []string{"query", "canonicalQuery", "contributions"},
 		replay: &ReplayExecutionInfo{
 			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original,
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+			}}},
 		},
 	}
 	meta := outputQueryMetadata(result, opts)
-	if meta == nil || meta.Query != original || meta.CanonicalQuery != "" {
+	if meta == nil || meta.Query != original || meta.CanonicalQuery != "" || meta.Contributions != nil {
 		t.Fatalf("restricted metadata = %#v", meta)
 	}
 	selected, ok := queryMetadataOutputValue(meta, opts).(map[string]interface{})
@@ -1699,10 +1705,26 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	if _, exists := selected["canonicalQuery"]; exists {
 		t.Fatalf("selected restricted metadata retained canonicalQuery: %#v", selected)
 	}
+	if _, exists := selected["contributions"]; exists {
+		t.Fatalf("selected restricted metadata retained contributions: %#v", selected)
+	}
 
 	opts.MetadataFields = []string{"canonicalQuery"}
 	if value := queryMetadataOutputValue(meta, opts); value != nil {
 		t.Fatalf("canonical-only restricted metadata = %#v", value)
+	}
+	opts.MetadataFields = []string{"contributions"}
+	if value := queryMetadataOutputValue(meta, opts); value != nil {
+		t.Fatalf("contributions-only mapped restricted metadata = %#v", value)
+	}
+	visible := visibleQueryMetadata(meta, opts)
+	for name, rendered := range map[string]string{
+		"table": output.FormatMetadataFooter(visible, opts.MetadataFields),
+		"csv":   output.FormatMetadataCSVComments(visible, opts.MetadataFields),
+	} {
+		if rendered != "" {
+			t.Fatalf("mapped restricted contribution-only %s metadata = %q", name, rendered)
+		}
 	}
 
 	nonReplay := queryMetadataOutputValue(&output.QueryMetadata{}, DQLExecuteOptions{MetadataFields: []string{"canonicalQuery"}})
@@ -1714,11 +1736,81 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 		t.Fatalf("non-replay empty canonicalQuery baseline changed: %#v", nonReplayMap)
 	}
 
+	for name, replayInfo := range map[string]*ReplayExecutionInfo{
+		"plain non-replay": nil,
+		"restricted logs": {
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: "fetch logs",
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "logs"}}},
+		},
+		"restricted direct snapshot": {
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: "fetch dt.davis.problems.snapshots",
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "dt.davis.problems.snapshots"}}},
+		},
+		"full mapped": {
+			Active: true, Disclosure: session.ReplayDisclosureFull, OriginalQuery: original,
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+			}}},
+		},
+	} {
+		t.Run(name+" keeps contributions", func(t *testing.T) {
+			controlOpts := DQLExecuteOptions{MetadataFields: []string{"contributions"}, replay: replayInfo}
+			control := outputQueryMetadata(result, controlOpts)
+			if control == nil || control.Contributions == nil || len(control.Contributions.Buckets) != 1 ||
+				control.Contributions.Buckets[0].Table != "dt.davis.problems.snapshots" {
+				t.Fatalf("control metadata = %#v", control)
+			}
+			selected, ok := queryMetadataOutputValue(control, controlOpts).(map[string]interface{})
+			if !ok || selected["contributions"] != control.Contributions {
+				t.Fatalf("selected control metadata = %#v", selected)
+			}
+		})
+	}
+
 	metricsOnly := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{
 		Metrics: []MetricInfo{{MetricKey: "synthetic.metric", FieldName: "value"}},
 	}}}
 	if got := outputQueryMetadata(metricsOnly, opts); got == nil || got.Query != "" {
 		t.Fatalf("metrics-only replay metadata gained query text: %#v", got)
+	}
+}
+
+func TestPrintResultsRestrictedReplayEmptyLegacyResponseIsSanitized(t *testing.T) {
+	const (
+		original  = "fetch dt.davis.problems"
+		effective = "fetch dt.davis.problems.snapshots | dedup event.id"
+	)
+	response := &DQLQueryResponse{
+		State:   "SUCCEEDED",
+		Records: []map[string]interface{}{},
+		Metadata: &DQLMetadata{Grail: &GrailMetadata{
+			Query: effective, CanonicalQuery: effective,
+			Contributions: &Contributions{Buckets: []BucketContribution{{
+				Name: "synthetic_bucket", Table: "dt.davis.problems.snapshots", ScannedBytes: 4096, MatchedRecordsRatio: 0.75,
+			}}},
+		}},
+	}
+	replayInfo := &ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original, EffectiveQuery: effective,
+		Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+			DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+		}}},
+	}
+	for _, format := range []string{"chart", "json", "yaml", "toon"} {
+		t.Run(format, func(t *testing.T) {
+			var printErr error
+			raw := captureStdout(t, func() {
+				printErr = (&DQLExecutor{}).printResults(original, response, DQLExecuteOptions{OutputFormat: format, replay: replayInfo})
+			})
+			if printErr != nil || len(raw) == 0 {
+				t.Fatalf("output=%q err=%v", raw, printErr)
+			}
+			for _, leaked := range []string{"dt.davis.problems.snapshots", "dedup event.id", "synthetic_bucket", "canonicalQuery"} {
+				if strings.Contains(string(raw), leaked) {
+					t.Fatalf("restricted empty %s output leaked %q: %s", format, leaked, raw)
+				}
+			}
+		})
 	}
 }
 
