@@ -120,6 +120,16 @@ Milestone 1 supports exactly these historical record tables:
 | `dt.davis.events.snapshots` | `timestamp` |
 | `dt.davis.problems.snapshots` | `timestamp` |
 
+An exact `fetch dt.davis.problems` uses the same snapshot reconstruction,
+coverage probe, audit, and execution in both disclosure modes. Full disclosure
+announces the mapping and exposes replay details in ordinary output. Restricted
+disclosure writes the mapping notification, clamp warning, coverage reason, and
+effective-query facts only to provenance. The coverage reason is sanitized. A
+restricted coverage failure returns
+`The query could not be prepared. It was not executed.` Automatic
+`dt.davis.events` mapping remains unsupported, and direct snapshot queries keep
+their ordinary behavior.
+
 Metrics support automatic and fixed-duration natural metric buckets, plus only
 the tested advanced forms. `interval:1d` means fixed `24h`, not a calendar day,
 and dtctl prints a notification. Calendar intervals and every `shift:` form are

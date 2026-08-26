@@ -1598,10 +1598,10 @@ reduction. Event-view equivalence is not verified, so do not copy the
 problem-lifetime filter to events. Direct queries of either snapshot table keep
 this ordinary milestone 1 behavior and never use automatic view mapping.
 
-Full disclosure can map only an exact original `fetch dt.davis.problems` token.
-It computes the logical view interval `[F,T)` through the ordinary replay
-timeframe rules, then reads physical snapshots over `[W,T)`, where
-`W = max(data_start, F - 6h)`. It emits this reconstruction before any
+Both disclosure modes map only an exact original `fetch dt.davis.problems`
+token. They compute the logical view interval `[F,T)` through the ordinary
+replay timeframe rules, then read physical snapshots over `[W,T)`, where
+`W = max(data_start, F - 6h)`. They emit this reconstruction before any
 user-written downstream pipeline:
 
 ```dql
@@ -1621,14 +1621,20 @@ memoized only for one command invocation and only under the complete replay
 session, environment, non-secret principal, snapshot table, and probe-upper-
 bound key. A new invocation probes again.
 
-`--explain-replay` and replay-aware `verify query` derive, parse, and audit the
-would-be mapping without probing or executing data. They report exactly:
+`--explain-replay` in full disclosure and replay-aware `verify query` in either
+disclosure mode derive, parse, and audit the would-be mapping without probing
+or executing data. Full ordinary detail reports exactly:
 `Snapshot coverage was not verified. The coverage gate runs only when the query executes.`
+Restricted verification writes the mapping, audit, and unverified-coverage
+details only to provenance.
 
-Restricted disclosure keeps rejecting `dt.davis.problems` with the shipped
-generic ordinary error and makes no coverage request. `dt.davis.events` remains
-rejected in both disclosure modes. Full errors name the matching snapshot table
-and reconstruction pattern; restricted detail goes only to provenance.
+Mapped execution uses the same coverage probe, mapping, audit, and main query in
+both disclosure modes. Full disclosure announces every mapped execution and
+shows mapping-specific errors. Restricted disclosure writes the notification
+and all mapping details only to provenance. A restricted coverage failure
+returns exactly `The query could not be prepared. It was not executed.`
+`dt.davis.events` remains rejected in both disclosure modes and makes no mapping
+probe.
 
 Dynatrace documents a six-hour refresh cadence for open problem snapshots. Set
 `data_start` at least six hours before `virtual_start` when reconstructing
@@ -1638,15 +1644,16 @@ shorter gap produces a non-blocking warning and continues. Restricted
 disclosure writes the warning only to provenance.
 
 For automatic problems mapping, a `data_start` clamp that makes `W` later than
-`F - 6h` also produces a non-blocking full-disclosure warning after independent
-coverage succeeds. The logical lifetime filter still uses `F`; the warning does
-not turn configured retention into proof.
+`F - 6h` also produces a non-blocking warning after independent coverage
+succeeds. Full disclosure shows it in ordinary output. Restricted disclosure
+writes it only to provenance. The logical lifetime filter still uses `F`; the
+warning does not turn configured retention into proof.
 
 #### Disclosure and provenance
 
-Disclosure normally changes only routing and wording. The narrowly evidenced
-problems-view mapping above is the sole exception: it is available only in
-`full`. Restricted disclosure still preserves returned telemetry, command
+Disclosure changes routing and wording, not mapping eligibility. The problems-
+view mapping, coverage gate, audit, and execution are identical in `full` and
+`restricted`. Restricted disclosure preserves returned telemetry, command
 guarding, non-overlap handling, and terminal completion.
 
 | Mode | Output | Discovery | Provenance |
@@ -1677,6 +1684,11 @@ and remedy are written to provenance first:
 Warnings such as the fixed-`24h` notice, Davis warm-up warning, and any Grail
 retention or historical-resolution notification produce no restricted ordinary
 output. Their details go to provenance.
+
+For a mapped problems query, the mapping notification, clamp state, sanitized
+coverage result, and effective or canonical rewritten DQL also appear only in
+restricted provenance. Ordinary structured output keeps the non-replay schema
+and identifies the query with the original user text.
 
 The default restricted provenance path is below the private replay state
 directory. On Unix, the directory uses mode `0700`; the provenance file and its
