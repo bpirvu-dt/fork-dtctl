@@ -273,7 +273,6 @@ func TestReplayRestrictedQueryErrorGoldens(t *testing.T) {
 		{"sink-post-execution", "Required local recording failed. No result was returned."},
 		{"remote", "The query failed. No result was returned."},
 		{"davis-current-view", "The query could not be prepared. It was not executed."},
-		{"davis-coverage", "The query could not be prepared. It was not executed."},
 		{"other", "The query could not be prepared. It was not executed."},
 	}
 	for _, test := range tests {

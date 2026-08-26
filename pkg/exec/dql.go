@@ -907,8 +907,8 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		} else if result.Result != nil {
 			out["records"] = result.Result.Records
 		}
-		if meta != nil {
-			out["metadata"] = output.MetadataToMap(meta, opts.MetadataFields)
+		if value := queryMetadataOutputValue(meta, opts); value != nil {
+			out["metadata"] = value
 		}
 		// Surface the DQL per-column type block (indexRange + mappings) as a
 		// sibling of "records" when the user explicitly asked for it via
@@ -1021,7 +1021,7 @@ func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *outp
 		return meta
 	}
 	clone := *meta
-	if clone.Query != "" && opts.replay.OriginalQuery != "" {
+	if result.GetMetadata() != nil && opts.replay.OriginalQuery != "" {
 		clone.Query = opts.replay.OriginalQuery
 	}
 	if opts.replay.Disclosure == session.ReplayDisclosureRestricted &&
@@ -1029,6 +1029,25 @@ func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *outp
 		clone.CanonicalQuery = ""
 	}
 	return &clone
+}
+
+func queryMetadataOutputValue(meta *output.QueryMetadata, opts DQLExecuteOptions) interface{} {
+	if meta == nil {
+		return nil
+	}
+	value := output.MetadataToMap(meta, opts.MetadataFields)
+	if !restrictedReplayOutput(opts) || meta.CanonicalQuery != "" {
+		return value
+	}
+	selected, ok := value.(map[string]interface{})
+	if !ok {
+		return value
+	}
+	delete(selected, "canonicalQuery")
+	if len(selected) == 0 {
+		return nil
+	}
+	return selected
 }
 
 func restrictedReplayOutput(opts DQLExecuteOptions) bool {

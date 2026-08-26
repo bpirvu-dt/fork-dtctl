@@ -305,7 +305,7 @@ func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interfac
 	if meta == nil {
 		return nil
 	}
-	return output.MetadataToMap(meta, opts.MetadataFields)
+	return queryMetadataOutputValue(meta, opts)
 }
 
 // resolveSpillTarget decides the format, destination path, and base dir for a

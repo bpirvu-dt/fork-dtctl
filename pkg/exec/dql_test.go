@@ -17,6 +17,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
+	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
 // mappingsByName collapses the flattened column-type mappings into a name→type
@@ -1670,6 +1671,54 @@ func TestExtractQueryMetadata_FromResultMetadata(t *testing.T) {
 	}
 	if meta.Contributions.Buckets[0].Name != "test_bucket" {
 		t.Errorf("expected bucket name=test_bucket, got %q", meta.Contributions.Buckets[0].Name)
+	}
+}
+
+func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
+	const (
+		original  = "fetch dt.davis.problems"
+		effective = "fetch dt.davis.problems.snapshots"
+	)
+	result := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{Grail: &GrailMetadata{
+		CanonicalQuery: effective,
+	}}}}
+	opts := DQLExecuteOptions{
+		MetadataFields: []string{"query", "canonicalQuery"},
+		replay: &ReplayExecutionInfo{
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original,
+		},
+	}
+	meta := outputQueryMetadata(result, opts)
+	if meta == nil || meta.Query != original || meta.CanonicalQuery != "" {
+		t.Fatalf("restricted metadata = %#v", meta)
+	}
+	selected, ok := queryMetadataOutputValue(meta, opts).(map[string]interface{})
+	if !ok || selected["query"] != original {
+		t.Fatalf("selected restricted metadata = %#v", selected)
+	}
+	if _, exists := selected["canonicalQuery"]; exists {
+		t.Fatalf("selected restricted metadata retained canonicalQuery: %#v", selected)
+	}
+
+	opts.MetadataFields = []string{"canonicalQuery"}
+	if value := queryMetadataOutputValue(meta, opts); value != nil {
+		t.Fatalf("canonical-only restricted metadata = %#v", value)
+	}
+
+	nonReplay := queryMetadataOutputValue(&output.QueryMetadata{}, DQLExecuteOptions{MetadataFields: []string{"canonicalQuery"}})
+	nonReplayMap, ok := nonReplay.(map[string]interface{})
+	if !ok {
+		t.Fatalf("non-replay explicit metadata = %#v", nonReplay)
+	}
+	if value, exists := nonReplayMap["canonicalQuery"]; !exists || value != "" {
+		t.Fatalf("non-replay empty canonicalQuery baseline changed: %#v", nonReplayMap)
+	}
+
+	metricsOnly := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{
+		Metrics: []MetricInfo{{MetricKey: "synthetic.metric", FieldName: "value"}},
+	}}}
+	if got := outputQueryMetadata(metricsOnly, opts); got == nil || got.Query != "" {
+		t.Fatalf("metrics-only replay metadata gained query text: %#v", got)
 	}
 }
 

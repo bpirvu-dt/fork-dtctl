@@ -376,6 +376,12 @@ func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 			return true
 		}
 	}
+	for _, lexeme := range []string{"event.id", "event.start", "event.end"} {
+		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(strings.ToLower(info.EffectiveQuery), lexeme) &&
+			!containsDQLLexeme(strings.ToLower(info.OriginalQuery), lexeme) {
+			return true
+		}
+	}
 	originalTimestamps := make(map[string]struct{})
 	for _, expression := range dqlToTimestampExpressions(info.OriginalQuery) {
 		originalTimestamps[expression] = struct{}{}
@@ -391,6 +397,29 @@ func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 		}
 	}
 	return false
+}
+
+func containsDQLLexeme(value, lexeme string) bool {
+	for searchFrom := 0; searchFrom < len(value); {
+		index := strings.Index(value[searchFrom:], lexeme)
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		end := index + len(lexeme)
+		leftBoundary := index == 0 || !isDQLWordByte(value[index-1])
+		rightBoundary := end == len(value) || !isDQLWordByte(value[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		searchFrom = index + 1
+	}
+	return false
+}
+
+func isDQLWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || value == '_'
 }
 
 func dqlToTimestampExpressions(query string) []string {

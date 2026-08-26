@@ -17,6 +17,7 @@ import (
 	pkgclient "github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
@@ -553,6 +554,11 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
 			t.Fatalf("error = %v", err)
 		}
+		var rendered strings.Builder
+		if printErr := output.PrintError(&rendered, errorToDetail(err)); printErr != nil {
+			t.Fatal(printErr)
+		}
+		testutil.AssertGolden(t, "replay/error-restricted-davis-coverage", rendered.String())
 		if parses, executes := api.counts(); parses != 1 || executes != 0 || api.coverageCount() != 1 {
 			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
 		}
@@ -1103,12 +1109,17 @@ func TestReplayQueryCLIDirectSnapshotRestrictedAndNonReplayAgentResultsAreByteId
 
 func TestReplayQueryCLIMappedRestrictedMetadataKeepsOriginalQuery(t *testing.T) {
 	for _, mode := range []struct {
-		name   string
-		agent  bool
-		format string
+		name            string
+		agent           bool
+		format          string
+		metadata        string
+		returnedQuery   string
+		expectTimeframe bool
 	}{
-		{name: "agent", agent: true},
-		{name: "json", format: "json"},
+		{name: "agent-all", agent: true, returnedQuery: replayCLIDavisEffective, expectTimeframe: true},
+		{name: "json-all", format: "json", metadata: "all", returnedQuery: replayCLIDavisEffective, expectTimeframe: true},
+		{name: "agent-explicit", agent: true, metadata: "query,canonicalQuery"},
+		{name: "json-explicit", format: "json", metadata: "query,canonicalQuery"},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			api := &replayCLIQueryAPI{
@@ -1118,7 +1129,7 @@ func TestReplayQueryCLIMappedRestrictedMetadataKeepsOriginalQuery(t *testing.T) 
 				executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
 					Records: []map[string]interface{}{{"capture_marker": "synthetic"}},
 					Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
-						Query: replayCLIDavisEffective, CanonicalQuery: replayCLIDavisEffective,
+						Query: mode.returnedQuery, CanonicalQuery: replayCLIDavisEffective,
 						// This mock exercises pass-through only. The skipped contract test below
 						// remains the ship gate for deciding which real server window is correct.
 						AnalysisTimeframe: &sdkquery.AnalysisTimeframe{Start: "2026-06-14T03:00:00Z", End: "2026-06-14T10:00:00Z"},
@@ -1131,8 +1142,8 @@ func TestReplayQueryCLIMappedRestrictedMetadataKeepsOriginalQuery(t *testing.T) 
 				mustReplayCLITime("2026-06-14T02:00:00Z"), mustReplayCLITime("2026-06-14T10:00:00Z"), mustReplayCLITime("2026-06-14T12:00:00Z"))
 			setReplayQueryFlags(t, false, time.Minute, false)
 			agentMode, outputFormat = mode.agent, mode.format
-			if !mode.agent {
-				setReplayQueryMetadataFlag(t, "all")
+			if mode.metadata != "" {
+				setReplayQueryMetadataFlag(t, mode.metadata)
 			}
 			var runErr error
 			stdout, stderr := captureReplayQueryStreams(t, func() {
@@ -1154,10 +1165,14 @@ func TestReplayQueryCLIMappedRestrictedMetadataKeepsOriginalQuery(t *testing.T) 
 			if _, exists := envelope.Metadata["canonicalQuery"]; exists {
 				t.Fatalf("ordinary metadata retained mapped canonical query: %s", stdout)
 			}
-			var timeframe sdkquery.AnalysisTimeframe
-			if err := json.Unmarshal(envelope.Metadata["analysisTimeframe"], &timeframe); err != nil ||
-				timeframe.Start != "2026-06-14T03:00:00Z" || timeframe.End != "2026-06-14T10:00:00Z" {
-				t.Fatalf("analysisTimeframe=%#v err=%v", timeframe, err)
+			if mode.expectTimeframe {
+				var timeframe sdkquery.AnalysisTimeframe
+				if err := json.Unmarshal(envelope.Metadata["analysisTimeframe"], &timeframe); err != nil ||
+					timeframe.Start != "2026-06-14T03:00:00Z" || timeframe.End != "2026-06-14T10:00:00Z" {
+					t.Fatalf("analysisTimeframe=%#v err=%v", timeframe, err)
+				}
+			} else if _, exists := envelope.Metadata["analysisTimeframe"]; exists || len(envelope.Metadata) != 1 {
+				t.Fatalf("explicit query metadata selected unexpected fields: %s", stdout)
 			}
 			generatedMetadata := make(map[string]json.RawMessage, len(envelope.Metadata))
 			for key, value := range envelope.Metadata {
