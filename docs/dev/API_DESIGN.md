@@ -319,6 +319,11 @@ provenance. A restricted coverage failure returns
 `dt.davis.events` view remains rejected and makes no mapping probe. Direct
 snapshot queries retain their ordinary milestone 1 behavior.
 
+The server-returned `analysisTimeframe` remains ordinary result metadata and is
+excluded from restricted generated-text scans. The restricted extension remains
+gated on a sanitized live fixture that pins whether mapped results report the
+logical `[F,T)` or physical `[W,T)` interval.
+
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
 automatic Davis events-view mapping are unsupported and have no promised
 delivery date. Current topology, entity

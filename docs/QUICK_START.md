@@ -1690,6 +1690,11 @@ coverage result, and effective or canonical rewritten DQL also appear only in
 restricted provenance. Ordinary structured output keeps the non-replay schema
 and identifies the query with the original user text.
 
+Grail's returned `analysisTimeframe` remains ordinary metadata. It is treated
+like returned historical timestamps, not generated replay text. Before this
+extension can merge, a sanitized live fixture must pin whether a mapped result
+reports logical `[F,T)` or physical `[W,T)` endpoints.
+
 The default restricted provenance path is below the private replay state
 directory. On Unix, the directory uses mode `0700`; the provenance file and its
 lock use mode `0600`. On Windows, dtctl uses a private DACL. An override must be
