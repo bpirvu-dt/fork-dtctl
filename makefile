@@ -73,8 +73,8 @@ test-integration:
 # Regenerate golden files (run after intentional output changes)
 test-update-golden:
 	@echo "Updating golden files..."
-	@go test ./... -update
-	@echo "Golden files updated. Review changes with: git diff pkg/output/testdata/"
+	@go test ./cmd ./pkg/exec ./pkg/output -update
+	@echo "Golden files updated. Review changes with: git diff pkg/output/testdata/ cmd/testdata/"
 
 # Run all tests (unit + integration)
 test-all: test-unit test-integration
