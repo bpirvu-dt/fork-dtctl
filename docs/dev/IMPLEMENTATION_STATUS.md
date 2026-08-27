@@ -187,13 +187,15 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Historical Replay (Milestone 2, deliverable 1)
 
-- [x] Exact full-disclosure-only `dt.davis.problems` mapping without widening the seven-table record allowlist
+- [x] Exact `dt.davis.problems` mapping in both disclosure modes without widening the seven-table record allowlist
 - [x] Separately typed logical `[F,T)` and physical `[W,T)` ranges with `W = max(data_start, F - 6h)`
 - [x] Candidate B reconstruction with snapshot fetch, descending timestamp sort, `event.id` deduplication, and inclusive-lower lifetime overlap
 - [x] Five-second bounded oldest-snapshot coverage probe, strict fail-closed decoding, and complete-key invocation-local success/failure memo
 - [x] Probe-free explain and verify compilation/audit with explicit `coverage_verified:false`
-- [x] Mapping notification on every mapped execution, warm-up-clamp warning, typed provenance, and mapping-specific semantic audit
-- [x] Restricted problems views, both-mode events views, and direct user-written snapshots retain their shipped behavior and make no mapping probe
+- [x] Identical mapping, coverage gate, semantic audit, and execution in full and restricted disclosure
+- [x] Full mapping notifications and details in ordinary output; restricted notifications, clamp state, coverage detail, effective-query facts, and Grail contributions only in provenance with generic coverage errors
+- [x] Both-mode events views and direct user-written snapshots retain their shipped behavior and make no mapping probe
+- [x] Mapped Grail `analysisTimeframe` is pinned to physical `[W,T)` by a sanitized live capture and contract test
 - [x] Documented duplicate-tie, evidence-scale, one-active-problem, coverage-horizon, and memo-staleness limitations
 
 Not supported: RUM tables, Dynatrace synthetic telemetry tables,

@@ -130,7 +130,7 @@ func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) 
 }
 
 // ClassifySourcesWithMapping applies the ordinary source allowlist plus the
-// separately typed full-disclosure problems-view policy.
+// separately typed problems-view mapping policy.
 func ClassifySourcesWithMapping(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingPolicy) ([]SourceDescriptor, error) {
 	descriptors, _, err := AnalyzeSourcesWithMapping(ast, policy, mapping)
 	return descriptors, err

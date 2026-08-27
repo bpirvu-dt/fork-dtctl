@@ -264,8 +264,9 @@ effective DQL.
 `restricted` changes only routing and wording. It uses normal non-replay output
 schemas, hides replay discovery entries, and writes complete replay facts to a
 required private provenance file. Sink preflight failure prevents execution.
-A post-execution append failure suppresses the result. Returned telemetry and
-user DQL are never altered.
+A post-execution append failure suppresses the result. Returned records and
+user DQL are never altered. Mapped Grail contribution metadata is the narrow
+exception described below.
 
 Restricted disclosure prevents incidental disclosure. It is not a security
 sandbox or counter-forensics mechanism. Same-user processes can inspect
@@ -288,8 +289,8 @@ remain ordinary milestone 1 sources whose DQL author owns latest-per-`event.id`
 reconstruction. A shorter than six-hour warm-up produces the shipped
 non-blocking warning.
 
-An exact original `fetch dt.davis.problems` is a separately typed, full-
-disclosure-only mapping; the view is not added to the record allowlist. After
+An exact original `fetch dt.davis.problems` is a separately typed mapping in
+both disclosure modes; the view is not added to the record allowlist. After
 ordinary replay fencing establishes logical `[F,T)`, the compiler sets
 `W = max(data_start, F - 6h)` and emits a physical `[W,T)` snapshot fetch,
 `sort timestamp desc`, `dedup event.id`, and the exact lifetime predicate
@@ -306,11 +307,28 @@ inside one command invocation under session, normalized environment,
 non-secret principal, table, and probe-upper-bound identity.
 
 Explain and verify use an explicit probe-free inspection mode. They derive and
-audit the complete would-be mapping and report
-`coverage_verified:false` plus `Snapshot coverage was not verified. The coverage gate runs only when the query executes.`
-Restricted problems views and every `dt.davis.events` view retain their shipped
-rejections and make no coverage request. A clamped `W` warns only in full mode
-after independent coverage succeeds.
+audit the complete would-be mapping without a coverage request. Full disclosure
+reports `coverage_verified:false` plus `Snapshot coverage was not verified. The coverage gate runs only when the query executes.`
+Restricted verification writes the mapping, audit, and unverified-coverage
+facts only to provenance.
+Mapped execution uses the same mapping, coverage gate, audit, and main query in
+both disclosure modes. Full disclosure announces each mapping and exposes its
+details in ordinary output. Restricted disclosure records the notification,
+clamp state, sanitized coverage result, and effective-query facts only in
+provenance. A restricted coverage failure returns
+`The query could not be prepared. It was not executed.` Every
+`dt.davis.events` view remains rejected and makes no mapping probe. Direct
+snapshot queries retain their ordinary milestone 1 behavior.
+
+Mapped restricted output omits Grail bucket contributions because the returned
+`table` field can identify the snapshot source. The complete returned
+contribution block is written to private provenance. Full disclosure and
+non-mapped query metadata remain unchanged.
+
+The server-returned `analysisTimeframe` remains ordinary result metadata and is
+excluded from restricted generated-text scans. A sanitized live mapped capture
+pins it to the physical snapshot-read interval `[W,T)`, not the logical
+problems-view interval `[F,T)`.
 
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
 automatic Davis events-view mapping are unsupported and have no promised

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -250,7 +252,9 @@ func ReplayPreservesRemoteError(err error) bool {
 }
 
 // ReplayExecutionProvenance is the complete in-memory record accumulated for
-// one attempt. It deliberately excludes returned telemetry and credentials.
+// one attempt. It excludes returned records and credentials. A mapped
+// restricted attempt retains Grail contributions here because their table
+// field may identify the private reconstruction source.
 type ReplayExecutionProvenance struct {
 	Session               session.ReplaySession
 	HostNow               time.Time
@@ -262,6 +266,7 @@ type ReplayExecutionProvenance struct {
 	Audit                 *execreplay.AuditResult
 	Validated             []execreplay.ValidatedResultContract
 	Notifications         []QueryNotification
+	GrailContributions    *Contributions
 	Outcome               string
 	Detail                string
 	Completion            session.CompletionDisposition
@@ -290,7 +295,7 @@ func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {
 	}
 }
 
-func restrictedMessage(category replayErrorCategory, detail error, retryable, postExecution bool) string {
+func restrictedMessageForInfo(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable, postExecution bool) string {
 	switch category {
 	case replayErrorNonOverlap:
 		if retryable {
@@ -309,7 +314,7 @@ func restrictedMessage(category replayErrorCategory, detail error, retryable, po
 		}
 		return restrictedPreflightSinkMessage
 	case replayErrorRemote:
-		if detail != nil && restrictedRemoteTextMayPass(detail) {
+		if detail != nil && restrictedRemoteTextMayPass(detail, info) {
 			return detail.Error()
 		}
 		return restrictedRemoteExecutionMessage
@@ -318,8 +323,11 @@ func restrictedMessage(category replayErrorCategory, detail error, retryable, po
 	}
 }
 
-func restrictedRemoteTextMayPass(detail error) bool {
+func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	generated := detail.Error()
+	if replayInfoHasDavisProblemsMapping(info) && containsDavisMappingText(generated, info) {
+		return false
+	}
 	// QueryError fields are verbatim remote API content wrapped in the normal
 	// non-replay formatter. Remove that exact normal-format portion before
 	// checking any outer dtctl-generated wrapper text.
@@ -339,6 +347,213 @@ func restrictedRemoteTextMayPass(detail error) bool {
 	return !containsRestrictedGeneratedWord(generated)
 }
 
+func replayInfoHasDavisProblemsMapping(info ReplayExecutionInfo) bool {
+	if info.Output == nil {
+		return false
+	}
+	for _, source := range info.Output.Sources {
+		if source.DavisProblemsMapping != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
+	generated := stripVerbatimOriginalQuery(value, info.OriginalQuery)
+	// A complete verbatim original query is ordinary remote content. Isolated
+	// token or timestamp collisions are ambiguous because the reconstruction
+	// also generated them, so those remain subject to the fail-closed scan.
+	generated = strings.ReplaceAll(generated, `\"`, `"`)
+	lower := strings.ToLower(generated)
+	if strings.Contains(lower, strings.ToLower(execreplay.DavisProblemsSnapshotTable)) {
+		return true
+	}
+	for _, fragment := range execreplay.DavisProblemsReconstructionFragments() {
+		if strings.Contains(lower, strings.ToLower(fragment)) {
+			return true
+		}
+	}
+	effectiveLower := strings.ToLower(info.EffectiveQuery)
+	for _, lexeme := range execreplay.DavisProblemsReconstructionLexemes() {
+		lexeme = strings.ToLower(lexeme)
+		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(effectiveLower, lexeme) {
+			return true
+		}
+	}
+	generatedInstants := dqlToTimestampInstants(info.EffectiveQuery)
+	for instant := range replayOutputGeneratedInstants(info.Output) {
+		generatedInstants[instant] = struct{}{}
+	}
+	remoteTimestamps := renderedTimestampInstants(generated)
+	for instant := range generatedInstants {
+		if _, disclosed := remoteTimestamps[instant]; disclosed {
+			return true
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, instant)
+		if err == nil && containsEpochRendering(generated, parsed) {
+			return true
+		}
+	}
+	canonicalQuery := ""
+	if info.Output != nil {
+		canonicalQuery = info.Output.GrailCanonicalEffectiveQuery
+	}
+	for _, query := range []string{info.EffectiveQuery, canonicalQuery} {
+		if query != "" && query != info.OriginalQuery && strings.Contains(value, query) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripVerbatimOriginalQuery(value, original string) string {
+	if original == "" || !strings.Contains(value, original) {
+		return value
+	}
+	var result strings.Builder
+	searchFrom := 0
+	for {
+		relative := strings.Index(value[searchFrom:], original)
+		if relative < 0 {
+			result.WriteString(value[searchFrom:])
+			return result.String()
+		}
+		start := searchFrom + relative
+		end := start + len(original)
+		result.WriteString(value[searchFrom:start])
+		if end < len(value) && (isDQLWordByte(value[end]) || value[end] == '.') {
+			result.WriteString(original)
+		}
+		searchFrom = end
+	}
+}
+
+func containsDQLLexeme(value, lexeme string) bool {
+	for searchFrom := 0; searchFrom < len(value); {
+		index := strings.Index(value[searchFrom:], lexeme)
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		end := index + len(lexeme)
+		leftBoundary := index == 0 || !isDQLWordByte(value[index-1])
+		rightBoundary := end == len(value) || !isDQLWordByte(value[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		searchFrom = index + 1
+	}
+	return false
+}
+
+func isDQLWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || value == '_'
+}
+
+var dqlToTimestampLiteralPattern = regexp.MustCompile(`(?i)\btotimestamp[[:space:]]*\([[:space:]]*(?:value[[:space:]]*:[[:space:]]*)?"([^"]+)"[[:space:]]*\)`)
+var rfc3339LikePattern = regexp.MustCompile(`(?i)\b[0-9]{4}-[0-9]{2}-[0-9]{2}[t ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:z|[+-][0-9]{2}:[0-9]{2})?\b`)
+
+// dqlToTimestampInstants normalizes rendered timestamp calls before comparing
+// remote text with generated bounds. Grail errors may change whitespace,
+// precision, case, or the UTC offset without changing the disclosed instant.
+func dqlToTimestampInstants(query string) map[string]struct{} {
+	query = strings.ReplaceAll(query, `\"`, `"`)
+	result := make(map[string]struct{})
+	for _, match := range dqlToTimestampLiteralPattern.FindAllStringSubmatch(query, -1) {
+		value, err := time.Parse(time.RFC3339Nano, match[1])
+		if err != nil {
+			continue
+		}
+		result[value.UTC().Format(time.RFC3339Nano)] = struct{}{}
+	}
+	return result
+}
+
+func replayOutputGeneratedInstants(metadata *output.ReplayMetadata) map[string]struct{} {
+	result := make(map[string]struct{})
+	if metadata == nil {
+		return result
+	}
+	add := func(value string) {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err == nil {
+			result[parsed.UTC().Format(time.RFC3339Nano)] = struct{}{}
+		}
+	}
+	add(metadata.VirtualNow)
+	for _, source := range metadata.Sources {
+		add(source.EffectiveFrom)
+		add(source.EffectiveTo)
+		add(source.PhysicalFrom)
+		add(source.PhysicalTo)
+		if mapping := source.DavisProblemsMapping; mapping != nil {
+			add(mapping.LogicalF)
+			add(mapping.LogicalT)
+			add(mapping.PhysicalW)
+			add(mapping.PhysicalT)
+		}
+	}
+	return result
+}
+
+// renderedTimestampInstants recognizes zoned RFC 3339 bounds plus
+// space-separated and zone-less forms. Zone-less values are interpreted as UTC
+// because dtctl renders generated replay bounds in UTC.
+func renderedTimestampInstants(value string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, match := range rfc3339LikePattern.FindAllString(value, -1) {
+		normalized := strings.Replace(strings.ToUpper(match), " ", "T", 1)
+		parsed, err := time.Parse(time.RFC3339Nano, normalized)
+		if err != nil {
+			parsed, err = time.ParseInLocation("2006-01-02T15:04:05.999999999", normalized, time.UTC)
+		}
+		if err != nil {
+			continue
+		}
+		result[parsed.UTC().Format(time.RFC3339Nano)] = struct{}{}
+	}
+	return result
+}
+
+// containsEpochRendering recognizes Unix seconds, milliseconds, and
+// nanoseconds with decimal digit boundaries.
+func containsEpochRendering(value string, instant time.Time) bool {
+	for _, rendered := range []string{
+		strconv.FormatInt(instant.Unix(), 10),
+		strconv.FormatInt(instant.UnixMilli(), 10),
+		strconv.FormatInt(instant.UnixNano(), 10),
+	} {
+		if containsDecimalToken(value, rendered) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDecimalToken(value, token string) bool {
+	for searchFrom := 0; searchFrom < len(value); {
+		index := strings.Index(value[searchFrom:], token)
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		end := index + len(token)
+		leftBoundary := index == 0 || !isASCIIDigit(value[index-1])
+		rightBoundary := end == len(value) || !isASCIIDigit(value[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		searchFrom = index + 1
+	}
+	return false
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
 func containsRestrictedGeneratedWord(value string) bool {
 	value = strings.ToLower(value)
 	for _, word := range []string{"replay", "virtual", "session", "clock", "interval", "effective"} {
@@ -353,7 +568,7 @@ func newReplayAttemptError(category replayErrorCategory, detail error, info Repl
 	public := ""
 	switch {
 	case info.Disclosure == session.ReplayDisclosureRestricted:
-		public = restrictedMessage(category, detail, retryable, postExecution)
+		public = restrictedMessageForInfo(category, detail, info, retryable, postExecution)
 	case category == replayErrorNonOverlap && retryable:
 		public = fullTemporaryNonOverlapMessage
 	case detail != nil:

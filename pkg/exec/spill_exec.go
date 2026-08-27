@@ -18,8 +18,8 @@ const userPathPrivacyWarning = "spill path is a user-chosen location and opts ou
 // immediately); handled=false means the caller should continue with the
 // unchanged output path (a non-agent inline result, or a shape this path
 // deliberately leaves alone — see buildSpillResponse).
-func (e *DQLExecutor) trySpill(query string, result *DQLQueryResponse, records []map[string]interface{}, displayFormat string, opts DQLExecuteOptions) (bool, error) {
-	resp, handled, err := e.buildSpillResponse(query, result, records, displayFormat, opts)
+func (e *DQLExecutor) trySpill(query string, result *DQLQueryResponse, records []map[string]interface{}, displayFormat string, opts DQLExecuteOptions, policy queryOutputPolicy) (bool, error) {
+	resp, handled, err := e.buildSpillResponseWithPolicy(query, result, records, displayFormat, opts, policy)
 	if err != nil {
 		return true, err
 	}
@@ -39,18 +39,22 @@ func (e *DQLExecutor) trySpill(query string, result *DQLQueryResponse, records [
 // the Response and leaves emission to the caller, while its only side effect
 // (writing to disk) is fully controlled via opts.Spill (ToPath / Dir).
 func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse, records []map[string]interface{}, displayFormat string, opts DQLExecuteOptions) (output.Response, bool, error) {
+	return e.buildSpillResponseWithPolicy(query, result, records, displayFormat, opts, queryOutputPolicyFor(opts))
+}
+
+func (e *DQLExecutor) buildSpillResponseWithPolicy(query string, result *DQLQueryResponse, records []map[string]interface{}, displayFormat string, opts DQLExecuteOptions, policy queryOutputPolicy) (output.Response, bool, error) {
 	// Measure serialised size against the chosen display encoding (D24).
 	measured, encoding := output.MeasureSerializedBytes(records, displayFormat)
 
 	switch opts.Spill.Mode {
 	case SpillAuto:
 		if measured <= opts.Spill.Threshold {
-			return e.inlineRecordsResponse(query, result, records, measured, encoding, opts) // inline
+			return e.inlineRecordsResponse(query, result, records, measured, encoding, opts, policy) // inline
 		}
 	case SpillAlways:
 		// always spill
 	default:
-		return e.inlineRecordsResponse(query, result, records, measured, encoding, opts) // never / unknown -> inline
+		return e.inlineRecordsResponse(query, result, records, measured, encoding, opts, policy) // never / unknown -> inline
 	}
 
 	// Provenance from Grail metadata.
@@ -201,7 +205,7 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 	// sampling) into the envelope. Their advice leads the suggestions because a
 	// PARTIAL result is more consequential to an agent than the spill/inspect
 	// follow-ups — an agent parsing stdout must learn the result is incomplete.
-	if !restrictedReplayOutput(opts) {
+	if !policy.restrictedReplay {
 		notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
 		warnings = append(warnings, notifWarnings...)
 		suggestions = append(notifSuggestions, suggestions...)
@@ -230,7 +234,7 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          manifest,
 		Context:         ctx,
-		Metadata:        envelopeMetadata(result, opts),
+		Metadata:        envelopeMetadata(result, opts, policy),
 		Replay:          replayMetadata,
 	}
 	return resp, true, nil
@@ -248,7 +252,7 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 //
 // Outside agent mode an inline result is always a fall-through (a human wants the
 // table/CSV, not an envelope).
-func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryResponse, records []map[string]interface{}, measured int64, encoding string, opts DQLExecuteOptions) (output.Response, bool, error) {
+func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryResponse, records []map[string]interface{}, measured int64, encoding string, opts DQLExecuteOptions, policy queryOutputPolicy) (output.Response, bool, error) {
 	if !opts.AgentMode || encoding != "json" || opts.JQFilter != "" {
 		return output.Response{}, false, nil
 	}
@@ -259,7 +263,7 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 	// few rows. Surface the same notification advice so the agent isn't misled
 	// into treating a truncated scan as the complete answer.
 	var notifWarnings, notifSuggestions []string
-	if !restrictedReplayOutput(opts) {
+	if !policy.restrictedReplay {
 		notifWarnings, notifSuggestions = notificationAdvice(result.GetNotifications())
 	}
 	scanWarnings, scanSuggestions := heavyScanAdvice(result)
@@ -285,7 +289,7 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          res,
 		Context:         ctx,
-		Metadata:        envelopeMetadata(result, opts),
+		Metadata:        envelopeMetadata(result, opts, policy),
 		Replay:          fullReplayOutput(opts.replay),
 	}, true, nil
 }
@@ -297,15 +301,15 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 // mode defaults --metadata to "all", so an agent gets the metadata by default
 // without asking for it; the same placement is used for inline and spilled
 // results.
-func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interface{} {
+func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions, policy queryOutputPolicy) interface{} {
 	if len(opts.MetadataFields) == 0 {
 		return nil
 	}
-	meta := outputQueryMetadata(result, opts)
+	meta := outputQueryMetadata(result, opts, policy)
 	if meta == nil {
 		return nil
 	}
-	return output.MetadataToMap(meta, opts.MetadataFields)
+	return queryMetadataOutputValue(meta, opts, policy)
 }
 
 // resolveSpillTarget decides the format, destination path, and base dir for a

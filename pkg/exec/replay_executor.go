@@ -193,6 +193,7 @@ func (e *DQLExecutor) ExecuteQueryDetailedWithContext(ctx context.Context, query
 
 	prepared.provenance.Notifications = append([]QueryNotification(nil), response.GetNotifications()...)
 	prepared.provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
+	prepared.provenance.GrailContributions = restrictedDavisGrailContributions(prepared, response)
 	validated, err := validateReplayResult(prepared, response)
 	if err != nil {
 		return nil, e.afterExecutionError(ctx, prepared, response, replayErrorValidation, err)
@@ -306,6 +307,8 @@ func (e *DQLExecutor) afterExecutionError(ctx context.Context, prepared Prepared
 	provenance.Outcome = string(category)
 	provenance.Detail = detail.Error()
 	provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
+	provenance.GrailContributions = restrictedDavisGrailContributions(prepared, response)
+	info.Output.GrailCanonicalEffectiveQuery = provenance.CanonicalEffectiveDQL
 	if prepared.sink != nil {
 		if err := prepared.sink.Append(ctx, provenanceRecord("query_execution", provenance, nil)); err != nil {
 			return newReplayAttemptError(replayErrorSink, err, info, false, 0, true)
@@ -366,6 +369,24 @@ func canonicalEffectiveQuery(response *DQLQueryResponse) string {
 		return ""
 	}
 	return response.GetMetadata().CanonicalQuery
+}
+
+func restrictedDavisGrailContributions(prepared PreparedQuery, response *DQLQueryResponse) *Contributions {
+	if prepared.Disclosure != session.ReplayDisclosureRestricted || response == nil || response.GetMetadata() == nil {
+		return nil
+	}
+	mapped := false
+	for _, source := range prepared.Compilation.Sources {
+		if source.DavisMapping != nil {
+			mapped = true
+			break
+		}
+	}
+	if !mapped || response.GetMetadata().Contributions == nil {
+		return nil
+	}
+	value := response.GetMetadata().Contributions
+	return &Contributions{Buckets: append([]BucketContribution(nil), value.Buckets...)}
 }
 
 func replayDisplayTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }

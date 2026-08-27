@@ -8,10 +8,44 @@ import (
 
 const davisProblemsWarmupCaveat = "When the visible window is short, the snapshot read may need to start before <visible-start> while the lifetime filter bounds stay at <visible-start> and <visible-end>; open problem snapshots have a documented six-hour refresh cadence, so retain at least six hours of warm-up."
 
-const davisProblemsReconstructionTemplate = `
-| sort timestamp desc
-| dedup event.id
-| filter event.start < %[2]s and coalesce(event.end, %[2]s) >= %[1]s`
+const (
+	davisProblemsSortLexeme       = "sort"
+	davisProblemsTimestampLexeme  = "timestamp"
+	davisProblemsDedupLexeme      = "dedup"
+	davisProblemsEventIDLexeme    = "event.id"
+	davisProblemsFilterLexeme     = "filter"
+	davisProblemsEventStartLexeme = "event.start"
+	davisProblemsCoalesceLexeme   = "coalesce"
+	davisProblemsEventEndLexeme   = "event.end"
+
+	davisProblemsSortStage         = davisProblemsSortLexeme + " " + davisProblemsTimestampLexeme + " desc"
+	davisProblemsDedupStage        = davisProblemsDedupLexeme + " " + davisProblemsEventIDLexeme
+	davisProblemsFilterPrefix      = davisProblemsFilterLexeme + " " + davisProblemsEventStartLexeme
+	davisProblemsCoalesceFragment  = davisProblemsCoalesceLexeme + "(" + davisProblemsEventEndLexeme
+	davisProblemsFilterStageFormat = davisProblemsFilterPrefix + " < %[2]s and " + davisProblemsCoalesceFragment + ", %[2]s) >= %[1]s"
+
+	davisProblemsReconstructionTemplate = "\n| " + davisProblemsSortStage +
+		"\n| " + davisProblemsDedupStage +
+		"\n| " + davisProblemsFilterStageFormat
+)
+
+var davisProblemsReconstructionFragments = [...]string{
+	davisProblemsSortStage,
+	davisProblemsDedupStage,
+	davisProblemsFilterPrefix,
+	davisProblemsCoalesceFragment,
+}
+
+var davisProblemsReconstructionLexemes = [...]string{
+	davisProblemsSortLexeme,
+	davisProblemsTimestampLexeme,
+	davisProblemsDedupLexeme,
+	davisProblemsEventIDLexeme,
+	davisProblemsFilterLexeme,
+	davisProblemsEventStartLexeme,
+	davisProblemsCoalesceLexeme,
+	davisProblemsEventEndLexeme,
+}
 
 const (
 	davisProblemsView          = "dt.davis.problems"
@@ -21,22 +55,34 @@ const (
 	// DavisCoverageNotVerifiedMessage is the exact execution-time-only caveat
 	// shown by probe-free explain and verify operations.
 	DavisCoverageNotVerifiedMessage = "Snapshot coverage was not verified. The coverage gate runs only when the query executes."
-	// DavisCoverageInspectionFailedMessage is the stable full-disclosure suffix
-	// for every bounded-inspection failure mode.
+	// DavisCoverageInspectionFailedMessage is the stable detailed suffix for
+	// every bounded-inspection failure mode.
 	DavisCoverageInspectionFailedMessage = "Snapshot coverage could not be proven because the bounded oldest-snapshot inspection failed."
-	// DavisCoverageInsufficientMessage is the stable full-disclosure suffix when
-	// the oldest observed snapshot is later than W.
+	// DavisCoverageInsufficientMessage is the stable detailed suffix when the
+	// oldest observed snapshot is later than W.
 	DavisCoverageInsufficientMessage = "Snapshot coverage could not be proven because the oldest available snapshot is later than the required snapshot-read start."
 )
 
 const (
 	// DavisProblemsView is the sole exact current-view token eligible for the
-	// v9 full-disclosure mapping.
+	// coverage-gated mapping in either disclosure mode.
 	DavisProblemsView = davisProblemsView
 	// DavisProblemsSnapshotTable is the fixed source used by the mapping and
 	// its bounded oldest-snapshot inspection.
 	DavisProblemsSnapshotTable = davisProblemsSnapshotTable
 )
+
+// DavisProblemsReconstructionFragments returns mapping-only stage fragments
+// that restricted remote-error routing must never disclose.
+func DavisProblemsReconstructionFragments() []string {
+	return append([]string(nil), davisProblemsReconstructionFragments[:]...)
+}
+
+// DavisProblemsReconstructionLexemes returns the executable vocabulary added
+// by the Davis problems reconstruction stages.
+func DavisProblemsReconstructionLexemes() []string {
+	return append([]string(nil), davisProblemsReconstructionLexemes[:]...)
+}
 
 // DavisProblemsMappingMode keeps the current-view exception separate from the
 // ordinary seven-table record allowlist.
@@ -141,7 +187,7 @@ func validateDavisMappingPolicy(policy DavisProblemsMappingPolicy) error {
 	switch policy.Mode {
 	case DavisProblemsMappingDisabled:
 		if policy.Coverage != nil {
-			return replayError(ErrorAudit, nil, davisProblemsView, "A disabled Davis problems mapping policy carries a coverage result.", "Do not reuse mapping coverage outside an eligible full-disclosure compilation.")
+			return replayError(ErrorAudit, nil, davisProblemsView, "A disabled Davis problems mapping policy carries a coverage result.", "Do not reuse mapping coverage outside an eligible compilation.")
 		}
 	case DavisProblemsMappingExecution:
 	case DavisProblemsMappingInspection:

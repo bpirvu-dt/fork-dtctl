@@ -409,7 +409,9 @@ func (p *ReplayQueryPreparer) baseProvenance(state session.ReplaySession, query 
 }
 
 func replayDavisMappingPolicy(disclosure string, mode ReplayExecutionMode) execreplay.DavisProblemsMappingPolicy {
-	if disclosure != session.ReplayDisclosureFull {
+	switch disclosure {
+	case session.ReplayDisclosureFull, session.ReplayDisclosureRestricted:
+	default:
 		return execreplay.DavisProblemsMappingPolicy{Mode: execreplay.DavisProblemsMappingDisabled}
 	}
 	if mode == ReplayExecutionExplain || mode == ReplayExecutionVerify {

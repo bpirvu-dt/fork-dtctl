@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/cmd/testutil"
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
@@ -76,6 +78,7 @@ type replayMockAPI struct {
 	parseStatus              int
 	effectiveStatus          int
 	executeStatus            int
+	pollStatus               int
 	executeResponse          sdkquery.Response
 	coverageResponse         sdkquery.Response
 	coverageStatus           int
@@ -88,6 +91,8 @@ type replayMockAPI struct {
 	beforeCoverageResponse   func()
 	retryAfter               string
 	remoteErrorMessage       string
+	pollErrorMessage         string
+	parseErrorMessage        string
 
 	mu               sync.Mutex
 	parseRequests    []sdkquery.ParseRequest
@@ -188,7 +193,13 @@ func (a *replayMockAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
+			if a.parseErrorMessage == "" {
+				_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"message": "query failed", "details": map[string]any{"errorType": "REMOTE_ERROR", "errorMessage": a.parseErrorMessage},
+			}})
 			return
 		}
 		if !a.disableDynamicValidation {
@@ -264,6 +275,17 @@ func (a *replayMockAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.onPoll()
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if a.pollStatus != 0 && a.pollStatus != http.StatusOK {
+			w.WriteHeader(a.pollStatus)
+			message := a.pollErrorMessage
+			if message == "" {
+				message = "poll failed"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"message": "query failed", "details": map[string]any{"errorType": "REMOTE_ERROR", "errorMessage": message},
+			}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(a.executeResponse)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -545,46 +567,101 @@ func TestDQLExecutorDavisProblemsMappingCoverageParseAuditExecuteOrder(t *testin
 		{"timeframe", replayDavisTimeframeOriginal, replayFixtureWithSourceToken(t, "phase0/fixtures/07-fetch-explicit-timeframe/parse.json", "logs", execreplay.DavisProblemsView)},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			api := newReplayDavisMockAPI(t)
-			api.originalBody = test.originalBody
-			api.isOriginal = func(query string) bool { return query == test.original }
-			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull,
-				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), nil)
+		var fullParses []sdkquery.ParseRequest
+		var fullExecutions, fullCoverage []sdkquery.ExecuteRequest
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(test.name+"/"+disclosure, func(t *testing.T) {
+				api := newReplayDavisMockAPI(t)
+				api.originalBody = test.originalBody
+				api.isOriginal = func(query string) bool { return query == test.original }
+				var sink *replayTestSink
+				var sinkFactory func(string) session.ProvenanceSink
+				if disclosure == session.ReplayDisclosureRestricted {
+					sink = &replayTestSink{}
+					sinkFactory = func(string) session.ProvenanceSink { return sink }
+				}
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure,
+					mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), sinkFactory)
 
-			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), test.original, DQLExecuteOptions{AgentMode: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			parseCalls, executeCalls, _ := api.counts()
-			coverageRequests, order := api.coverage()
-			if parseCalls != 2 || executeCalls != 1 || len(coverageRequests) != 1 ||
-				!equalStrings(order, []string{"original_parse", "coverage", "effective_parse", "main_execute"}) {
-				t.Fatalf("parse=%d coverage=%d execute=%d order=%v", parseCalls, len(coverageRequests), executeCalls, order)
-			}
-			parses, executions := api.queries()
-			if len(parses) != 2 || parses[0].Query != test.original || parses[1].Query != replayDavisEffective ||
-				len(executions) != 1 || executions[0].Query != replayDavisEffective {
-				t.Fatalf("queries: parses=%#v executes=%#v", parses, executions)
-			}
-			if !strings.Contains(coverageRequests[0].Query, `to:toTimestamp("2026-06-14T12:00:00.000000000Z")`) {
-				t.Fatalf("coverage upper bound = %q", coverageRequests[0].Query)
-			}
-			if result == nil || result.Replay == nil || result.Replay.Output == nil {
-				t.Fatalf("result = %#v", result)
-			}
-			metadata := result.Replay.Output
-			if len(metadata.Sources) != 1 || metadata.Sources[0].DavisProblemsMapping == nil ||
-				metadata.Sources[0].DavisProblemsMapping.LogicalF != "2026-06-14T09:00:00Z" ||
-				metadata.Sources[0].DavisProblemsMapping.PhysicalW != "2026-06-14T03:00:00Z" ||
-				metadata.DavisSnapshotCoverage == nil || !metadata.DavisSnapshotCoverage.Verified ||
-				metadata.DavisSnapshotCoverage.Reuse != string(DavisSnapshotCoverageMiss) || !metadata.DavisMappingsAudited {
-				t.Fatalf("mapped metadata = %#v", metadata)
-			}
-			if !containsReplayNotice(metadata.Warnings, "Mapped dt.davis.problems") {
-				t.Fatalf("mapping notification missing from metadata: %#v", metadata.Warnings)
-			}
-		})
+				result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), test.original, DQLExecuteOptions{AgentMode: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				parseCalls, executeCalls, _ := api.counts()
+				coverageRequests, order := api.coverage()
+				if parseCalls != 2 || executeCalls != 1 || len(coverageRequests) != 1 ||
+					!equalStrings(order, []string{"original_parse", "coverage", "effective_parse", "main_execute"}) {
+					t.Fatalf("parse=%d coverage=%d execute=%d order=%v", parseCalls, len(coverageRequests), executeCalls, order)
+				}
+				parses, executions := api.queries()
+				if len(parses) != 2 || parses[0].Query != test.original || parses[1].Query != replayDavisEffective ||
+					len(executions) != 1 || executions[0].Query != replayDavisEffective {
+					t.Fatalf("queries: parses=%#v executes=%#v", parses, executions)
+				}
+				if !strings.Contains(coverageRequests[0].Query, `to:toTimestamp("2026-06-14T12:00:00.000000000Z")`) {
+					t.Fatalf("coverage upper bound = %q", coverageRequests[0].Query)
+				}
+				if disclosure == session.ReplayDisclosureFull {
+					fullParses = append([]sdkquery.ParseRequest(nil), parses...)
+					fullExecutions = append([]sdkquery.ExecuteRequest(nil), executions...)
+					fullCoverage = append([]sdkquery.ExecuteRequest(nil), coverageRequests...)
+				} else if !reflect.DeepEqual(parses, fullParses) ||
+					!reflect.DeepEqual(executions, fullExecutions) || !reflect.DeepEqual(coverageRequests, fullCoverage) {
+					t.Fatalf("restricted requests differ from full: parses=%#v/full=%#v executes=%#v/full=%#v coverage=%#v/full=%#v",
+						parses, fullParses, executions, fullExecutions, coverageRequests, fullCoverage)
+				}
+				if result == nil || result.Replay == nil || result.Replay.Output == nil {
+					t.Fatalf("result = %#v", result)
+				}
+				metadata := result.Replay.Output
+				if len(metadata.Sources) != 1 || metadata.Sources[0].DavisProblemsMapping == nil ||
+					metadata.Sources[0].DavisProblemsMapping.LogicalF != "2026-06-14T09:00:00Z" ||
+					metadata.Sources[0].DavisProblemsMapping.PhysicalW != "2026-06-14T03:00:00Z" ||
+					metadata.DavisSnapshotCoverage == nil || !metadata.DavisSnapshotCoverage.Verified ||
+					metadata.DavisSnapshotCoverage.Reuse != string(DavisSnapshotCoverageMiss) || !metadata.DavisMappingsAudited {
+					t.Fatalf("mapped metadata = %#v", metadata)
+				}
+				if !containsReplayNotice(metadata.Warnings, "Mapped dt.davis.problems") {
+					t.Fatalf("mapping notification missing from metadata: %#v", metadata.Warnings)
+				}
+				if sink != nil {
+					preflights, appends, records := sink.snapshot()
+					if preflights != 1 || appends != 2 || len(records) != 2 || records[0].Event != "query_notice" || records[1].Event != "query_execution" {
+						t.Fatalf("restricted provenance preflights=%d appends=%d records=%#v", preflights, appends, records)
+					}
+					if !strings.Contains(fmt.Sprint(records[0].Fields["notices"]), "Mapped dt.davis.problems") ||
+						records[1].Fields["original_dql"] != test.original ||
+						records[1].Fields["effective_dql"] != replayDavisEffective ||
+						records[1].Fields["grail_canonical_effective_dql"] != replayDavisEffective {
+						t.Fatalf("restricted mapped provenance = %#v", records)
+					}
+					coverage, ok := records[1].Fields["davis_snapshot_coverage"].(map[string]any)
+					if !ok || coverage["status"] != "verified" || coverage["coverage_verified"] != true ||
+						coverage["oldest_snapshot"] == "" || coverage["observed_at"] == "" ||
+						fmt.Sprint(coverage["reuse"]) != string(DavisSnapshotCoverageMiss) {
+						t.Fatalf("restricted coverage provenance = %#v", coverage)
+					}
+					sources, ok := records[1].Fields["sources"].([]map[string]any)
+					if !ok || len(sources) != 1 {
+						t.Fatalf("restricted source provenance = %#v", records[1].Fields["sources"])
+					}
+					mapping, ok := sources[0]["davis_problems_mapping"].(map[string]any)
+					if !ok || mapping["warmup_clamped"] != false {
+						t.Fatalf("restricted mapping provenance = %#v", sources[0])
+					}
+					logical := mapping["logical_view_range"].(map[string]string)
+					physical := mapping["physical_snapshot_range"].(map[string]string)
+					if logical["f"] != "2026-06-14T09:00:00Z" || logical["t"] != "2026-06-14T10:00:00Z" ||
+						physical["w"] != "2026-06-14T03:00:00Z" || physical["t"] != "2026-06-14T10:00:00Z" {
+						t.Fatalf("restricted F/T/W provenance logical=%#v physical=%#v", logical, physical)
+					}
+					audit, ok := records[1].Fields["audit"].(map[string]any)
+					if !ok || audit["ok"] != true || audit["davis_mappings_audited"] != true {
+						t.Fatalf("restricted audit provenance = %#v", audit)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -619,22 +696,66 @@ func TestDQLExecutorDavisCoverageFailuresAreFailClosedBeforeEffectiveParse(t *te
 		}, execreplay.DavisCoverageInsufficientMessage},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			api := newReplayDavisMockAPI(t)
-			test.mutate(api)
-			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull,
-				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), nil)
-			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-			if result != nil || err == nil || !strings.HasSuffix(err.Error(), test.want) ||
-				!strings.Contains(err.Error(), "dt.davis.problems.snapshots") || !strings.Contains(err.Error(), "dedup event.id") {
-				t.Fatalf("result=%#v error=%v", result, err)
-			}
-			parseCalls, executeCalls, _ := api.counts()
-			coverageRequests, _ := api.coverage()
-			if parseCalls != 1 || len(coverageRequests) != 1 || executeCalls != 0 {
-				t.Fatalf("parse=%d coverage=%d main execute=%d", parseCalls, len(coverageRequests), executeCalls)
-			}
-		})
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(test.name+"/"+disclosure, func(t *testing.T) {
+				api := newReplayDavisMockAPI(t)
+				test.mutate(api)
+				var sink *replayTestSink
+				var sinkFactory func(string) session.ProvenanceSink
+				if disclosure == session.ReplayDisclosureRestricted {
+					sink = &replayTestSink{}
+					sinkFactory = func(string) session.ProvenanceSink { return sink }
+				}
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure,
+					mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), sinkFactory)
+				result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+				if disclosure == session.ReplayDisclosureFull {
+					if result != nil || err == nil || !strings.HasSuffix(err.Error(), test.want) ||
+						!strings.Contains(err.Error(), "dt.davis.problems.snapshots") || !strings.Contains(err.Error(), "dedup event.id") {
+						t.Fatalf("result=%#v error=%v", result, err)
+					}
+				} else {
+					if result != nil || err == nil || err.Error() != restrictedPreparationMessage {
+						t.Fatalf("result=%#v restricted error=%v", result, err)
+					}
+					preflights, appends, records := sink.snapshot()
+					if preflights != 1 || appends != 1 || len(records) != 1 || records[0].Event != "query_pre_execution" ||
+						!strings.HasSuffix(fmt.Sprint(records[0].Fields["detail"]), test.want) {
+						t.Fatalf("restricted coverage provenance preflights=%d appends=%d records=%#v", preflights, appends, records)
+					}
+				}
+				parseCalls, executeCalls, _ := api.counts()
+				coverageRequests, _ := api.coverage()
+				if parseCalls != 1 || len(coverageRequests) != 1 || executeCalls != 0 {
+					t.Fatalf("parse=%d coverage=%d main execute=%d", parseCalls, len(coverageRequests), executeCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestDQLExecutorRestrictedDavisEffectiveParseFailureIsGenericAndPrivate(t *testing.T) {
+	api := newReplayDavisMockAPI(t)
+	api.effectiveStatus = http.StatusBadRequest
+	api.parseErrorMessage = `generated source dt.davis.problems.snapshots at toTimestamp("2026-06-14T03:00:00.000000000Z")`
+	sink := &replayTestSink{}
+	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+		mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+		func(string) session.ProvenanceSink { return sink })
+
+	result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+	if result != nil || err == nil || err.Error() != restrictedPreparationMessage || strings.Contains(err.Error(), execreplay.DavisProblemsSnapshotTable) {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	parseCalls, executeCalls, _ := api.counts()
+	coverageRequests, _ := api.coverage()
+	if parseCalls != 2 || len(coverageRequests) != 1 || executeCalls != 0 {
+		t.Fatalf("parse=%d coverage=%d main execute=%d", parseCalls, len(coverageRequests), executeCalls)
+	}
+	preflights, appends, records := sink.snapshot()
+	if preflights != 1 || appends != 1 || len(records) != 1 || records[0].Event != "query_pre_execution" ||
+		!strings.Contains(fmt.Sprint(records[0].Fields["detail"]), execreplay.DavisProblemsSnapshotTable) {
+		t.Fatalf("restricted effective-parse provenance preflights=%d appends=%d records=%#v", preflights, appends, records)
 	}
 }
 
@@ -707,46 +828,140 @@ func TestDQLExecutorDavisExplainAndVerifyNeverConsultPopulatedCoverageMemo(t *te
 }
 
 func TestDQLExecutorDavisMappedAttemptsRecomputeRangesWithOneCoverageProbe(t *testing.T) {
-	api := newReplayDavisMockAPI(t)
-	fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, session.ReplayDisclosureFull,
-		mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T09:30:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), nil)
-	opts := DQLExecuteOptions{AgentMode: true, ReplayMode: ReplayExecutionLive}
-	first, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixture.clock.Add(5 * time.Minute)
-	second, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	left := first.Replay.Output.Sources[0].DavisProblemsMapping
-	right := second.Replay.Output.Sources[0].DavisProblemsMapping
-	if left.LogicalT == right.LogicalT || left.PhysicalT == right.PhysicalT || left.LogicalF != right.LogicalF || left.PhysicalW != right.PhysicalW {
-		t.Fatalf("attempt ranges: first=%#v second=%#v", left, right)
-	}
-	parseCalls, executeCalls, _ := api.counts()
-	coverageRequests, _ := api.coverage()
-	if parseCalls != 3 || executeCalls != 2 || len(coverageRequests) != 1 {
-		t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
+	for _, mode := range []ReplayExecutionMode{ReplayExecutionWait, ReplayExecutionLive} {
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(string(mode)+"/"+disclosure, func(t *testing.T) {
+				api := newReplayDavisMockAPI(t)
+				var sink *replayTestSink
+				var sinkFactory func(string) session.ProvenanceSink
+				if disclosure == session.ReplayDisclosureRestricted {
+					sink = &replayTestSink{}
+					sinkFactory = func(string) session.ProvenanceSink { return sink }
+				}
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, disclosure,
+					mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T09:30:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), sinkFactory)
+				opts := DQLExecuteOptions{AgentMode: true, ReplayMode: mode}
+				first, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.clock.Add(5 * time.Minute)
+				second, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				left := first.Replay.Output.Sources[0].DavisProblemsMapping
+				right := second.Replay.Output.Sources[0].DavisProblemsMapping
+				if left.LogicalT == right.LogicalT || left.PhysicalT == right.PhysicalT || left.LogicalF != right.LogicalF || left.PhysicalW != right.PhysicalW {
+					t.Fatalf("attempt ranges: first=%#v second=%#v", left, right)
+				}
+				if disclosure == session.ReplayDisclosureRestricted {
+					if ReplayOutputMetadata(first.Replay) != nil || ReplayOutputMetadata(second.Replay) != nil {
+						t.Fatal("restricted mapped attempt exposed ordinary replay metadata")
+					}
+					preflights, appends, records := sink.snapshot()
+					noticeRecords := 0
+					var coverageReuse []string
+					for _, record := range records {
+						if record.Event == "query_notice" && strings.Contains(fmt.Sprint(record.Fields["notices"]), "Mapped dt.davis.problems") {
+							noticeRecords++
+						}
+						if record.Event == "query_execution" {
+							coverage, ok := record.Fields["davis_snapshot_coverage"].(map[string]any)
+							if !ok {
+								t.Fatalf("restricted execution omitted coverage provenance: %#v", record.Fields)
+							}
+							coverageReuse = append(coverageReuse, fmt.Sprint(coverage["reuse"]))
+						}
+					}
+					if preflights != 2 || appends != 4 || len(records) != 4 || noticeRecords != 2 ||
+						!equalStrings(coverageReuse, []string{string(DavisSnapshotCoverageMiss), string(DavisSnapshotCoverageHit)}) {
+						t.Fatalf("restricted attempts preflights=%d appends=%d notice-records=%d reuse=%v records=%#v", preflights, appends, noticeRecords, coverageReuse, records)
+					}
+				} else if !containsReplayNotice(first.Replay.Output.Warnings, "Mapped dt.davis.problems") ||
+					!containsReplayNotice(second.Replay.Output.Warnings, "Mapped dt.davis.problems") {
+					t.Fatalf("full mapped attempts did not each announce mapping: first=%#v second=%#v", first.Replay.Output.Warnings, second.Replay.Output.Warnings)
+				}
+				parseCalls, executeCalls, _ := api.counts()
+				coverageRequests, _ := api.coverage()
+				if parseCalls != 3 || executeCalls != 2 || len(coverageRequests) != 1 {
+					t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
+				}
+				parses, executions := api.queries()
+				if len(parses) != 3 || parses[0].Query != replayDavisOriginal || len(executions) != 2 ||
+					parses[1].Query != executions[0].Query || parses[2].Query != executions[1].Query || executions[0].Query == executions[1].Query {
+					t.Fatalf("attempt queries were not independently parsed and executed: parses=%#v executions=%#v", parses, executions)
+				}
+				wantDQL := func(logicalF, physicalW, timeT string) string {
+					return fmt.Sprintf(`fetch dt.davis.problems.snapshots, from:toTimestamp("%s.000000000Z"), to:toTimestamp("%s.000000000Z")
+| sort timestamp desc
+| dedup event.id
+| filter event.start < toTimestamp("%s.000000000Z") and coalesce(event.end, toTimestamp("%s.000000000Z")) >= toTimestamp("%s.000000000Z")`, physicalW, timeT, timeT, timeT, logicalF)
+				}
+				for index, attempt := range []struct {
+					mapping                             *output.DavisProblemsMappingMetadata
+					logicalF, logicalT, physicalW, want string
+				}{
+					{left, "2026-06-14T09:00:00Z", "2026-06-14T09:30:00Z", "2026-06-14T03:00:00Z", wantDQL("2026-06-14T09:00:00", "2026-06-14T03:00:00", "2026-06-14T09:30:00")},
+					{right, "2026-06-14T09:00:00Z", "2026-06-14T09:35:00Z", "2026-06-14T03:00:00Z", wantDQL("2026-06-14T09:00:00", "2026-06-14T03:00:00", "2026-06-14T09:35:00")},
+				} {
+					if attempt.mapping.LogicalF != attempt.logicalF || attempt.mapping.LogicalT != attempt.logicalT ||
+						attempt.mapping.PhysicalW != attempt.physicalW || attempt.mapping.PhysicalT != attempt.logicalT ||
+						parses[index+1].Query != attempt.want || executions[index].Query != attempt.want {
+						t.Fatalf("attempt %d mapping=%#v parse=%q execute=%q want=%q", index+1, attempt.mapping, parses[index+1].Query, executions[index].Query, attempt.want)
+					}
+				}
+			})
+		}
 	}
 }
 
 func TestDQLExecutorDavisWarmupClampWarnsOnlyAfterCoveragePasses(t *testing.T) {
-	api := newReplayDavisMockAPI(t)
-	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull,
-		mustReplayTestTime("2026-06-14T08:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), nil)
-	result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mapping := result.Replay.Output.Sources[0].DavisProblemsMapping
-	if mapping == nil || !mapping.WarmupClamped || mapping.PhysicalW != "2026-06-14T08:00:00Z" {
-		t.Fatalf("mapping = %#v", mapping)
-	}
-	warnings := strings.Join(result.Replay.Output.Warnings, "\n")
-	if !strings.Contains(warnings, "documented six-hour refresh cadence") || !strings.Contains(warnings, "less than six hours of warm-up") {
-		t.Fatalf("clamp warning = %q", warnings)
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		t.Run(disclosure, func(t *testing.T) {
+			api := newReplayDavisMockAPI(t)
+			var sink *replayTestSink
+			var sinkFactory func(string) session.ProvenanceSink
+			if disclosure == session.ReplayDisclosureRestricted {
+				sink = &replayTestSink{}
+				sinkFactory = func(string) session.ProvenanceSink { return sink }
+			}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure,
+				mustReplayTestTime("2026-06-14T08:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), sinkFactory)
+			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mapping := result.Replay.Output.Sources[0].DavisProblemsMapping
+			if mapping == nil || !mapping.WarmupClamped || mapping.PhysicalW != "2026-06-14T08:00:00Z" {
+				t.Fatalf("mapping = %#v", mapping)
+			}
+			warnings := strings.Join(result.Replay.Output.Warnings, "\n")
+			if !strings.Contains(warnings, "documented six-hour refresh cadence") || !strings.Contains(warnings, "less than six hours of warm-up") {
+				t.Fatalf("clamp warning = %q", warnings)
+			}
+			if disclosure == session.ReplayDisclosureRestricted {
+				if ReplayOutputMetadata(result.Replay) != nil {
+					t.Fatal("restricted clamp warning reached ordinary replay metadata")
+				}
+				_, _, records := sink.snapshot()
+				if len(records) != 2 || !strings.Contains(fmt.Sprint(records[0].Fields["notices"]), "less than six hours of warm-up") {
+					t.Fatalf("restricted clamp provenance = %#v", records)
+				}
+				sources, ok := records[1].Fields["sources"].([]map[string]any)
+				if !ok || len(sources) != 1 {
+					t.Fatalf("restricted clamp sources = %#v", records[1].Fields["sources"])
+				}
+				privateMapping, ok := sources[0]["davis_problems_mapping"].(map[string]any)
+				if !ok || privateMapping["warmup_clamped"] != true {
+					t.Fatalf("restricted clamp mapping = %#v", sources[0])
+				}
+				physical, ok := privateMapping["physical_snapshot_range"].(map[string]string)
+				if !ok || physical["w"] != "2026-06-14T08:00:00Z" || physical["t"] != "2026-06-14T10:00:00Z" {
+					t.Fatalf("restricted clamped physical range = %#v", privateMapping["physical_snapshot_range"])
+				}
+			}
+		})
 	}
 }
 
@@ -831,23 +1046,45 @@ func TestDQLExecutorDavisValidationTamperingAlwaysPreventsMainExecute(t *testing
 		}},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			api := newReplayDavisMockAPI(t)
-			api.disableDynamicValidation = true
-			api.validationBody = test.mutate(append([]byte(nil), api.validationBody...))
-			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull,
-				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), nil)
-			_, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-			var auditErr *execreplay.ReplayError
-			if !errors.As(err, &auditErr) || auditErr.Code != execreplay.ErrorAudit {
-				t.Fatalf("error = %T %v", err, err)
-			}
-			parseCalls, executeCalls, _ := api.counts()
-			coverageRequests, _ := api.coverage()
-			if parseCalls != 2 || len(coverageRequests) != 1 || executeCalls != 0 {
-				t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
-			}
-		})
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(test.name+"/"+disclosure, func(t *testing.T) {
+				api := newReplayDavisMockAPI(t)
+				api.disableDynamicValidation = true
+				api.validationBody = test.mutate(append([]byte(nil), api.validationBody...))
+				var sink *replayTestSink
+				var sinkFactory func(string) session.ProvenanceSink
+				if disclosure == session.ReplayDisclosureRestricted {
+					sink = &replayTestSink{}
+					sinkFactory = func(string) session.ProvenanceSink { return sink }
+				}
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure,
+					mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"), sinkFactory)
+				_, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+				var auditErr *execreplay.ReplayError
+				if !errors.As(err, &auditErr) || auditErr.Code != execreplay.ErrorAudit {
+					t.Fatalf("error = %T %v", err, err)
+				}
+				if disclosure == session.ReplayDisclosureRestricted {
+					if err.Error() != restrictedPreparationMessage {
+						t.Fatalf("restricted audit error = %q", err)
+					}
+					preflights, appends, records := sink.snapshot()
+					if preflights != 1 || appends != 1 || len(records) != 1 || records[0].Event != "query_pre_execution" ||
+						records[0].Fields["detail"] != auditErr.Error() {
+						t.Fatalf("restricted audit provenance preflights=%d appends=%d records=%#v", preflights, appends, records)
+					}
+					audit, ok := records[0].Fields["audit"].(map[string]any)
+					if !ok || audit["ok"] != false {
+						t.Fatalf("restricted audit result = %#v", records[0].Fields["audit"])
+					}
+				}
+				parseCalls, executeCalls, _ := api.counts()
+				coverageRequests, _ := api.coverage()
+				if parseCalls != 2 || len(coverageRequests) != 1 || executeCalls != 0 {
+					t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
+				}
+			})
+		}
 	}
 }
 
@@ -1791,6 +2028,133 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		})
 	}
 
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "snapshot table extends the no-bounds original",
+			message: `data object not found in 'fetch dt.davis.problems.snapshots' (400)`,
+		},
+		{
+			name:    "verbatim original precedes snapshot table",
+			message: `query 'fetch dt.davis.problems' failed while executing 'fetch dt.davis.problems.snapshots'`,
+		},
+		{
+			name:    "snapshot table precedes verbatim original",
+			message: `data object 'fetch dt.davis.problems.snapshots' differs from original 'fetch dt.davis.problems'`,
+		},
+	} {
+		t.Run("mapped original-prefix "+test.name, func(t *testing.T) {
+			const original = `fetch dt.davis.problems`
+			api := newReplayDavisMockAPI(t)
+			api.originalBody = replayFixtureWithSourceToken(t, "phase0/fixtures/05-fetch-no-timeframe/parse.json", "logs", execreplay.DavisProblemsView)
+			api.isOriginal = func(query string) bool { return query == original }
+			api.executeStatus = http.StatusBadRequest
+			api.remoteErrorMessage = test.message
+			sink := &replayTestSink{}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+				func(string) session.ProvenanceSink { return sink })
+			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{
+				AgentMode:             true,
+				DefaultTimeframeStart: "2026-06-14T09:00:00Z",
+				DefaultTimeframeEnd:   "2026-06-14T10:00:00Z",
+			})
+			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), test.message) {
+				t.Fatalf("result=%#v err=%v, want mapped remote fallback", result, err)
+			}
+			parses, executions := api.queries()
+			coverageRequests, _ := api.coverage()
+			if len(parses) != 2 || parses[0].Query != original || parses[1].Query != replayDavisEffective ||
+				len(executions) != 1 || executions[0].Query != replayDavisEffective || len(coverageRequests) != 1 {
+				t.Fatalf("parses=%#v coverage=%d executions=%#v", parses, len(coverageRequests), executions)
+			}
+			_, _, records := sink.snapshot()
+			if len(records) != 2 || records[1].Event != "query_execution" || !strings.Contains(fmt.Sprint(records[1].Fields["detail"]), test.message) {
+				t.Fatalf("mapped remote provenance = %#v", records)
+			}
+		})
+	}
+
+	for name, remoteMessage := range map[string]string{
+		"snapshot token":             "source dt.davis.problems.snapshots failed",
+		"generated bound":            `generated bound toTimestamp("2026-06-14T03:00:00.000000000Z") failed`,
+		"normalized generated bound": `generated bound TOTIMESTAMP ( "2026-06-14T03:00:00+00:00" ) failed`,
+		"named generated bound":      `generated bound toTimestamp(value: "2026-06-14T03:00:00Z") failed`,
+		"standalone generated bound": `snapshot read starts at 2026-06-14T03:00:00Z`,
+		"inserted stage":             "inserted stage dedup event.id failed",
+		"inserted event token":       "unknown field event.end",
+		"inserted sort token":        "unknown command sort",
+		"inserted time token":        "unknown field timestamp",
+		"inserted dedup token":       "unknown command dedup",
+		"inserted filter token":      "unknown command filter",
+		"inserted function":          "unknown function coalesce",
+		"effective query":            replayDavisEffective,
+	} {
+		t.Run("mapped "+name, func(t *testing.T) {
+			api := newReplayDavisMockAPI(t)
+			api.executeStatus = http.StatusBadRequest
+			api.remoteErrorMessage = remoteMessage
+			sink := &replayTestSink{}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+				func(string) session.ProvenanceSink { return sink })
+			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), remoteMessage) {
+				t.Fatalf("result=%#v err=%v, want mapped remote fallback", result, err)
+			}
+			_, _, records := sink.snapshot()
+			if len(records) != 2 || records[1].Event != "query_execution" || !strings.Contains(fmt.Sprint(records[1].Fields["detail"]), remoteMessage) {
+				t.Fatalf("mapped remote provenance = %#v", records)
+			}
+			parseCalls, executeCalls, _ := api.counts()
+			coverageRequests, _ := api.coverage()
+			if parseCalls != 2 || executeCalls != 1 || len(coverageRequests) != 1 {
+				t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
+			}
+		})
+	}
+
+	for name, remoteMessage := range map[string]string{
+		"snapshot token":                   "source dt.davis.problems.snapshots failed",
+		"normalized generated bound":       `invalid toTimestamp ( "2026-06-14T03:00:00Z" )`,
+		"named normalized generated bound": `invalid TOTIMESTAMP ( VALUE : "2026-06-14T03:00:00+00:00" )`,
+		"standalone generated bound":       `snapshot read starts at 2026-06-14T03:00:00Z`,
+		"inserted token":                   "unknown field event.start",
+		"inserted operator":                "unknown function coalesce",
+	} {
+		t.Run("mapped polling "+name, func(t *testing.T) {
+			api := newReplayDavisMockAPI(t)
+			api.async = true
+			api.pollStatus = http.StatusBadGateway
+			api.pollErrorMessage = remoteMessage
+			sink := &replayTestSink{}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+				func(string) session.ProvenanceSink { return sink })
+
+			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
+			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), api.pollErrorMessage) {
+				t.Fatalf("result=%#v err=%v, want mapped polling fallback", result, err)
+			}
+			_, _, records := sink.snapshot()
+			recordedDetail := ""
+			if len(records) == 2 {
+				recordedDetail = strings.ReplaceAll(fmt.Sprint(records[1].Fields["detail"]), `\"`, `"`)
+			}
+			if len(records) != 2 || records[1].Event != "query_execution" ||
+				!strings.Contains(recordedDetail, api.pollErrorMessage) {
+				t.Fatalf("mapped polling provenance = %#v", records)
+			}
+			parseCalls, executeCalls, pollCalls := api.counts()
+			coverageRequests, _ := api.coverage()
+			if parseCalls != 2 || executeCalls != 1 || pollCalls != 1 || len(coverageRequests) != 1 {
+				t.Fatalf("parse=%d coverage=%d execute=%d poll=%d", parseCalls, len(coverageRequests), executeCalls, pollCalls)
+			}
+		})
+	}
+
 	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
 	generated := newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true)
 	if generated.Error() != restrictedRemoteExecutionMessage {
@@ -1805,6 +2169,149 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	masked := newReplayAttemptError(replayErrorRemote, generatedWrapper, info, false, 0, true)
 	if masked.Error() != restrictedRemoteExecutionMessage {
 		t.Fatalf("dtctl-generated restricted wrapper was not masked: %q", masked)
+	}
+
+	mappedInfo := ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted,
+		OriginalQuery: replayDavisOriginal, EffectiveQuery: replayDavisEffective,
+		Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+			DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+		}}},
+	}
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{"space-separated bound", "invalid bound 2026-06-14 03:00:00Z"},
+		{"zone-less bound", "invalid bound 2026-06-14T03:00:00"},
+		{"space-separated zone-less bound", "invalid bound 2026-06-14 03:00:00"},
+		{"epoch seconds", "invalid bound 1781406000"},
+		{"epoch milliseconds", "invalid bound 1781406000000"},
+		{"epoch nanoseconds", "invalid bound 1781406000000000000"},
+	} {
+		t.Run("mapped rendered instant "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: test.message}
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("mapped rendered instant was not masked: %q", got)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{"leading digit", "invalid bound 91781406000000"},
+		{"trailing digit", "invalid bound 17814060000000"},
+	} {
+		t.Run("mapped epoch boundary control "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: test.message}
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != detail.Error() {
+				t.Fatalf("digit-adjacent epoch was masked: got %q want %q", got, detail)
+			}
+		})
+	}
+
+	outputOnlyInfo := ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted,
+		OriginalQuery: `fetch dt.davis.problems`, EffectiveQuery: `fetch dt.davis.problems.snapshots`,
+		Output: &output.ReplayMetadata{
+			VirtualNow: "2026-06-14T08:01:02Z",
+			Sources: []output.ReplaySourceMetadata{{
+				EffectiveFrom: "2026-06-14T04:01:02Z",
+				EffectiveTo:   "2026-06-14T05:01:02Z",
+				PhysicalFrom:  "2026-06-14T06:01:02Z",
+				PhysicalTo:    "2026-06-14T07:01:02Z",
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{
+					Eligible:  true,
+					LogicalF:  "2026-06-14T09:01:02Z",
+					LogicalT:  "2026-06-14T10:01:02Z",
+					PhysicalW: "2026-06-14T11:01:02Z",
+					PhysicalT: "2026-06-14T12:01:02Z",
+				},
+			}},
+		},
+	}
+	for _, test := range []struct {
+		name    string
+		instant string
+	}{
+		{"virtual now", "2026-06-14T08:01:02Z"},
+		{"effective from", "2026-06-14T04:01:02Z"},
+		{"effective to", "2026-06-14T05:01:02Z"},
+		{"physical from", "2026-06-14T06:01:02Z"},
+		{"physical to", "2026-06-14T07:01:02Z"},
+		{"mapping logical F", "2026-06-14T09:01:02Z"},
+		{"mapping logical T", "2026-06-14T10:01:02Z"},
+		{"mapping physical W", "2026-06-14T11:01:02Z"},
+		{"mapping physical T", "2026-06-14T12:01:02Z"},
+	} {
+		t.Run("mapped Output-only instant "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "invalid bound " + test.instant}
+			if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("Output-only instant was not masked: %q", got)
+			}
+		})
+	}
+	t.Run("mapped Output-only epoch milliseconds", func(t *testing.T) {
+		instant := mustReplayTestTime("2026-06-14T08:01:02Z")
+		detail := &sdkquery.QueryError{
+			StatusCode: http.StatusBadRequest,
+			ErrorType:  "REMOTE_ERROR",
+			Message:    fmt.Sprintf("invalid bound %d", instant.UnixMilli()),
+		}
+		if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			t.Fatalf("Output-only epoch instant was not masked: %q", got)
+		}
+	})
+
+	verbatimOriginal := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: replayDavisOriginal}
+	if got := newReplayAttemptError(replayErrorRemote, verbatimOriginal, mappedInfo, false, 0, true); got.Error() != verbatimOriginal.Error() {
+		t.Fatalf("verbatim original query was masked: got %q want %q", got, verbatimOriginal)
+	}
+	for name, detail := range map[string]error{
+		"poll snapshot token":                 httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"dt.davis.problems.snapshots"}`),
+		"poll generated timestamp":            httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"toTimestamp(\"2026-06-14T03:00:00.000000000Z\")"}`),
+		"poll normalized generated timestamp": httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"TOTIMESTAMP ( \"2026-06-14T03:00:00+00:00\" )"}`),
+		"poll standalone generated timestamp": httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"snapshot read starts at 2026-06-14T03:00:00Z"}`),
+		"poll inserted token":                 httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"event.id"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("mapped polling detail was not masked: %q", got)
+			}
+		})
+	}
+	collidingBound := &sdkquery.QueryError{
+		StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR",
+		Message: `invalid bound toTimestamp ( "2026-06-14T09:00:00Z" )`,
+	}
+	if got := newReplayAttemptError(replayErrorRemote, collidingBound, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+		t.Fatalf("user/generated timestamp collision was not masked: %q", got)
+	}
+	for name, message := range map[string]string{
+		"logical F": "invalid bound 2026-06-14T09:00:00Z",
+		"upper T":   "invalid bound 2026-06-14T10:00:00+00:00",
+	} {
+		t.Run("standalone user-generated collision "+name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: message}
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("standalone user/generated timestamp collision was not masked: %q", got)
+			}
+		})
+	}
+	for _, lexeme := range execreplay.DavisProblemsReconstructionLexemes() {
+		t.Run("user-generated collision "+lexeme, func(t *testing.T) {
+			userAuthored := mappedInfo
+			userAuthored.OriginalQuery += " | fields " + lexeme
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "unknown field " + lexeme}
+			if got := newReplayAttemptError(replayErrorRemote, detail, userAuthored, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("user/generated mapping lexeme collision was not masked: %q", got)
+			}
+		})
+	}
+	boundaryControl := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "unknown field event.identity"}
+	if got := newReplayAttemptError(replayErrorRemote, boundaryControl, mappedInfo, false, 0, true); got.Error() != boundaryControl.Error() {
+		t.Fatalf("mapping-token boundary control was masked: got %q want %q", got, boundaryControl)
 	}
 }
 
@@ -1846,16 +2353,16 @@ func TestDQLExecutorFullDisclosureRoutesCompilerNoticesOnce(t *testing.T) {
 func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
 	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
 	surfaces := map[string]string{
-		"hard non-overlap":      restrictedMessage(replayErrorNonOverlap, errors.New("replay interval does not overlap"), false, false),
-		"temporary non-overlap": restrictedMessage(replayErrorNonOverlap, errors.New("virtual interval pending"), true, false),
-		"readiness":             restrictedMessage(replayErrorReadiness, errors.New("session is stopped"), false, false),
-		"preparation":           restrictedMessage(replayErrorPrepare, errors.New("effective query unsupported"), false, false),
-		"validation":            restrictedMessage(replayErrorValidation, errors.New("interval spill invalid"), false, true),
-		"finalization":          restrictedMessage(replayErrorFinalize, errors.New("session completion failed"), false, true),
-		"sink preflight":        restrictedMessage(replayErrorSink, errors.New("replay sink unavailable"), false, false),
-		"sink post-execution":   restrictedMessage(replayErrorSink, errors.New("replay sink append failed"), false, true),
+		"hard non-overlap":      restrictedMessageForInfo(replayErrorNonOverlap, errors.New("replay interval does not overlap"), ReplayExecutionInfo{}, false, false),
+		"temporary non-overlap": restrictedMessageForInfo(replayErrorNonOverlap, errors.New("virtual interval pending"), ReplayExecutionInfo{}, true, false),
+		"readiness":             restrictedMessageForInfo(replayErrorReadiness, errors.New("session is stopped"), ReplayExecutionInfo{}, false, false),
+		"preparation":           restrictedMessageForInfo(replayErrorPrepare, errors.New("effective query unsupported"), ReplayExecutionInfo{}, false, false),
+		"validation":            restrictedMessageForInfo(replayErrorValidation, errors.New("interval spill invalid"), ReplayExecutionInfo{}, false, true),
+		"finalization":          restrictedMessageForInfo(replayErrorFinalize, errors.New("session completion failed"), ReplayExecutionInfo{}, false, true),
+		"sink preflight":        restrictedMessageForInfo(replayErrorSink, errors.New("replay sink unavailable"), ReplayExecutionInfo{}, false, false),
+		"sink post-execution":   restrictedMessageForInfo(replayErrorSink, errors.New("replay sink append failed"), ReplayExecutionInfo{}, false, true),
 		"remote fallback":       newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true).Error(),
-		"other":                 restrictedMessage("synthetic_other", errors.New("replay detail"), false, false),
+		"other":                 restrictedMessageForInfo("synthetic_other", errors.New("replay detail"), ReplayExecutionInfo{}, false, false),
 	}
 	for name, value := range surfaces {
 		if containsRestrictedGeneratedWord(value) {
@@ -2014,7 +2521,64 @@ func TestDQLExecutorVerifyReplayCompatibilityRestrictedRecordsDetails(t *testing
 	}
 }
 
+func TestDQLExecutorVerifyReplayCompatibilityRestrictedDavisMapsWithoutCoverage(t *testing.T) {
+	api := newReplayDavisMockAPI(t)
+	sink := &replayTestSink{}
+	fixture := newReplayExecutorFixture(
+		t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+		mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+		func(string) session.ProvenanceSink { return sink },
+	)
+
+	compatibility, err := fixture.executor.VerifyReplayCompatibilityWithContext(
+		context.Background(), replayDavisOriginal, DQLVerifyOptions{Timezone: "UTC"}, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || compatibility.FullDisclosure() || !compatibility.CompilerSupported ||
+		!compatibility.EffectiveQueryValid || compatibility.EffectiveQuery != replayDavisEffective ||
+		compatibility.CoverageVerified == nil || *compatibility.CoverageVerified ||
+		compatibility.CoverageMessage != execreplay.DavisCoverageNotVerifiedMessage {
+		t.Fatalf("restricted Davis compatibility = %#v", compatibility)
+	}
+	preflights, appends, records := sink.snapshot()
+	if preflights != 1 || appends != 1 || len(records) != 1 || records[0].Event != "query_verification" {
+		t.Fatalf("sink preflights=%d appends=%d records=%#v", preflights, appends, records)
+	}
+	fields := records[0].Fields
+	if fields["original_dql"] != replayDavisOriginal || fields["effective_dql"] != replayDavisEffective {
+		t.Fatalf("query forms = %#v", fields)
+	}
+	coverage, ok := fields["davis_snapshot_coverage"].(map[string]any)
+	if !ok || coverage["status"] != "not_checked" || coverage["coverage_verified"] != false || coverage["observed_at"] != nil || coverage["reuse"] != nil {
+		t.Fatalf("probe-free coverage provenance = %#v", fields["davis_snapshot_coverage"])
+	}
+	sources, ok := fields["sources"].([]map[string]any)
+	if !ok || len(sources) != 1 || sources[0]["davis_problems_mapping"] == nil {
+		t.Fatalf("mapping provenance = %#v", fields["sources"])
+	}
+	mapping := sources[0]["davis_problems_mapping"].(map[string]any)
+	logical := mapping["logical_view_range"].(map[string]string)
+	physical := mapping["physical_snapshot_range"].(map[string]string)
+	if logical["f"] != "2026-06-14T09:00:00Z" || logical["t"] != "2026-06-14T10:00:00Z" ||
+		physical["w"] != "2026-06-14T03:00:00Z" || physical["t"] != "2026-06-14T10:00:00Z" ||
+		mapping["warmup_clamped"] != false {
+		t.Fatalf("probe-free mapping ranges logical=%#v physical=%#v mapping=%#v", logical, physical, mapping)
+	}
+	audit, ok := fields["audit"].(map[string]any)
+	if !ok || audit["ok"] != true || audit["davis_mappings_audited"] != true {
+		t.Fatalf("mapping audit provenance = %#v", fields["audit"])
+	}
+	parseCalls, executeCalls, _ := api.counts()
+	coverageRequests, _ := api.coverage()
+	if parseCalls != 2 || executeCalls != 0 || len(coverageRequests) != 0 {
+		t.Fatalf("parse=%d coverage=%d execute=%d", parseCalls, len(coverageRequests), executeCalls)
+	}
+}
+
 func TestDQLExecutorDavisCurrentViewGuidanceUsesUnchangedDisclosureRoutes(t *testing.T) {
+	eventsOriginal := strings.Replace(replayRecordOriginal, "fetch logs", "fetch dt.davis.events", 1)
 	tests := []struct {
 		name       string
 		disclosure string
@@ -2022,13 +2586,13 @@ func TestDQLExecutorDavisCurrentViewGuidanceUsesUnchangedDisclosureRoutes(t *tes
 		query      string
 		api        func(*testing.T) *replayMockAPI
 	}{
-		{"restricted problems", session.ReplayDisclosureRestricted, "dt.davis.problems", replayDavisOriginal, newReplayDavisMockAPI},
-		{"full events", session.ReplayDisclosureFull, "dt.davis.events", replayRecordOriginal, newReplayMockAPI},
-		{"restricted events", session.ReplayDisclosureRestricted, "dt.davis.events", replayRecordOriginal, newReplayMockAPI},
+		{"full events", session.ReplayDisclosureFull, "dt.davis.events", eventsOriginal, newReplayMockAPI},
+		{"restricted events", session.ReplayDisclosureRestricted, "dt.davis.events", eventsOriginal, newReplayMockAPI},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			api := test.api(t)
+			api.isOriginal = func(query string) bool { return query == test.query }
 			if test.view == "dt.davis.events" {
 				api.originalBody = bytes.Replace(api.originalBody,
 					[]byte(`"canonicalString": "logs"`), []byte(`"canonicalString": "dt.davis.events"`), 1)
@@ -2089,25 +2653,35 @@ func TestDQLExecutorDirectDavisSnapshotsRemainOrdinaryAndProbeFree(t *testing.T)
 		},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			api := newReplayMockAPI(t)
-			api.originalBody = replayFixtureBody(t, "phase0b/fixtures/records/"+test.fixtureDir+"/00-discovery/parse.json")
-			api.validationBody = replayFixtureBody(t, "phase0b/fixtures/records/"+test.fixtureDir+"/00-discovery/validation-parse.json")
-			api.isOriginal = func(query string) bool { return query == test.original }
-			api.executeResponse.Result.Metadata.Grail.CanonicalQuery = test.effective
-			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureFull,
-				mustReplayTestTime("2026-08-03T10:55:03Z"), mustReplayTestTime("2026-08-10T10:55:03Z"), mustReplayTestTime("2026-08-11T10:55:03Z"), nil)
-			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), test.original, DQLExecuteOptions{AgentMode: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, executions := api.queries()
-			coverageRequests, _ := api.coverage()
-			if len(coverageRequests) != 0 || len(executions) != 1 || executions[0].Query != test.effective ||
-				result.Replay.Output.DavisSnapshotCoverage != nil || result.Replay.Output.Sources[0].DavisProblemsMapping != nil {
-				t.Fatalf("coverage=%d executions=%#v metadata=%#v", len(coverageRequests), executions, result.Replay.Output)
-			}
-		})
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(test.name+"/"+disclosure, func(t *testing.T) {
+				api := newReplayMockAPI(t)
+				api.originalBody = replayFixtureBody(t, "phase0b/fixtures/records/"+test.fixtureDir+"/00-discovery/parse.json")
+				api.validationBody = replayFixtureBody(t, "phase0b/fixtures/records/"+test.fixtureDir+"/00-discovery/validation-parse.json")
+				api.isOriginal = func(query string) bool { return query == test.original }
+				api.executeResponse.Result.Metadata.Grail.CanonicalQuery = test.effective
+				var sinkFactory func(string) session.ProvenanceSink
+				if disclosure == session.ReplayDisclosureRestricted {
+					sink := &replayTestSink{}
+					sinkFactory = func(string) session.ProvenanceSink { return sink }
+				}
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, disclosure,
+					mustReplayTestTime("2026-08-03T10:55:03Z"), mustReplayTestTime("2026-08-10T10:55:03Z"), mustReplayTestTime("2026-08-11T10:55:03Z"), sinkFactory)
+				result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), test.original, DQLExecuteOptions{AgentMode: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, executions := api.queries()
+				coverageRequests, _ := api.coverage()
+				if len(coverageRequests) != 0 || len(executions) != 1 || executions[0].Query != test.effective ||
+					result.Replay.Output.DavisSnapshotCoverage != nil || result.Replay.Output.Sources[0].DavisProblemsMapping != nil {
+					t.Fatalf("coverage=%d executions=%#v metadata=%#v", len(coverageRequests), executions, result.Replay.Output)
+				}
+				if disclosure == session.ReplayDisclosureRestricted && ReplayOutputMetadata(result.Replay) != nil {
+					t.Fatal("restricted direct snapshot query exposed ordinary replay metadata")
+				}
+			})
+		}
 	}
 }
 
@@ -2193,7 +2767,7 @@ func dynamicValidationBody(t *testing.T, raw json.RawMessage, query string) json
 	}
 	stringsSeen := 0
 	walkSDKNode(&root, func(node *sdkquery.DQLNode) {
-		if node.Terminal == nil || node.Terminal.Type != "STRING" || stringsSeen >= len(values) {
+		if !sdkTimestampTerminal(node) || stringsSeen >= len(values) {
 			return
 		}
 		node.Terminal.CanonicalString = `"` + values[stringsSeen] + `"`
@@ -2207,6 +2781,11 @@ func dynamicValidationBody(t *testing.T, raw json.RawMessage, query string) json
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func sdkTimestampTerminal(node *sdkquery.DQLNode) bool {
+	return node != nil && node.Terminal != nil &&
+		(node.Terminal.Type == "STRING" || node.Terminal.Type == "TIMESTAMP_VALUE")
 }
 
 func timestampArguments(query string) []string {

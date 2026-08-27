@@ -1,0 +1,18 @@
+{
+  "evidence": {
+    "source": "metadata contract verified against a live observation; all committed query text and timestamp values are synthetic",
+    "sanitization": [
+      "only fields required for the endpoint contract were retained",
+      "tenant, request, session, bucket, and returned-record data were omitted",
+      "all committed query text and timestamp values were invented for this fixture"
+    ]
+  },
+  "metadata": {
+    "analysisTimeframe": {
+      "start": "2027-02-03T07:52:11.000000000Z",
+      "end": "2027-02-03T10:41:37.000000000Z"
+    },
+    "canonicalQuery": "fetch dt.davis.problems.snapshots, from:toTimestamp(\"2027-02-03T07:52:11.000000000Z\"), to:toTimestamp(\"2027-02-03T10:41:37.000000000Z\")\n| sort timestamp desc\n| dedup event.id\n| filter event.start < toTimestamp(\"2027-02-03T10:41:37.000000000Z\") AND coalesce(event.end, toTimestamp(\"2027-02-03T10:41:37.000000000Z\")) >= toTimestamp(\"2027-02-03T09:17:43.000000000Z\")\n| fields capture_marker = \"synthetic\"\n| limit 1",
+    "query": "fetch dt.davis.problems, from:toTimestamp(\"2027-02-03T09:17:43.000Z\"), to:toTimestamp(\"2027-02-03T10:41:37.000Z\") | fields capture_marker = \"synthetic\" | limit 1"
+  }
+}

@@ -280,6 +280,49 @@ func TestBuildSpillResponse_RestrictedReplayUsesNormalManifestSchemas(t *testing
 	}
 }
 
+func TestBuildSpillResponse_MappedRestrictedOmitsContributions(t *testing.T) {
+	const (
+		original  = "fetch dt.davis.problems"
+		effective = "fetch dt.davis.problems.snapshots | dedup event.id"
+	)
+	e := &DQLExecutor{}
+	result, records := sampleResult(false)
+	result.Metadata.Grail.Query = effective
+	result.Metadata.Grail.CanonicalQuery = effective
+	result.Metadata.Grail.Contributions = &Contributions{Buckets: []BucketContribution{{
+		Name: "synthetic_bucket", Table: "dt.davis.problems.snapshots", ScannedBytes: 4096, MatchedRecordsRatio: 0.75,
+	}}}
+	opts := DQLExecuteOptions{
+		AgentMode: true, MetadataFields: []string{"all"}, ContextName: "synthetic",
+		Spill: SpillOptions{Mode: SpillAlways, Dir: t.TempDir(), Format: "json"},
+		replay: &ReplayExecutionInfo{
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original, EffectiveQuery: effective,
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+			}}},
+		},
+	}
+	resp, handled, err := e.buildSpillResponse(original, result, records, "json", opts)
+	if err != nil || !handled {
+		t.Fatalf("buildSpillResponse: handled=%v err=%v", handled, err)
+	}
+	manifest := resp.Result.(*output.ResultFileManifest)
+	sidecar, err := os.ReadFile(output.SidecarPathFor(manifest.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string][]byte{"envelope": envelope, "sidecar": sidecar} {
+		if strings.Contains(string(raw), `"contributions"`) || strings.Contains(string(raw), "synthetic_bucket") ||
+			strings.Contains(string(raw), "dt.davis.problems.snapshots") {
+			t.Fatalf("mapped restricted %s leaked contributions: %s", name, raw)
+		}
+	}
+}
+
 func TestBuildSpillResponse_WideResultCapsEnvelopeKeepsSidecarFull(t *testing.T) {
 	e := &DQLExecutor{}
 	// A wide result: more columns than the envelope cap. Every column is present

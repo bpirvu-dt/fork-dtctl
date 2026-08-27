@@ -43,6 +43,57 @@ func TestResolveRequestedRangeFromRealTimeExpressionFixtures(t *testing.T) {
 	}
 }
 
+func TestResolveRequestedRangeAcceptsServerTimestampLiteralRoles(t *testing.T) {
+	context := timeframeContext{
+		VirtualNow:     mustTime(t, "2026-06-14T10:00:00Z"),
+		ReplayInterval: Interval{Start: mustTime(t, "2026-06-14T08:00:00Z"), End: mustTime(t, "2026-06-14T12:00:00Z")},
+		VisibleInterval: Interval{
+			Start: mustTime(t, "2026-06-14T08:00:00Z"),
+			End:   mustTime(t, "2026-06-14T10:00:00Z"),
+		},
+		Timezone: time.UTC,
+	}
+	for _, role := range []string{"TIMESTAMP_VALUE", "STRING"} {
+		t.Run(role, func(t *testing.T) {
+			ast := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json").Clone()
+			setTimestampLiteralRoles(ast, role)
+			firstTerminal(ast, "DATA_OBJECT").Canonical = "logs"
+			requested, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requested.From.Dependency != EndpointAbsolute || requested.To.Dependency != EndpointAbsolute ||
+				!requested.Range.Start.Equal(mustTime(t, "2026-06-14T09:00:00Z")) ||
+				!requested.Range.End.Equal(mustTime(t, "2026-06-14T10:00:00Z")) {
+				t.Fatalf("requested = %#v", requested)
+			}
+		})
+	}
+}
+
+func TestTimestampValueFailsClosedOutsideExactToTimestampLiteral(t *testing.T) {
+	context := timeframeContext{VirtualNow: timeAt(10), ReplayInterval: intervalAt(8, 12), VisibleInterval: intervalAt(8, 10), Timezone: time.UTC}
+	t.Run("malformed canonical text", func(t *testing.T) {
+		ast := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json").Clone()
+		firstTerminal(ast, "DATA_OBJECT").Canonical = "logs"
+		timestampLiteralTerminals(ast)[0].Canonical = `"not-a-timestamp"`
+		_, err := resolveRequestedRange(firstSourceAnalysis(t, ast), context)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	})
+	t.Run("standalone terminal", func(t *testing.T) {
+		_, err := evaluateTimeNode(&Node{
+			Kind: NodeTerminal, Role: "TIMESTAMP_VALUE", Canonical: `"2026-06-14T09:00:00Z"`,
+		}, context)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) || replayErr.Code != ErrorTimeframe {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	})
+}
+
 func TestGlobalDefaultOverridesVerifiedMissingTimeframeDefault(t *testing.T) {
 	ast := loadSDKFixture(t, "phase0/fixtures/05-fetch-no-timeframe/parse.json")
 	global := Interval{

@@ -777,6 +777,7 @@ func (e *DQLExecutor) PrintNotifications(notifications []QueryNotification) {
 
 // printResults prints the query results with the given options
 func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts DQLExecuteOptions) error {
+	policy := queryOutputPolicyFor(opts)
 	effectiveFormat := opts.OutputFormat
 	if opts.JQFilter != "" {
 		effectiveFormat = output.NormalizeJQOutputFormat(effectiveFormat)
@@ -785,7 +786,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	// Restricted disclosure records query notifications in private provenance
 	// and emits none of them on ordinary output. Full and non-replay execution
 	// retain the existing human route.
-	if notifications := result.GetNotifications(); len(notifications) > 0 && !restrictedReplayOutput(opts) {
+	if notifications := result.GetNotifications(); len(notifications) > 0 && !policy.restrictedReplay {
 		e.PrintNotifications(notifications)
 	}
 
@@ -828,16 +829,36 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	// falls through (handled=false) for an explicit non-JSON encoding or a --jq
 	// transform, so an agent that asked for `-o toon`/`--jq` keeps that shape.
 	if opts.Spill.Enabled() || opts.AgentMode {
-		handled, err := e.trySpill(query, result, records, effectiveFormat, opts)
+		handled, err := e.trySpill(query, result, records, effectiveFormat, opts, policy)
 		if handled || err != nil {
 			return err
 		}
 	}
 
+	// The spill path needs the raw canonical query for stable target hashing. Only
+	// after it falls through do we clone and sanitize the SDK response used by the
+	// remaining printers. This keeps the legacy raw-response shapes while ensuring
+	// restricted output cannot expose rewritten query text or private notifications.
+	result = restrictedReplayDisplayResponse(result, opts, policy)
+
 	// Extract metadata if requested
 	var meta *output.QueryMetadata
+	var metaValue interface{}
 	if len(opts.MetadataFields) > 0 {
-		meta = outputQueryMetadata(result, opts)
+		meta = outputQueryMetadata(result, opts, policy)
+		metaValue = queryMetadataOutputValue(meta, opts, policy)
+		if metaValue == nil {
+			meta = nil
+		}
+	}
+
+	// GetRecords returns nil for the modern {result:{records:[]}} response and
+	// for a result-absent legacy response. Only the two mapped fallthrough guards
+	// require an explicit empty array. Do not normalize the shared records value:
+	// agent output must retain its ordinary non-replay byte shape.
+	mappedGuardRecords := records
+	if policy.restrictedMappedReplay && mappedGuardRecords == nil {
+		mappedGuardRecords = []map[string]interface{}{}
 	}
 
 	printer := output.NewPrinterWithOpts(output.PrinterOptions{
@@ -895,8 +916,8 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		if meta != nil {
 			output.PrintWarning("--metadata is not supported with chart output formats")
 		}
-		if len(records) > 0 {
-			return printer.Print(map[string]interface{}{"records": records})
+		if len(records) > 0 || policy.restrictedMappedReplay {
+			return printer.Print(map[string]interface{}{"records": mappedGuardRecords})
 		}
 		return printer.Print(result)
 
@@ -907,8 +928,8 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		} else if result.Result != nil {
 			out["records"] = result.Result.Records
 		}
-		if meta != nil {
-			out["metadata"] = output.MetadataToMap(meta, opts.MetadataFields)
+		if metaValue != nil {
+			out["metadata"] = metaValue
 		}
 		// Surface the DQL per-column type block (indexRange + mappings) as a
 		// sibling of "records" when the user explicitly asked for it via
@@ -918,6 +939,9 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 			if types := result.GetTypes(); len(types) > 0 {
 				out["types"] = types
 			}
+		}
+		if policy.restrictedMappedReplay && len(records) == 0 {
+			out["records"] = mappedGuardRecords
 		}
 		if len(out) > 0 {
 			return printer.Print(out)
@@ -1015,24 +1039,106 @@ func extractQueryMetadata(result *DQLQueryResponse) *output.QueryMetadata {
 // mistaken for user input. Full disclosure labels all three forms in the
 // replay block; restricted disclosure retains only user-authored query text in
 // ordinary metadata and omits a differing canonical effective form.
-func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *output.QueryMetadata {
+func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions, policy queryOutputPolicy) *output.QueryMetadata {
 	meta := extractQueryMetadata(result)
 	if meta == nil || opts.replay == nil || !opts.replay.Active {
 		return meta
 	}
 	clone := *meta
-	if clone.Query != "" && opts.replay.OriginalQuery != "" {
+	if opts.replay.OriginalQuery != "" && result.GetMetadata() != nil &&
+		(clone.Query != "" || policy.restrictedMappedReplay) {
 		clone.Query = opts.replay.OriginalQuery
 	}
 	if opts.replay.Disclosure == session.ReplayDisclosureRestricted &&
 		clone.CanonicalQuery != "" && clone.CanonicalQuery != opts.replay.OriginalQuery {
 		clone.CanonicalQuery = ""
 	}
+	if policy.restrictedMappedReplay {
+		clone.Contributions = nil
+	}
 	return &clone
+}
+
+// queryMetadataOutputValue removes fields that were suppressed by restricted
+// replay even when an explicit selector would otherwise preserve their zero
+// values. The shared output converter stays unchanged for non-replay callers.
+func queryMetadataOutputValue(meta *output.QueryMetadata, opts DQLExecuteOptions, policy queryOutputPolicy) interface{} {
+	if meta == nil {
+		return nil
+	}
+	value := output.MetadataToMap(meta, opts.MetadataFields)
+	if !policy.restrictedMappedReplay {
+		return value
+	}
+	selected, ok := value.(map[string]interface{})
+	if !ok {
+		return value
+	}
+	if meta.CanonicalQuery == "" {
+		delete(selected, "canonicalQuery")
+	}
+	delete(selected, "contributions")
+	if len(selected) == 0 {
+		return nil
+	}
+	return selected
+}
+
+type queryOutputPolicy struct {
+	restrictedReplay       bool
+	restrictedMappedReplay bool
+}
+
+func queryOutputPolicyFor(opts DQLExecuteOptions) queryOutputPolicy {
+	restricted := restrictedReplayOutput(opts)
+	mapped := restricted && replayInfoHasDavisProblemsMapping(*opts.replay)
+	return queryOutputPolicy{restrictedReplay: restricted, restrictedMappedReplay: mapped}
 }
 
 func restrictedReplayOutput(opts DQLExecuteOptions) bool {
 	return opts.replay != nil && opts.replay.Active && opts.replay.Disclosure == session.ReplayDisclosureRestricted
+}
+
+// restrictedReplayDisplayResponse returns an output-only clone of a restricted
+// replay response. Both metadata locations are cloned because the SDK accessor
+// chooses one while a raw-response printer serializes both.
+func restrictedReplayDisplayResponse(result *DQLQueryResponse, opts DQLExecuteOptions, policy queryOutputPolicy) *DQLQueryResponse {
+	if result == nil || !policy.restrictedReplay {
+		return result
+	}
+	clone := *result
+	clone.Metadata = restrictedReplayDisplayMetadata(result.Metadata, opts, policy)
+	if result.Result != nil {
+		resultClone := *result.Result
+		resultClone.Metadata = restrictedReplayDisplayMetadata(result.Result.Metadata, opts, policy)
+		clone.Result = &resultClone
+	}
+	return &clone
+}
+
+func restrictedReplayDisplayMetadata(meta *DQLMetadata, opts DQLExecuteOptions, policy queryOutputPolicy) *DQLMetadata {
+	if meta == nil {
+		return nil
+	}
+	clone := *meta
+	if meta.Grail == nil {
+		return &clone
+	}
+	grail := *meta.Grail
+	if opts.replay.OriginalQuery != "" && (grail.Query != "" || policy.restrictedMappedReplay) {
+		grail.Query = opts.replay.OriginalQuery
+	}
+	if grail.CanonicalQuery != "" && grail.CanonicalQuery != opts.replay.OriginalQuery {
+		grail.CanonicalQuery = ""
+	}
+	if policy.restrictedMappedReplay {
+		grail.Contributions = nil
+	}
+	// Restricted notifications are routed to private provenance. A raw-response
+	// fallback must not bypass the ordinary notification suppression above.
+	grail.Notifications = nil
+	clone.Grail = &grail
+	return &clone
 }
 
 // CancelQuery sends a best-effort cancellation request for a running query.

@@ -242,21 +242,24 @@ func auditMappedDavisProblemsSource(ast *AST, actual *sourceAnalysis, expected S
 	timestampT := strconv.Quote(mapping.Logical.T.UTC().Format(generatedTimestampLayout))
 	timestampF := strconv.Quote(mapping.Logical.F.UTC().Format(generatedTimestampLayout))
 	if err := auditGeneratedCommand(generated[0], "sort", "expression", []auditTerminal{
-		{"COMMAND_NAME", "sort"}, {"SIMPLE_IDENTIFIER", "timestamp"}, {"PARAMETER_MODIFIER", "desc"},
+		exactAuditTerminal("COMMAND_NAME", "sort"), exactAuditTerminal("SIMPLE_IDENTIFIER", "timestamp"),
+		exactAuditTerminal("PARAMETER_MODIFIER", "desc"),
 	}); err != nil {
 		return nil, err
 	}
 	if err := auditGeneratedCommand(generated[1], "dedup", "expression", []auditTerminal{
-		{"COMMAND_NAME", "dedup"}, {"SIMPLE_IDENTIFIER", "event.id"},
+		exactAuditTerminal("COMMAND_NAME", "dedup"), exactAuditTerminal("SIMPLE_IDENTIFIER", "event.id"),
 	}); err != nil {
 		return nil, err
 	}
 	if err := auditGeneratedCommand(generated[2], "filter", "condition", []auditTerminal{
-		{"COMMAND_NAME", "filter"}, {"SIMPLE_IDENTIFIER", "event.start"}, {"OPERATOR", "<"},
-		{"FUNCTION_NAME", "toTimestamp"}, {"STRING", timestampT}, {"OPERATOR", "AND"},
-		{"FUNCTION_NAME", "coalesce"}, {"SIMPLE_IDENTIFIER", "event.end"},
-		{"FUNCTION_NAME", "toTimestamp"}, {"STRING", timestampT}, {"OPERATOR", ">="},
-		{"FUNCTION_NAME", "toTimestamp"}, {"STRING", timestampF},
+		exactAuditTerminal("COMMAND_NAME", "filter"), exactAuditTerminal("SIMPLE_IDENTIFIER", "event.start"),
+		exactAuditTerminal("OPERATOR", "<"), exactAuditTerminal("FUNCTION_NAME", "toTimestamp"),
+		timestampAuditTerminal(timestampT), exactAuditTerminal("OPERATOR", "AND"),
+		exactAuditTerminal("FUNCTION_NAME", "coalesce"), exactAuditTerminal("SIMPLE_IDENTIFIER", "event.end"),
+		exactAuditTerminal("FUNCTION_NAME", "toTimestamp"), timestampAuditTerminal(timestampT),
+		exactAuditTerminal("OPERATOR", ">="), exactAuditTerminal("FUNCTION_NAME", "toTimestamp"),
+		timestampAuditTerminal(timestampF),
 	}); err != nil {
 		return nil, err
 	}
@@ -273,8 +276,17 @@ func sameDavisCandidate(left, right DavisProblemsMappingCandidate) bool {
 }
 
 type auditTerminal struct {
-	Role      string
-	Canonical string
+	Role          string
+	Canonical     string
+	AlternateRole string
+}
+
+func exactAuditTerminal(role, canonical string) auditTerminal {
+	return auditTerminal{Role: role, Canonical: canonical}
+}
+
+func timestampAuditTerminal(canonical string) auditTerminal {
+	return auditTerminal{Role: "STRING", Canonical: canonical, AlternateRole: "TIMESTAMP_VALUE"}
 }
 
 func auditGeneratedCommand(command *Node, name, parameter string, expected []auditTerminal) error {
@@ -302,7 +314,9 @@ func auditGeneratedCommand(command *Node, name, parameter string, expected []aud
 		return auditError(command, fmt.Sprintf("the generated %s stage has unexpected executable tokens", name))
 	}
 	for index := range expected {
-		if actual[index] != expected[index] {
+		roleMatches := actual[index].Role == expected[index].Role ||
+			expected[index].AlternateRole != "" && actual[index].Role == expected[index].AlternateRole
+		if !roleMatches || actual[index].Canonical != expected[index].Canonical {
 			return auditError(command, fmt.Sprintf("the generated %s stage changed token %d", name, index))
 		}
 	}
@@ -480,20 +494,8 @@ func isNormalizedVirtualNow(node *Node, virtualNow time.Time) bool {
 	case "now":
 		return true
 	case "totimestamp":
-		parameters, err := collectDirectParameters(node)
-		if err != nil || len(parameters) != 1 || parameters[0].key != "value" {
-			return false
-		}
-		value, err := parameterValue(parameters[0].node)
-		if err != nil || value.Kind != NodeTerminal || value.Role != "STRING" {
-			return false
-		}
-		literal, err := strconv.Unquote(value.Canonical)
-		if err != nil {
-			return false
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, literal)
-		return err == nil && parsed.Equal(virtualNow)
+		_, parsed, matched, err := parseToTimestampLiteral(node)
+		return err == nil && matched && parsed.Equal(virtualNow)
 	default:
 		return false
 	}

@@ -8,14 +8,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dynatrace-oss/dtctl/cmd/testutil"
 	pkgclient "github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	execreplay "github.com/dynatrace-oss/dtctl/pkg/exec/replay"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
@@ -41,15 +44,17 @@ type replayCLIQueryAPI struct {
 	inspectionStatus int
 	coverageStatus   int
 	coverageOldest   string
+	remoteError      string
 	executeResponse  *sdkquery.Response
 
-	mu        sync.Mutex
-	parses    int
-	executes  int
-	inspects  int
-	coverages int
-	verifies  int
-	queries   []string
+	mu                     sync.Mutex
+	parses                 int
+	executes               int
+	inspects               int
+	coverages              int
+	verifies               int
+	queries                []string
+	requestedContributions []bool
 }
 
 func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +130,8 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.executes++
 		a.queries = append(a.queries, request.Query)
+		a.requestedContributions = append(a.requestedContributions,
+			request.IncludeContributions != nil && *request.IncludeContributions)
 		shouldFail := a.executeFailures > 0
 		if shouldFail {
 			a.executeFailures--
@@ -137,7 +144,13 @@ func (a *replayCLIQueryAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
+			message := a.remoteError
+			if message == "" {
+				message = "query request failed"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"message": "query failed", "details": map[string]any{"errorType": "REMOTE_ERROR", "errorMessage": message},
+			}})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -175,6 +188,12 @@ func (a *replayCLIQueryAPI) executedQueries() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.queries...)
+}
+
+func (a *replayCLIQueryAPI) contributionRequests() []bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]bool(nil), a.requestedContributions...)
 }
 
 func (a *replayCLIQueryAPI) verifyCount() int {
@@ -271,6 +290,34 @@ func setReplayQueryFlags(t *testing.T, live bool, interval time.Duration, explai
 	_ = queryCmd.Flags().Set("explain-replay", map[bool]string{true: "true", false: "false"}[explain])
 	_ = queryCmd.Flags().Set("file", "")
 	_ = queryCmd.Flags().Set("dql", "")
+}
+
+func setReplayQueryMetadataFlag(t *testing.T, value string) {
+	t.Helper()
+	flag := queryCmd.Flags().Lookup("metadata")
+	previousValue, previousChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(previousValue)
+		flag.Changed = previousChanged
+	})
+	if err := flag.Value.Set(value); err != nil {
+		t.Fatal(err)
+	}
+	flag.Changed = true
+}
+
+func setReplayQueryContributionsFlag(t *testing.T, value bool) {
+	t.Helper()
+	flag := queryCmd.Flags().Lookup("include-contributions")
+	previousValue, previousChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(previousValue)
+		flag.Changed = previousChanged
+	})
+	if err := flag.Value.Set(map[bool]string{true: "true", false: "false"}[value]); err != nil {
+		t.Fatal(err)
+	}
+	flag.Changed = true
 }
 
 func setReplayWaitQueryFlags(t *testing.T, interval time.Duration) {
@@ -492,18 +539,119 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		}
 	})
 
-	t.Run("restricted view keeps generic rejection and never probes", func(t *testing.T) {
+	t.Run("restricted proven coverage executes exact mapping with private routing", func(t *testing.T) {
 		api := newAPI(t, "2026-06-14T03:00:00Z")
 		server := httptest.NewServer(api)
 		defer server.Close()
-		newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		var runErr error
+		stdout, stderr := captureReplayQueryStreams(t, func() {
+			runErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		})
+		if runErr != nil || stdout == "" || stderr != "" || strings.Contains(stdout+stderr, "dt.davis.problems.snapshots") {
+			t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 1 || api.coverageCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+		queries := api.executedQueries()
+		if len(queries) != 1 || queries[0] != replayCLIDavisEffective {
+			t.Fatalf("executed queries = %q", queries)
+		}
+		provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+		if err != nil || !strings.Contains(string(provenance), "dt.davis.problems.snapshots") ||
+			!strings.Contains(string(provenance), `"logical_view_range"`) ||
+			!strings.Contains(string(provenance), `"physical_snapshot_range"`) ||
+			!strings.Contains(string(provenance), `"davis_mappings_audited":true`) {
+			t.Fatalf("restricted mapped provenance=%s err=%v", provenance, err)
+		}
+	})
+
+	t.Run("restricted insufficient coverage is generic and prevents effective parse", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00.000000001Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
 		setReplayQueryFlags(t, false, time.Minute, false)
 		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
 		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
 			t.Fatalf("error = %v", err)
 		}
+		var rendered strings.Builder
+		if printErr := output.PrintError(&rendered, errorToDetail(err)); printErr != nil {
+			t.Fatal(printErr)
+		}
+		testutil.AssertGolden(t, "replay/error-restricted-davis-coverage", rendered.String())
+		if parses, executes := api.counts(); parses != 1 || executes != 0 || api.coverageCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+		provenance, readErr := os.ReadFile(fixture.state.ProvenancePath)
+		if readErr != nil || !strings.Contains(string(provenance), execreplay.DavisCoverageInsufficientMessage) ||
+			!strings.Contains(string(provenance), `"status":"insufficient"`) {
+			t.Fatalf("coverage provenance=%s err=%v", provenance, readErr)
+		}
+	})
+
+	t.Run("restricted mapped remote query text is generic and private", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		api.executeFailures = 1
+		api.executeStatus = http.StatusBadRequest
+		api.remoteError = `generated source dt.davis.problems.snapshots at toTimestamp("2026-06-14T03:00:00.000000000Z")`
+		server := httptest.NewServer(api)
+		defer server.Close()
+		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+		if err == nil || err.Error() != "The query failed. No result was returned." || strings.Contains(err.Error(), "dt.davis.problems.snapshots") {
+			t.Fatalf("error = %v", err)
+		}
+		var rendered strings.Builder
+		if printErr := output.PrintError(&rendered, errorToDetail(err)); printErr != nil {
+			t.Fatal(printErr)
+		}
+		testutil.AssertGolden(t, "replay/error-restricted-remote", rendered.String())
+		if strings.Contains(rendered.String(), api.remoteError) ||
+			strings.Contains(rendered.String(), execreplay.DavisProblemsSnapshotTable) ||
+			strings.Contains(rendered.String(), `toTimestamp`) {
+			t.Fatalf("ordinary error output exposed mapped text: %s", rendered.String())
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 1 || api.coverageCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+		provenance, readErr := os.ReadFile(fixture.state.ProvenancePath)
+		if readErr != nil || !strings.Contains(string(provenance), "dt.davis.problems.snapshots") {
+			t.Fatalf("remote provenance=%s err=%v", provenance, readErr)
+		}
+	})
+
+	t.Run("restricted events current view keeps generic baseline and makes no probe", func(t *testing.T) {
+		original := strings.Replace(replayCLIDavisOriginal, execreplay.DavisProblemsView, "dt.davis.events", 1)
+		originalBody := replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/original/parse.json")
+		originalBody = json.RawMessage(strings.Replace(
+			string(originalBody), `"canonicalString": "dt.davis.problems"`, `"canonicalString": "dt.davis.events"`, 1,
+		))
+		api := &replayCLIQueryAPI{t: t, originalQuery: original, originalBody: originalBody}
+		server := httptest.NewServer(api)
+		defer server.Close()
+		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		setReplayQueryFlags(t, false, time.Minute, false)
+		err := queryCmd.RunE(queryCmd, []string{original})
+		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+			t.Fatalf("error = %v", err)
+		}
+		var rendered strings.Builder
+		if printErr := output.PrintError(&rendered, errorToDetail(err)); printErr != nil {
+			t.Fatal(printErr)
+		}
+		testutil.AssertGolden(t, "replay/error-restricted-davis-current-view", rendered.String())
 		if parses, executes := api.counts(); parses != 1 || executes != 0 || api.coverageCount() != 0 {
 			t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+		}
+		provenance, readErr := os.ReadFile(fixture.state.ProvenancePath)
+		if readErr != nil || !strings.Contains(string(provenance), "dt.davis.events.snapshots") ||
+			!strings.Contains(string(provenance), "dedup event.id") {
+			t.Fatalf("events provenance=%s err=%v", provenance, readErr)
 		}
 	})
 
@@ -542,6 +690,31 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		}
 		if parses, executes := api.counts(); parses != 2 || executes != 0 || api.coverageCount() != 0 || api.verifyCount() != 1 {
 			t.Fatalf("parse=%d coverage=%d execute=%d verify=%d", parses, api.coverageCount(), executes, api.verifyCount())
+		}
+	})
+
+	t.Run("restricted verify derives and audits with private detail", func(t *testing.T) {
+		api := newAPI(t, "2026-06-14T03:00:00Z")
+		server := httptest.NewServer(api)
+		defer server.Close()
+		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
+		setReplayVerifyQueryFlags(t)
+		var runErr error
+		stdout, stderr := captureReplayQueryStreams(t, func() {
+			runErr = verifyQueryCmd.RunE(verifyQueryCmd, []string{replayCLIDavisOriginal})
+		})
+		if runErr != nil || strings.Contains(strings.ToLower(stdout+stderr), "replay") ||
+			strings.Contains(stdout+stderr, replayCLIDavisEffective) || strings.Contains(stdout+stderr, execreplay.DavisCoverageNotVerifiedMessage) {
+			t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+		}
+		if parses, executes := api.counts(); parses != 2 || executes != 0 || api.coverageCount() != 0 || api.verifyCount() != 1 {
+			t.Fatalf("parse=%d coverage=%d execute=%d verify=%d", parses, api.coverageCount(), executes, api.verifyCount())
+		}
+		provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+		if err != nil || !strings.Contains(string(provenance), "dt.davis.problems.snapshots") ||
+			!strings.Contains(string(provenance), `"status":"not_checked"`) ||
+			!strings.Contains(string(provenance), `"davis_mappings_audited":true`) {
+			t.Fatalf("restricted verify provenance=%s err=%v", provenance, err)
 		}
 	})
 }
@@ -823,14 +996,18 @@ func TestReplayQueryCLIRestrictedAndNonReplayAgentResultsAreByteIdentical(t *tes
 			Records: []map[string]interface{}{returned},
 			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
 				Query: replayCLIRecordOriginal, CanonicalQuery: replayCLIRecordOriginal,
+				Contributions: &sdkquery.Contributions{Buckets: []sdkquery.BucketContribution{{
+					Name: "synthetic_logs", Table: "logs", ScannedBytes: 2048, MatchedRecordsRatio: 1,
+				}}},
 			}},
 		}},
 	}
 	server := httptest.NewServer(api)
 	defer server.Close()
-	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
 		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
 	setReplayQueryFlags(t, false, time.Minute, false)
+	setReplayQueryContributionsFlag(t, true)
 	agentMode = true
 	var replayErr error
 	replayOutput := captureStdout(t, func() { replayErr = queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal}) })
@@ -862,8 +1039,443 @@ func TestReplayQueryCLIRestrictedAndNonReplayAgentResultsAreByteIdentical(t *tes
 	if !strings.Contains(replayOutput, string(returnedJSON)) {
 		t.Fatalf("returned disclosure-word fixture was not preserved byte-for-byte: envelope=%s record=%s", replayOutput, returnedJSON)
 	}
+	if !strings.Contains(replayOutput, `"contributions"`) || !strings.Contains(replayOutput, `"table":"logs"`) {
+		t.Fatalf("restricted non-mapped contributions were not preserved: %s", replayOutput)
+	}
+	if requests := api.contributionRequests(); len(requests) != 2 || !requests[0] || !requests[1] {
+		t.Fatalf("contribution requests = %v", requests)
+	}
+	provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+	if err != nil || strings.Contains(string(provenance), `"grail_contributions"`) {
+		t.Fatalf("restricted non-mapped provenance=%s err=%v", provenance, err)
+	}
 	if parses, executes := api.counts(); parses != 2 || executes != 2 {
 		t.Fatalf("parse=%d execute=%d, want replay original+effective parses and one execution on each path", parses, executes)
+	}
+}
+
+func TestReplayQueryCLIMappedRestrictedAndNonReplayAgentResultsAreByteIdentical(t *testing.T) {
+	returned := map[string]interface{}{
+		"replay": "replay", "virtual": "virtual", "session": "session",
+		"clock": "clock", "interval": "interval", "effective": "effective",
+	}
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIDavisOriginal, coverageOldest: "2026-06-14T03:00:00Z",
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/original/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/effective/parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{returned},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				// The response is shared by the mapped and plain executions. It models
+				// the plain baseline, so canonical metadata must match the original here.
+				// TestReplayQueryCLIMappedRestrictedMetadataContract covers the rewritten form.
+				Query: replayCLIDavisOriginal, CanonicalQuery: replayCLIDavisOriginal,
+			}},
+		}},
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-06-14T02:00:00Z"), mustReplayCLITime("2026-06-14T10:00:00Z"), mustReplayCLITime("2026-06-14T12:00:00Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var replayErr error
+	replayOutput, replayStderr := captureReplayQueryStreams(t, func() {
+		replayErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+	})
+	if replayErr != nil || replayStderr != "" {
+		t.Fatalf("stdout=%q stderr=%q err=%v", replayOutput, replayStderr, replayErr)
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	cfg := replayCLIConfig(nil)
+	cfg.Contexts[0].Context.Environment = server.URL
+	cfg.Tokens = []config.NamedToken{{Name: "synthetic-reader", Token: "dt0c01.synthetic"}}
+	writeReplayCLIConfig(t, configPath, cfg)
+	configureReplayCLI(t, configPath, filepath.Join(dir, "state"), &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var plainErr error
+	plainOutput := captureStdout(t, func() { plainErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal}) })
+	if plainErr != nil {
+		t.Fatal(plainErr)
+	}
+	if replayOutput != plainOutput {
+		t.Fatalf("mapped restricted and non-replay agent outputs differ:\nrestricted=%s\nplain=%s", replayOutput, plainOutput)
+	}
+	testutil.AssertGolden(t, "replay/agent-restricted-davis-mapping", replayOutput)
+	var generated map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(replayOutput), &generated); err != nil {
+		t.Fatal(err)
+	}
+	delete(generated, "result")
+	generatedJSON, err := json.Marshal(generated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoRestrictedGeneratedWords(t, "mapped agent envelope outside result", string(generatedJSON))
+	if _, exists := generated["replay"]; exists {
+		t.Fatalf("mapped restricted envelope exposed replay metadata: %s", replayOutput)
+	}
+	provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+	if err != nil || !strings.Contains(string(provenance), "dt.davis.problems.snapshots") ||
+		!strings.Contains(string(provenance), `"davis_mappings_audited":true`) {
+		t.Fatalf("mapped provenance=%s err=%v", provenance, err)
+	}
+	if parses, executes := api.counts(); parses != 2 || executes != 2 || api.coverageCount() != 1 {
+		t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+	}
+}
+
+func TestReplayQueryCLIMappedRestrictedAgentContributionsArePrivateException(t *testing.T) {
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIDavisOriginal, coverageOldest: "2026-06-14T03:00:00Z",
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/original/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/effective/parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{{"capture_marker": "synthetic"}},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				Query: replayCLIDavisOriginal, CanonicalQuery: replayCLIDavisOriginal,
+				Contributions: &sdkquery.Contributions{Buckets: []sdkquery.BucketContribution{{
+					Name: "synthetic_bucket", Table: execreplay.DavisProblemsSnapshotTable,
+					ScannedBytes: 4096, MatchedRecordsRatio: 0.75,
+				}}},
+			}},
+		}},
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-06-14T02:00:00Z"), mustReplayCLITime("2026-06-14T10:00:00Z"), mustReplayCLITime("2026-06-14T12:00:00Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	setReplayQueryContributionsFlag(t, true)
+	agentMode = true
+	var replayErr error
+	replayOutput := captureStdout(t, func() { replayErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal}) })
+	if replayErr != nil {
+		t.Fatal(replayErr)
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	cfg := replayCLIConfig(nil)
+	cfg.Contexts[0].Context.Environment = server.URL
+	cfg.Tokens = []config.NamedToken{{Name: "synthetic-reader", Token: "dt0c01.synthetic"}}
+	writeReplayCLIConfig(t, configPath, cfg)
+	configureReplayCLI(t, configPath, filepath.Join(dir, "state"), &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var plainErr error
+	plainOutput := captureStdout(t, func() { plainErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal}) })
+	if plainErr != nil {
+		t.Fatal(plainErr)
+	}
+
+	decode := func(name, raw string) map[string]interface{} {
+		t.Helper()
+		var envelope map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+			t.Fatalf("decode %s envelope: %v", name, err)
+		}
+		return envelope
+	}
+	restrictedEnvelope, plainEnvelope := decode("restricted", replayOutput), decode("plain", plainOutput)
+	restrictedMetadata, ok := restrictedEnvelope["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("restricted metadata = %#v", restrictedEnvelope["metadata"])
+	}
+	if _, exists := restrictedMetadata["contributions"]; exists {
+		t.Fatalf("mapped restricted contributions reached ordinary output: %s", replayOutput)
+	}
+	plainMetadata, ok := plainEnvelope["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("plain metadata = %#v", plainEnvelope["metadata"])
+	}
+	plainContributions, exists := plainMetadata["contributions"]
+	if !exists {
+		t.Fatalf("plain baseline omitted contributions: %s", plainOutput)
+	}
+	contributionJSON, err := json.Marshal(plainContributions)
+	if err != nil || !strings.Contains(string(contributionJSON), execreplay.DavisProblemsSnapshotTable) {
+		t.Fatalf("plain contributions=%s err=%v", contributionJSON, err)
+	}
+	delete(plainMetadata, "contributions")
+	if !reflect.DeepEqual(restrictedEnvelope, plainEnvelope) {
+		t.Fatalf("mapped restricted envelope differs beyond private contributions:\nrestricted=%s\nplain=%s", replayOutput, plainOutput)
+	}
+	if requests := api.contributionRequests(); len(requests) != 2 || !requests[0] || !requests[1] {
+		t.Fatalf("contribution requests = %v", requests)
+	}
+}
+
+func TestReplayQueryCLIDirectSnapshotRestrictedAndNonReplayAgentResultsAreByteIdentical(t *testing.T) {
+	tests := []struct {
+		name, table, fixtureDir, original, effective string
+	}{
+		{
+			name: "problem snapshots", table: execreplay.DavisProblemsSnapshotTable, fixtureDir: "davis-problems-snapshots",
+			original:  `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-08-03T09:55:03Z"), to:toTimestamp("2026-08-10T10:56:03Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`,
+			effective: `fetch dt.davis.problems.snapshots, from:toTimestamp("2026-08-03T10:55:03.000000000Z"), to:toTimestamp("2026-08-10T10:55:03.000000000Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`,
+		},
+		{
+			name: "event snapshots", table: "dt.davis.events.snapshots", fixtureDir: "davis-events-snapshots",
+			original:  `fetch dt.davis.events.snapshots, from:toTimestamp("2026-08-03T09:55:03Z"), to:toTimestamp("2026-08-10T10:56:03Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`,
+			effective: `fetch dt.davis.events.snapshots, from:toTimestamp("2026-08-03T10:55:03.000000000Z"), to:toTimestamp("2026-08-10T10:55:03.000000000Z") | filter isNotNull(timestamp) | sort timestamp desc | fields observed_timestamp=timestamp | limit 1`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testReplayQueryCLIDirectSnapshotRestrictedAndNonReplayAgentResultsAreByteIdentical(
+				t, test.table, test.fixtureDir, test.original, test.effective,
+			)
+		})
+	}
+}
+
+func testReplayQueryCLIDirectSnapshotRestrictedAndNonReplayAgentResultsAreByteIdentical(
+	t *testing.T, snapshotTable, fixtureDir, original, effective string,
+) {
+	t.Helper()
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: original,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/"+fixtureDir+"/00-discovery/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/"+fixtureDir+"/00-discovery/validation-parse.json"),
+		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+			Records: []map[string]interface{}{{"capture_marker": "synthetic"}},
+			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				Query: original, CanonicalQuery: original,
+				Contributions: &sdkquery.Contributions{Buckets: []sdkquery.BucketContribution{{
+					Name: "synthetic_snapshots", Table: snapshotTable,
+					ScannedBytes: 1024, MatchedRecordsRatio: 1,
+				}}},
+			}},
+		}},
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-03T10:55:03Z"), mustReplayCLITime("2026-08-10T10:55:03Z"), mustReplayCLITime("2026-08-11T10:55:03Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	setReplayQueryContributionsFlag(t, true)
+	agentMode = true
+	var replayErr error
+	replayOutput, replayStderr := captureReplayQueryStreams(t, func() {
+		replayErr = queryCmd.RunE(queryCmd, []string{original})
+	})
+	if replayErr != nil || replayStderr != "" {
+		t.Fatalf("stdout=%q stderr=%q err=%v", replayOutput, replayStderr, replayErr)
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	cfg := replayCLIConfig(nil)
+	cfg.Contexts[0].Context.Environment = server.URL
+	cfg.Tokens = []config.NamedToken{{Name: "synthetic-reader", Token: "dt0c01.synthetic"}}
+	writeReplayCLIConfig(t, configPath, cfg)
+	configureReplayCLI(t, configPath, filepath.Join(dir, "state"), &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
+	setReplayQueryFlags(t, false, time.Minute, false)
+	agentMode = true
+	var plainErr error
+	plainOutput := captureStdout(t, func() { plainErr = queryCmd.RunE(queryCmd, []string{original}) })
+	if plainErr != nil {
+		t.Fatal(plainErr)
+	}
+	if replayOutput != plainOutput {
+		t.Fatalf("direct-snapshot restricted and non-replay agent outputs differ:\nrestricted=%s\nplain=%s", replayOutput, plainOutput)
+	}
+	if strings.Contains(replayOutput, effective) {
+		t.Fatalf("direct-snapshot restricted output exposed rewritten query: %s", replayOutput)
+	}
+	if !strings.Contains(replayOutput, `"contributions"`) || !strings.Contains(replayOutput, snapshotTable) {
+		t.Fatalf("direct-snapshot restricted contributions were not preserved: %s", replayOutput)
+	}
+	if requests := api.contributionRequests(); len(requests) != 2 || !requests[0] || !requests[1] {
+		t.Fatalf("direct-snapshot contribution requests = %v", requests)
+	}
+	provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+	if err != nil || !strings.Contains(string(provenance), snapshotTable) ||
+		!strings.Contains(string(provenance), `"effective_dql"`) || strings.Contains(string(provenance), `"grail_contributions"`) {
+		t.Fatalf("direct-snapshot provenance=%s err=%v", provenance, err)
+	}
+	if parses, executes := api.counts(); parses != 2 || executes != 2 || api.coverageCount() != 0 {
+		t.Fatalf("parse=%d coverage=%d execute=%d", parses, api.coverageCount(), executes)
+	}
+}
+
+func TestReplayQueryCLIMappedAnalysisTimeframeLiveFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "fixtures", "replay", "mapped-davis-live-metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capture struct {
+		Evidence struct {
+			Source       string   `json:"source"`
+			Sanitization []string `json:"sanitization"`
+		} `json:"evidence"`
+		Metadata sdkquery.GrailMetadata `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &capture); err != nil {
+		t.Fatal(err)
+	}
+	if capture.Evidence.Source != "metadata contract verified against a live observation; all committed query text and timestamp values are synthetic" ||
+		len(capture.Evidence.Sanitization) != 3 || strings.Contains(string(raw), `"records"`) {
+		t.Fatalf("contract evidence = %#v", capture.Evidence)
+	}
+	const (
+		originalStart = "2027-02-03T09:17:43.000Z"
+		logicalStart  = "2027-02-03T09:17:43.000000000Z"
+		physicalStart = "2027-02-03T07:52:11.000000000Z"
+		upperBound    = "2027-02-03T10:41:37.000000000Z"
+	)
+	timeframe := capture.Metadata.AnalysisTimeframe
+	if timeframe == nil || timeframe.Start != physicalStart || timeframe.End != upperBound ||
+		timeframe.Start == logicalStart {
+		t.Fatalf("mapped analysisTimeframe = %#v, want physical [%s,%s), not logical [%s,%s)",
+			timeframe, physicalStart, upperBound, logicalStart, upperBound)
+	}
+	if !strings.Contains(capture.Metadata.Query, `fetch dt.davis.problems,`) ||
+		!strings.Contains(capture.Metadata.Query, originalStart) ||
+		strings.Contains(capture.Metadata.Query, execreplay.DavisProblemsSnapshotTable) {
+		t.Fatalf("contract original query = %q", capture.Metadata.Query)
+	}
+	if !strings.Contains(capture.Metadata.CanonicalQuery, execreplay.DavisProblemsSnapshotTable) ||
+		!strings.Contains(capture.Metadata.CanonicalQuery, physicalStart) ||
+		!strings.Contains(capture.Metadata.CanonicalQuery, logicalStart) {
+		t.Fatalf("contract effective canonical query = %q", capture.Metadata.CanonicalQuery)
+	}
+}
+
+func TestReplayQueryCLIMappedRestrictedMetadataContract(t *testing.T) {
+	for _, mode := range []struct {
+		name            string
+		agent           bool
+		format          string
+		metadata        string
+		returnedQuery   string
+		expectTimeframe bool
+	}{
+		{name: "agent-all", agent: true, returnedQuery: replayCLIDavisEffective, expectTimeframe: true},
+		{name: "json-all", format: "json", metadata: "all", returnedQuery: replayCLIDavisEffective, expectTimeframe: true},
+		{name: "agent-explicit", agent: true, metadata: "query,canonicalQuery,contributions"},
+		{name: "json-explicit", format: "json", metadata: "query,canonicalQuery,contributions"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			api := &replayCLIQueryAPI{
+				t: t, originalQuery: replayCLIDavisOriginal, coverageOldest: "2026-06-14T03:00:00Z",
+				originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/original/parse.json"),
+				validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/davis/problems-view-mapping/effective/parse.json"),
+				executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
+					Records: []map[string]interface{}{{"capture_marker": "synthetic"}},
+					Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+						Query: mode.returnedQuery, CanonicalQuery: replayCLIDavisEffective,
+						// The pinned live fixture separately establishes that Grail reports
+						// physical [W,T); this synthetic response tests ordinary-output routing.
+						AnalysisTimeframe: &sdkquery.AnalysisTimeframe{Start: "2026-06-14T03:00:00Z", End: "2026-06-14T10:00:00Z"},
+						Contributions: &sdkquery.Contributions{Buckets: []sdkquery.BucketContribution{{
+							Name: "synthetic_bucket", Table: execreplay.DavisProblemsSnapshotTable,
+							ScannedBytes: 4096, MatchedRecordsRatio: 0.75,
+						}}},
+					}},
+				}},
+			}
+			server := httptest.NewServer(api)
+			defer server.Close()
+			fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+				mustReplayCLITime("2026-06-14T02:00:00Z"), mustReplayCLITime("2026-06-14T10:00:00Z"), mustReplayCLITime("2026-06-14T12:00:00Z"))
+			setReplayQueryFlags(t, false, time.Minute, false)
+			setReplayQueryContributionsFlag(t, true)
+			agentMode, outputFormat = mode.agent, mode.format
+			if mode.metadata != "" {
+				setReplayQueryMetadataFlag(t, mode.metadata)
+			}
+			var runErr error
+			stdout, stderr := captureReplayQueryStreams(t, func() {
+				runErr = queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
+			})
+			if runErr != nil || stderr != "" {
+				t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+			}
+			if mode.name == "agent-all" {
+				testutil.AssertGolden(t, "replay/agent-restricted-davis-mapping-canonical-suppressed", stdout)
+			}
+			var envelope struct {
+				Metadata map[string]json.RawMessage `json:"metadata"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+				t.Fatalf("decode output %q: %v", stdout, err)
+			}
+			var query string
+			if err := json.Unmarshal(envelope.Metadata["query"], &query); err != nil || query != replayCLIDavisOriginal {
+				t.Fatalf("ordinary metadata query=%q err=%v metadata=%s", query, err, envelope.Metadata["query"])
+			}
+			if _, exists := envelope.Metadata["canonicalQuery"]; exists {
+				t.Fatalf("ordinary metadata retained mapped canonical query: %s", stdout)
+			}
+			if _, exists := envelope.Metadata["contributions"]; exists {
+				t.Fatalf("ordinary metadata retained mapped Grail contributions: %s", stdout)
+			}
+			if mode.expectTimeframe {
+				var timeframe sdkquery.AnalysisTimeframe
+				if err := json.Unmarshal(envelope.Metadata["analysisTimeframe"], &timeframe); err != nil ||
+					timeframe.Start != "2026-06-14T03:00:00Z" || timeframe.End != "2026-06-14T10:00:00Z" {
+					t.Fatalf("analysisTimeframe=%#v err=%v", timeframe, err)
+				}
+			} else if _, exists := envelope.Metadata["analysisTimeframe"]; exists || len(envelope.Metadata) != 1 {
+				t.Fatalf("explicit query metadata selected unexpected fields: %s", stdout)
+			}
+			generatedMetadata := make(map[string]json.RawMessage, len(envelope.Metadata))
+			for key, value := range envelope.Metadata {
+				generatedMetadata[key] = value
+			}
+			delete(generatedMetadata, "analysisTimeframe")
+			generatedMetadataBytes, err := json.Marshal(generatedMetadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoRestrictedGeneratedWords(t, "mapped metadata excluding analysisTimeframe", string(generatedMetadataBytes))
+			for _, leaked := range []string{"dt.davis.problems.snapshots", "2026-06-14T03:00:00.000000000Z", "sort timestamp desc", "dedup event.id", "coalesce(event.end"} {
+				if strings.Contains(string(generatedMetadataBytes), leaked) {
+					t.Fatalf("ordinary metadata outside analysisTimeframe contains mapped fragment %q: %s", leaked, generatedMetadataBytes)
+				}
+			}
+			provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+			if err != nil {
+				t.Fatalf("canonical mapped provenance=%s err=%v", provenance, err)
+			}
+			var executionRecord *session.ReplayProvenanceRecord
+			for _, line := range strings.Split(strings.TrimSpace(string(provenance)), "\n") {
+				var record session.ReplayProvenanceRecord
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("decode mapped provenance line %q: %v", line, err)
+				}
+				if record.Event == "query_execution" {
+					executionRecord = &record
+				}
+			}
+			if executionRecord == nil || executionRecord.Fields["grail_canonical_effective_dql"] != replayCLIDavisEffective {
+				t.Fatalf("mapped execution provenance = %#v", executionRecord)
+			}
+			contributions, ok := executionRecord.Fields["grail_contributions"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("mapped execution contributions = %#v", executionRecord.Fields["grail_contributions"])
+			}
+			buckets, ok := contributions["buckets"].([]interface{})
+			if !ok || len(buckets) != 1 {
+				t.Fatalf("mapped execution contribution buckets = %#v", contributions["buckets"])
+			}
+			bucket, ok := buckets[0].(map[string]interface{})
+			if !ok || bucket["name"] != "synthetic_bucket" || bucket["table"] != execreplay.DavisProblemsSnapshotTable ||
+				bucket["scanned_bytes"] != float64(4096) || bucket["matched_records_ratio"] != 0.75 {
+				t.Fatalf("mapped execution contribution bucket = %#v", buckets[0])
+			}
+			if requests := api.contributionRequests(); len(requests) != 1 || !requests[0] {
+				t.Fatalf("main execute contribution requests = %v", requests)
+			}
+			if queries := api.executedQueries(); len(queries) != 1 || queries[0] != replayCLIDavisEffective {
+				t.Fatalf("main execute queries = %#v", queries)
+			}
+		})
 	}
 }
 
@@ -1011,7 +1623,7 @@ func replayCLIQueryDynamicValidation(t *testing.T, raw json.RawMessage, query st
 	}
 	seen := 0
 	replayCLIQueryWalkNode(&root, func(node *sdkquery.DQLNode) {
-		if node.Terminal == nil || node.Terminal.Type != "STRING" || seen >= 2 {
+		if !replayCLIQueryTimestampTerminal(node) || seen >= 2 {
 			return
 		}
 		if seen == 0 {
@@ -1021,11 +1633,19 @@ func replayCLIQueryDynamicValidation(t *testing.T, raw json.RawMessage, query st
 		}
 		seen++
 	})
+	if seen != 2 {
+		t.Fatalf("validation fixture exposed %d source-boundary timestamps, want 2", seen)
+	}
 	encoded, err := json.Marshal(&root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func replayCLIQueryTimestampTerminal(node *sdkquery.DQLNode) bool {
+	return node != nil && node.Terminal != nil &&
+		(node.Terminal.Type == "STRING" || node.Terminal.Type == "TIMESTAMP_VALUE")
 }
 
 func replayCLIQuerySourceBoundaries(query string) (string, string, bool) {

@@ -322,7 +322,7 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 			}
 			mapping.Coverage.Verified = true
 		default:
-			return compiled, replayError(ErrorAudit, source.node, davisProblemsView, "An eligible Davis problems view reached compilation without an explicit mapping mode.", "Use full-disclosure execution or probe-free inspection mode.")
+			return compiled, replayError(ErrorAudit, source.node, davisProblemsView, "An eligible Davis problems view reached compilation without an explicit mapping mode.", "Use execution or probe-free inspection mode.")
 		}
 		compiled.DavisMapping = mapping
 		physicalInterval := physical.interval()

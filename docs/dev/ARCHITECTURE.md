@@ -997,6 +997,18 @@ DQL, and an audit plan. The executor orchestrates state reads, parse calls,
 execution, result validation, provenance, and guarded completion. The SDK Query
 API remains a typed HTTP wrapper with no replay policy.
 
+An exact `fetch dt.davis.problems` follows the same compiler mapping, bounded
+coverage gate, semantic audit, and execution path in full and restricted
+disclosure. Full disclosure routes mapping notifications and details to
+ordinary output. Restricted disclosure routes the mapping notification, clamp
+state, sanitized coverage result, and effective-query facts only to private
+provenance. Its coverage failure returns
+`The query could not be prepared. It was not executed.` Automatic
+`dt.davis.events` mapping remains unsupported, and direct snapshot queries do
+not enter this mapping path. Mapped restricted results also route returned
+Grail bucket contributions to private provenance because the contribution
+`table` field can identify the reconstruction source.
+
 Replay controls DQL time semantics. It does not freeze retained data, tenant
 configuration, authorization, engine behavior, metric rollups, or late
 ingestion. Manual clock mode makes virtual timestamps repeatable, but it does

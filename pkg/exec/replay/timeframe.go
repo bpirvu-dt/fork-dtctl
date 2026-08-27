@@ -314,19 +314,16 @@ func evaluateTimeNode(node *Node, context timeframeContext) (TimeEndpoint, error
 		case "now":
 			return relativeEndpoint(context.VirtualNow, 0), nil
 		case "totimestamp":
-			stringsFound := terminalsWithRole(node, "STRING")
-			if len(stringsFound) != 1 {
-				break
-			}
-			literal, err := strconv.Unquote(stringsFound[0].Canonical)
+			literal, value, matched, err := parseToTimestampLiteral(node)
 			if err != nil {
-				break
+				return TimeEndpoint{}, err
 			}
-			value, err := time.Parse(time.RFC3339Nano, literal)
-			if err != nil {
-				return TimeEndpoint{}, replayError(ErrorTimeframe, stringsFound[0], "toTimestamp", "The timestamp literal is not an absolute RFC 3339 value.", "Use an RFC 3339 timestamp with a timezone.")
+			if matched {
+				return TimeEndpoint{Value: value.UTC(), Dependency: EndpointAbsolute}, nil
 			}
-			return TimeEndpoint{Value: value.UTC(), Dependency: EndpointAbsolute}, nil
+			if literal != nil {
+				return TimeEndpoint{}, replayError(ErrorTimeframe, literal, "toTimestamp", "The timestamp literal is not an absolute RFC 3339 value.", "Use an RFC 3339 timestamp with a timezone.")
+			}
 		}
 	case "DURATION", "CALENDAR_DURATION":
 		shift, err := parseDurationNode(node)
@@ -345,6 +342,43 @@ func evaluateTimeNode(node *Node, context timeframeContext) (TimeEndpoint, error
 		}
 	}
 	return TimeEndpoint{}, replayError(ErrorTimeframe, node, node.Role, "The time expression is not supported by replay.", "Rewrite it using an absolute timestamp or a supported virtual-now expression.")
+}
+
+// parseToTimestampLiteral accepts the two server-observed terminal roles for
+// the one direct quoted argument of toTimestamp(). TIMESTAMP_VALUE replaced
+// STRING in current query:parse responses, while older deployments and saved
+// fixtures still use STRING. No other expression or placement is widened.
+func parseToTimestampLiteral(node *Node) (*Node, time.Time, bool, error) {
+	if node == nil || node.Kind != NodeContainer || node.Role != "FUNCTION" || !strings.EqualFold(ownFunctionName(node), "toTimestamp") {
+		return nil, time.Time{}, false, nil
+	}
+	parameters, err := collectDirectParameters(node)
+	if err != nil {
+		return nil, time.Time{}, false, err
+	}
+	if len(parameters) != 1 || parameters[0].key != "value" {
+		return nil, time.Time{}, false, nil
+	}
+	literal, err := parameterValue(parameters[0].node)
+	if err != nil {
+		return nil, time.Time{}, false, err
+	}
+	if literal.Kind != NodeTerminal || !isTimestampLiteralRole(literal.Role) {
+		return nil, time.Time{}, false, nil
+	}
+	text, err := strconv.Unquote(literal.Canonical)
+	if err != nil {
+		return literal, time.Time{}, false, nil
+	}
+	value, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return literal, time.Time{}, false, nil
+	}
+	return literal, value, true, nil
+}
+
+func isTimestampLiteralRole(role string) bool {
+	return role == "STRING" || role == "TIMESTAMP_VALUE"
 }
 
 type durationValue struct {

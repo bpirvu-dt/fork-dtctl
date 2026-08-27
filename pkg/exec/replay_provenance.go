@@ -51,6 +51,9 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 	if provenance.Notifications != nil {
 		fields["query_notifications"] = replayQueryNotifications(provenance.Notifications)
 	}
+	if provenance.GrailContributions != nil {
+		fields["grail_contributions"] = replayGrailContributions(*provenance.GrailContributions)
+	}
 	if provenance.Completion != "" {
 		fields["completion_disposition"] = provenance.Completion
 	}
@@ -64,6 +67,17 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 		SessionID:     provenance.Session.SessionID,
 		Fields:        fields,
 	}
+}
+
+func replayGrailContributions(value Contributions) map[string]any {
+	buckets := make([]map[string]any, 0, len(value.Buckets))
+	for _, bucket := range value.Buckets {
+		buckets = append(buckets, map[string]any{
+			"name": bucket.Name, "table": bucket.Table, "scanned_bytes": bucket.ScannedBytes,
+			"matched_records_ratio": bucket.MatchedRecordsRatio,
+		})
+	}
+	return map[string]any{"buckets": buckets}
 }
 
 func replayQueryNotifications(values []QueryNotification) []map[string]any {
