@@ -18,36 +18,44 @@ const (
 )
 
 func TestDavisProblemsMappingUsesLiveOriginalAndEffectiveFixtures(t *testing.T) {
-	originalAST := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json")
-	input := davisMappingCompileInput(t, originalAST, davisMappingOriginal, DavisProblemsMappingExecution)
-	result, err := Compile(input)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if result.EffectiveDQL != davisMappingEffective {
-		t.Fatalf("effective DQL:\n%s\nwant:\n%s", result.EffectiveDQL, davisMappingEffective)
-	}
-	if result.InspectionOnly || len(result.Sources) != 1 || result.Sources[0].DavisMapping == nil {
-		t.Fatalf("mapping result = %#v", result)
-	}
-	mapping := result.Sources[0].DavisMapping
-	if !mapping.Logical.F.Equal(mustTime(t, "2026-06-14T09:00:00Z")) ||
-		!mapping.Logical.T.Equal(mustTime(t, "2026-06-14T10:00:00Z")) ||
-		!mapping.Physical.W.Equal(mustTime(t, "2026-06-14T03:00:00Z")) ||
-		!mapping.Physical.T.Equal(mapping.Logical.T) || mapping.WarmupClamped || !mapping.Coverage.Verified {
-		t.Fatalf("typed F/T/W mapping = %#v", mapping)
-	}
+	for _, role := range []string{"TIMESTAMP_VALUE", "STRING"} {
+		t.Run(role, func(t *testing.T) {
+			originalAST := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json").Clone()
+			validationAST := loadPhase0BFixture(t, "davis/problems-view-mapping/effective/parse.json").Clone()
+			if role == "STRING" {
+				setTimestampLiteralRoles(originalAST, role)
+				setTimestampLiteralRoles(validationAST, role)
+			}
+			input := davisMappingCompileInput(t, originalAST, davisMappingOriginal, DavisProblemsMappingExecution)
+			result, err := Compile(input)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			if result.EffectiveDQL != davisMappingEffective {
+				t.Fatalf("effective DQL:\n%s\nwant:\n%s", result.EffectiveDQL, davisMappingEffective)
+			}
+			if result.InspectionOnly || len(result.Sources) != 1 || result.Sources[0].DavisMapping == nil {
+				t.Fatalf("mapping result = %#v", result)
+			}
+			mapping := result.Sources[0].DavisMapping
+			if !mapping.Logical.F.Equal(mustTime(t, "2026-06-14T09:00:00Z")) ||
+				!mapping.Logical.T.Equal(mustTime(t, "2026-06-14T10:00:00Z")) ||
+				!mapping.Physical.W.Equal(mustTime(t, "2026-06-14T03:00:00Z")) ||
+				!mapping.Physical.T.Equal(mapping.Logical.T) || mapping.WarmupClamped || !mapping.Coverage.Verified {
+				t.Fatalf("typed F/T/W mapping = %#v", mapping)
+			}
 
-	validationAST := loadPhase0BFixture(t, "davis/problems-view-mapping/effective/parse.json")
-	audit, err := Audit(AuditInput{
-		ValidationAST: validationAST, Compilation: result,
-		SourcePolicy: Milestone1SourcePolicy(), Timezone: time.UTC,
-	})
-	if err != nil {
-		t.Fatalf("Audit: %v", err)
-	}
-	if !audit.OK || !audit.DavisMappingsAudited || !audit.StructureMatches {
-		t.Fatalf("audit = %#v", audit)
+			audit, err := Audit(AuditInput{
+				ValidationAST: validationAST, Compilation: result,
+				SourcePolicy: Milestone1SourcePolicy(), Timezone: time.UTC,
+			})
+			if err != nil {
+				t.Fatalf("Audit: %v", err)
+			}
+			if !audit.OK || !audit.DavisMappingsAudited || !audit.StructureMatches {
+				t.Fatalf("audit = %#v", audit)
+			}
+		})
 	}
 }
 
@@ -338,6 +346,9 @@ func TestDavisProblemsMappingAuditRejectsEveryTamperedMappingFact(t *testing.T) 
 			terminalsWithRole(commands[1], "COMMAND_NAME")[0].Canonical, terminalsWithRole(commands[2], "COMMAND_NAME")[0].Canonical = "dedup", "sort"
 		}},
 		{"sort field", func(ast *AST) { firstCanonicalTerminal(ast, "SIMPLE_IDENTIFIER", "timestamp").Canonical = "start_time" }},
+		{"timestamp role outside literal slot", func(ast *AST) {
+			firstCanonicalTerminal(ast, "SIMPLE_IDENTIFIER", "timestamp").Role = "TIMESTAMP_VALUE"
+		}},
 		{"sort direction", func(ast *AST) { firstTerminal(ast, "PARAMETER_MODIFIER").Canonical = "asc" }},
 		{"dedup identity", func(ast *AST) { firstCanonicalTerminal(ast, "SIMPLE_IDENTIFIER", "event.id").Canonical = "event.kind" }},
 		{"lifetime start field", func(ast *AST) {
@@ -346,11 +357,11 @@ func TestDavisProblemsMappingAuditRejectsEveryTamperedMappingFact(t *testing.T) 
 		{"coalesce", func(ast *AST) { firstCanonicalTerminal(ast, "FUNCTION_NAME", "coalesce").Canonical = "max" }},
 		{"upper operator", func(ast *AST) { firstCanonicalTerminal(ast, "OPERATOR", "<").Canonical = "<=" }},
 		{"inclusive lower operator", func(ast *AST) { firstCanonicalTerminal(ast, "OPERATOR", ">=").Canonical = ">" }},
-		{"physical W", func(ast *AST) { stringTerminals(ast)[0].Canonical = `"2026-06-14T03:00:00.000000001Z"` }},
-		{"physical T", func(ast *AST) { stringTerminals(ast)[1].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
-		{"logical upper T", func(ast *AST) { stringTerminals(ast)[2].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
-		{"coalesce T", func(ast *AST) { stringTerminals(ast)[3].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
-		{"logical F", func(ast *AST) { stringTerminals(ast)[4].Canonical = `"2026-06-14T09:00:00.000000001Z"` }},
+		{"physical W", func(ast *AST) { timestampLiteralTerminals(ast)[0].Canonical = `"2026-06-14T03:00:00.000000001Z"` }},
+		{"physical T", func(ast *AST) { timestampLiteralTerminals(ast)[1].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
+		{"logical upper T", func(ast *AST) { timestampLiteralTerminals(ast)[2].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
+		{"coalesce T", func(ast *AST) { timestampLiteralTerminals(ast)[3].Canonical = `"2026-06-14T09:59:59.999999999Z"` }},
+		{"logical F", func(ast *AST) { timestampLiteralTerminals(ast)[4].Canonical = `"2026-06-14T09:00:00.000000001Z"` }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -422,10 +433,10 @@ func mappedValidationWithUserPipeline(t *testing.T, compilation CompileResult) *
 	}
 	mapping := compilation.Sources[0].DavisMapping
 	validation := loadPhase0BFixture(t, "davis/problems-view-mapping/effective/parse.json").Clone()
-	values := stringTerminals(validation)
+	values := timestampLiteralTerminals(validation)
 	want := []time.Time{mapping.Physical.W, mapping.Physical.T, mapping.Logical.T, mapping.Logical.T, mapping.Logical.F}
 	if len(values) != len(want) {
-		t.Fatalf("effective fixture string terminals = %d, want %d", len(values), len(want))
+		t.Fatalf("effective fixture timestamp terminals = %d, want %d", len(values), len(want))
 	}
 	for index := range want {
 		values[index].Canonical = fmt.Sprintf("%q", want[index].UTC().Format(generatedTimestampLayout))
@@ -440,10 +451,10 @@ func mappedValidationWithUserPipeline(t *testing.T, compilation CompileResult) *
 func mappedValidationCommandSequence(t *testing.T, mapping DavisProblemsMappingCompilation) []*Node {
 	t.Helper()
 	template := loadPhase0BFixture(t, "davis/problems-view-mapping/effective/parse.json").Clone()
-	values := stringTerminals(template)
+	values := timestampLiteralTerminals(template)
 	want := []time.Time{mapping.Physical.W, mapping.Physical.T, mapping.Logical.T, mapping.Logical.T, mapping.Logical.F}
 	if len(values) != len(want) {
-		t.Fatalf("effective fixture string terminals = %d, want %d", len(values), len(want))
+		t.Fatalf("effective fixture timestamp terminals = %d, want %d", len(values), len(want))
 	}
 	for index := range want {
 		values[index].Canonical = fmt.Sprintf("%q", want[index].UTC().Format(generatedTimestampLayout))
@@ -486,17 +497,30 @@ func replaceNodeWithSequence(root, target *Node, replacement []*Node) bool {
 func davisAbsoluteRange(t *testing.T, f, timeT time.Time) (*AST, string) {
 	t.Helper()
 	ast := loadPhase0BFixture(t, "davis/problems-view-mapping/original/parse.json").Clone()
-	values := stringTerminals(ast)
+	values := timestampLiteralTerminals(ast)
 	if len(values) != 2 {
-		t.Fatalf("original mapping fixture STRING terminals = %d", len(values))
+		t.Fatalf("original mapping fixture timestamp terminals = %d", len(values))
 	}
 	values[0].Canonical = fmt.Sprintf("%q", f.UTC().Format(time.RFC3339Nano))
 	values[1].Canonical = fmt.Sprintf("%q", timeT.UTC().Format(time.RFC3339Nano))
 	return ast, davisMappingOriginal
 }
 
-func stringTerminals(ast *AST) []*Node {
-	return terminalNodes(ast, "STRING")
+func timestampLiteralTerminals(ast *AST) []*Node {
+	var result []*Node
+	_ = ast.Walk(func(node *Node) error {
+		if node.Kind == NodeTerminal && isTimestampLiteralRole(node.Role) {
+			result = append(result, node)
+		}
+		return nil
+	})
+	return result
+}
+
+func setTimestampLiteralRoles(ast *AST, role string) {
+	for _, node := range timestampLiteralTerminals(ast) {
+		node.Role = role
+	}
 }
 
 func firstCanonicalTerminal(ast *AST, role, canonical string) *Node {

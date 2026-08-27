@@ -326,9 +326,9 @@ contribution block is written to private provenance. Full disclosure and
 non-mapped query metadata remain unchanged.
 
 The server-returned `analysisTimeframe` remains ordinary result metadata and is
-excluded from restricted generated-text scans. The restricted extension remains
-gated on a sanitized live fixture that pins whether mapped results report the
-logical `[F,T)` or physical `[W,T)` interval.
+excluded from restricted generated-text scans. A sanitized live mapped capture
+pins it to the physical snapshot-read interval `[W,T)`, not the logical
+problems-view interval `[F,T)`.
 
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
 automatic Davis events-view mapping are unsupported and have no promised

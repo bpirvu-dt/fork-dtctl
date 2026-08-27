@@ -227,7 +227,7 @@
                                   "line": 1
                                 }
                               },
-                              "type": "STRING"
+                              "type": "TIMESTAMP_VALUE"
                             }
                           ],
                           "isOptional": false,
@@ -417,7 +417,7 @@
                                   "line": 1
                                 }
                               },
-                              "type": "STRING"
+                              "type": "TIMESTAMP_VALUE"
                             }
                           ],
                           "isOptional": false,

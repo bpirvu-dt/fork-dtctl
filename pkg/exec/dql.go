@@ -898,7 +898,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		if len(records) > 0 {
 			return printer.Print(map[string]interface{}{"records": records})
 		}
-		if restrictedReplayOutput(opts) {
+		if restrictedMappedReplayOutput(opts) {
 			return printer.Print(map[string]interface{}{"records": records})
 		}
 		return printer.Print(result)
@@ -922,7 +922,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 				out["types"] = types
 			}
 		}
-		if restrictedReplayOutput(opts) {
+		if restrictedMappedReplayOutput(opts) {
 			if _, hasRecords := out["records"]; !hasRecords {
 				out["records"] = records
 			}
@@ -1029,7 +1029,8 @@ func outputQueryMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) *outp
 		return meta
 	}
 	clone := *meta
-	if result.GetMetadata() != nil && opts.replay.OriginalQuery != "" {
+	if opts.replay.OriginalQuery != "" && result.GetMetadata() != nil &&
+		(clone.Query != "" || restrictedMappedReplayOutput(opts)) {
 		clone.Query = opts.replay.OriginalQuery
 	}
 	if opts.replay.Disclosure == session.ReplayDisclosureRestricted &&
@@ -1057,7 +1058,7 @@ func queryMetadataOutputValue(meta *output.QueryMetadata, opts DQLExecuteOptions
 	if !ok {
 		return value
 	}
-	if restrictedReplayOutput(opts) && meta.CanonicalQuery == "" {
+	if restrictedMappedReplayOutput(opts) && meta.CanonicalQuery == "" {
 		delete(selected, "canonicalQuery")
 	}
 	if restrictedMappedReplayOutput(opts) {

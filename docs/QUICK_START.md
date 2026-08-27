@@ -1695,9 +1695,9 @@ contributions, mapped restricted output omits them and provenance records the
 returned contribution block.
 
 Grail's returned `analysisTimeframe` remains ordinary metadata. It is treated
-like returned historical timestamps, not generated replay text. Before this
-extension can merge, a sanitized live fixture must pin whether a mapped result
-reports logical `[F,T)` or physical `[W,T)` endpoints.
+like returned historical timestamps, not generated replay text. A sanitized
+live mapped capture established that its endpoints are the physical snapshot-
+read interval `[W,T)`, not the logical problems-view interval `[F,T)`.
 
 The default restricted provenance path is below the private replay state
 directory. On Unix, the directory uses mode `0700`; the provenance file and its

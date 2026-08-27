@@ -139,6 +139,7 @@ var knownTerminalRoles = map[string]struct{}{
 	"SPACE":                   {},
 	"STRING":                  {},
 	"TIMESERIES_AGGREGATION":  {},
+	"TIMESTAMP_VALUE":         {},
 	"TIME_UNIT":               {},
 }
 

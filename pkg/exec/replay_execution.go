@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -363,6 +364,9 @@ func replayInfoHasDavisProblemsMapping(info ReplayExecutionInfo) bool {
 
 func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 	generated := value
+	// A complete verbatim original query is ordinary remote content. Isolated
+	// token or timestamp collisions are ambiguous because the reconstruction
+	// also generated them, so those remain subject to the fail-closed scan.
 	if info.OriginalQuery != "" {
 		generated = strings.ReplaceAll(generated, info.OriginalQuery, "")
 	}
@@ -380,17 +384,13 @@ func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 		}
 	}
 	for _, lexeme := range []string{"sort", "timestamp", "dedup", "event.id", "filter", "event.start", "coalesce", "event.end"} {
-		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(strings.ToLower(info.EffectiveQuery), lexeme) &&
-			!containsDQLLexeme(strings.ToLower(info.OriginalQuery), lexeme) {
+		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(strings.ToLower(info.EffectiveQuery), lexeme) {
 			return true
 		}
 	}
-	originalTimestamps := make(map[string]struct{})
-	for _, expression := range dqlToTimestampExpressions(info.OriginalQuery) {
-		originalTimestamps[expression] = struct{}{}
-	}
-	for _, expression := range dqlToTimestampExpressions(info.EffectiveQuery) {
-		if _, userAuthored := originalTimestamps[expression]; !userAuthored && strings.Contains(lower, expression) {
+	remoteTimestamps := rfc3339Instants(generated)
+	for instant := range dqlToTimestampInstants(info.EffectiveQuery) {
+		if _, disclosed := remoteTimestamps[instant]; disclosed {
 			return true
 		}
 	}
@@ -425,23 +425,36 @@ func isDQLWordByte(value byte) bool {
 		value >= '0' && value <= '9' || value == '_'
 }
 
-func dqlToTimestampExpressions(query string) []string {
-	lower := strings.ToLower(query)
-	const prefix = "totimestamp("
-	var result []string
-	for searchFrom := 0; searchFrom < len(lower); {
-		start := strings.Index(lower[searchFrom:], prefix)
-		if start < 0 {
-			break
+var dqlToTimestampLiteralPattern = regexp.MustCompile(`(?i)\btotimestamp[[:space:]]*\([[:space:]]*(?:value[[:space:]]*:[[:space:]]*)?"([^"]+)"[[:space:]]*\)`)
+var rfc3339Pattern = regexp.MustCompile(`(?i)\b[0-9]{4}-[0-9]{2}-[0-9]{2}t[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:z|[+-][0-9]{2}:[0-9]{2})\b`)
+
+// dqlToTimestampInstants normalizes rendered timestamp calls before comparing
+// remote text with generated bounds. Grail errors may change whitespace,
+// precision, case, or the UTC offset without changing the disclosed instant.
+func dqlToTimestampInstants(query string) map[string]struct{} {
+	query = strings.ReplaceAll(query, `\"`, `"`)
+	result := make(map[string]struct{})
+	for _, match := range dqlToTimestampLiteralPattern.FindAllStringSubmatch(query, -1) {
+		value, err := time.Parse(time.RFC3339Nano, match[1])
+		if err != nil {
+			continue
 		}
-		start += searchFrom
-		end := strings.IndexByte(lower[start+len(prefix):], ')')
-		if end < 0 {
-			break
+		result[value.UTC().Format(time.RFC3339Nano)] = struct{}{}
+	}
+	return result
+}
+
+// rfc3339Instants also recognizes a bare rendered bound. Query API errors can
+// identify an invalid argument by value without repeating its toTimestamp()
+// expression, so wrapper-only matching would disclose the generated instant.
+func rfc3339Instants(value string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, match := range rfc3339Pattern.FindAllString(value, -1) {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.ToUpper(match))
+		if err != nil {
+			continue
 		}
-		end += start + len(prefix) + 1
-		result = append(result, lower[start:end])
-		searchFrom = end
+		result[parsed.UTC().Format(time.RFC3339Nano)] = struct{}{}
 	}
 	return result
 }

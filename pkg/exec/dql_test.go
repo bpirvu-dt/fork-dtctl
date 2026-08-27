@@ -1773,6 +1773,41 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	if got := outputQueryMetadata(metricsOnly, opts); got == nil || got.Query != "" {
 		t.Fatalf("metrics-only replay metadata gained query text: %#v", got)
 	}
+
+	emptyQuery := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{Grail: &GrailMetadata{
+		CanonicalQuery: "synthetic canonical query",
+	}}}}
+	for name, replayInfo := range map[string]*ReplayExecutionInfo{
+		"restricted logs": {
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: "fetch logs",
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "logs"}}},
+		},
+		"restricted direct snapshot": {
+			Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: "fetch dt.davis.problems.snapshots",
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "dt.davis.problems.snapshots"}}},
+		},
+		"full mapped": {
+			Active: true, Disclosure: session.ReplayDisclosureFull, OriginalQuery: original,
+			Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+			}}},
+		},
+	} {
+		t.Run(name+" keeps absent query", func(t *testing.T) {
+			controlOpts := DQLExecuteOptions{replay: replayInfo}
+			got := outputQueryMetadata(emptyQuery, controlOpts)
+			if got == nil || got.Query != "" {
+				t.Fatalf("control metadata gained query text: %#v", got)
+			}
+			if replayInfo.Disclosure == session.ReplayDisclosureRestricted {
+				controlOpts.MetadataFields = []string{"canonicalQuery"}
+				selected, ok := queryMetadataOutputValue(got, controlOpts).(map[string]interface{})
+				if !ok || len(selected) != 1 || selected["canonicalQuery"] != "" {
+					t.Fatalf("control canonical selector changed shape: %#v", selected)
+				}
+			}
+		})
+	}
 }
 
 func TestPrintResultsRestrictedReplayEmptyLegacyResponseIsSanitized(t *testing.T) {
