@@ -2028,6 +2028,55 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		})
 	}
 
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "snapshot table extends the no-bounds original",
+			message: `data object not found in 'fetch dt.davis.problems.snapshots' (400)`,
+		},
+		{
+			name:    "verbatim original precedes snapshot table",
+			message: `query 'fetch dt.davis.problems' failed while executing 'fetch dt.davis.problems.snapshots'`,
+		},
+		{
+			name:    "snapshot table precedes verbatim original",
+			message: `data object 'fetch dt.davis.problems.snapshots' differs from original 'fetch dt.davis.problems'`,
+		},
+	} {
+		t.Run("mapped original-prefix "+test.name, func(t *testing.T) {
+			const original = `fetch dt.davis.problems`
+			api := newReplayDavisMockAPI(t)
+			api.originalBody = replayFixtureWithSourceToken(t, "phase0/fixtures/05-fetch-no-timeframe/parse.json", "logs", execreplay.DavisProblemsView)
+			api.isOriginal = func(query string) bool { return query == original }
+			api.executeStatus = http.StatusBadRequest
+			api.remoteErrorMessage = test.message
+			sink := &replayTestSink{}
+			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted,
+				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
+				func(string) session.ProvenanceSink { return sink })
+			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{
+				AgentMode:             true,
+				DefaultTimeframeStart: "2026-06-14T09:00:00Z",
+				DefaultTimeframeEnd:   "2026-06-14T10:00:00Z",
+			})
+			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), test.message) {
+				t.Fatalf("result=%#v err=%v, want mapped remote fallback", result, err)
+			}
+			parses, executions := api.queries()
+			coverageRequests, _ := api.coverage()
+			if len(parses) != 2 || parses[0].Query != original || parses[1].Query != replayDavisEffective ||
+				len(executions) != 1 || executions[0].Query != replayDavisEffective || len(coverageRequests) != 1 {
+				t.Fatalf("parses=%#v coverage=%d executions=%#v", parses, len(coverageRequests), executions)
+			}
+			_, _, records := sink.snapshot()
+			if len(records) != 2 || records[1].Event != "query_execution" || !strings.Contains(fmt.Sprint(records[1].Fields["detail"]), test.message) {
+				t.Fatalf("mapped remote provenance = %#v", records)
+			}
+		})
+	}
+
 	for name, remoteMessage := range map[string]string{
 		"snapshot token":             "source dt.davis.problems.snapshots failed",
 		"generated bound":            `generated bound toTimestamp("2026-06-14T03:00:00.000000000Z") failed`,
@@ -2129,6 +2178,92 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
 		}}},
 	}
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{"space-separated bound", "invalid bound 2026-06-14 03:00:00Z"},
+		{"zone-less bound", "invalid bound 2026-06-14T03:00:00"},
+		{"space-separated zone-less bound", "invalid bound 2026-06-14 03:00:00"},
+		{"epoch seconds", "invalid bound 1781406000"},
+		{"epoch milliseconds", "invalid bound 1781406000000"},
+		{"epoch nanoseconds", "invalid bound 1781406000000000000"},
+	} {
+		t.Run("mapped rendered instant "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: test.message}
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("mapped rendered instant was not masked: %q", got)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{"leading digit", "invalid bound 91781406000000"},
+		{"trailing digit", "invalid bound 17814060000000"},
+	} {
+		t.Run("mapped epoch boundary control "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: test.message}
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != detail.Error() {
+				t.Fatalf("digit-adjacent epoch was masked: got %q want %q", got, detail)
+			}
+		})
+	}
+
+	outputOnlyInfo := ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted,
+		OriginalQuery: `fetch dt.davis.problems`, EffectiveQuery: `fetch dt.davis.problems.snapshots`,
+		Output: &output.ReplayMetadata{
+			VirtualNow: "2026-06-14T08:01:02Z",
+			Sources: []output.ReplaySourceMetadata{{
+				EffectiveFrom: "2026-06-14T04:01:02Z",
+				EffectiveTo:   "2026-06-14T05:01:02Z",
+				PhysicalFrom:  "2026-06-14T06:01:02Z",
+				PhysicalTo:    "2026-06-14T07:01:02Z",
+				DavisProblemsMapping: &output.DavisProblemsMappingMetadata{
+					Eligible:  true,
+					LogicalF:  "2026-06-14T09:01:02Z",
+					LogicalT:  "2026-06-14T10:01:02Z",
+					PhysicalW: "2026-06-14T11:01:02Z",
+					PhysicalT: "2026-06-14T12:01:02Z",
+				},
+			}},
+		},
+	}
+	for _, test := range []struct {
+		name    string
+		instant string
+	}{
+		{"virtual now", "2026-06-14T08:01:02Z"},
+		{"effective from", "2026-06-14T04:01:02Z"},
+		{"effective to", "2026-06-14T05:01:02Z"},
+		{"physical from", "2026-06-14T06:01:02Z"},
+		{"physical to", "2026-06-14T07:01:02Z"},
+		{"mapping logical F", "2026-06-14T09:01:02Z"},
+		{"mapping logical T", "2026-06-14T10:01:02Z"},
+		{"mapping physical W", "2026-06-14T11:01:02Z"},
+		{"mapping physical T", "2026-06-14T12:01:02Z"},
+	} {
+		t.Run("mapped Output-only instant "+test.name, func(t *testing.T) {
+			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "invalid bound " + test.instant}
+			if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+				t.Fatalf("Output-only instant was not masked: %q", got)
+			}
+		})
+	}
+	t.Run("mapped Output-only epoch milliseconds", func(t *testing.T) {
+		instant := mustReplayTestTime("2026-06-14T08:01:02Z")
+		detail := &sdkquery.QueryError{
+			StatusCode: http.StatusBadRequest,
+			ErrorType:  "REMOTE_ERROR",
+			Message:    fmt.Sprintf("invalid bound %d", instant.UnixMilli()),
+		}
+		if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			t.Fatalf("Output-only epoch instant was not masked: %q", got)
+		}
+	})
+
 	verbatimOriginal := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: replayDavisOriginal}
 	if got := newReplayAttemptError(replayErrorRemote, verbatimOriginal, mappedInfo, false, 0, true); got.Error() != verbatimOriginal.Error() {
 		t.Fatalf("verbatim original query was masked: got %q want %q", got, verbatimOriginal)
@@ -2164,7 +2299,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			}
 		})
 	}
-	for _, lexeme := range []string{"sort", "timestamp", "dedup", "event.id", "filter", "event.start", "coalesce", "event.end"} {
+	for _, lexeme := range execreplay.DavisProblemsReconstructionLexemes() {
 		t.Run("user-generated collision "+lexeme, func(t *testing.T) {
 			userAuthored := mappedInfo
 			userAuthored.OriginalQuery += " | fields " + lexeme
@@ -2218,16 +2353,16 @@ func TestDQLExecutorFullDisclosureRoutesCompilerNoticesOnce(t *testing.T) {
 func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
 	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
 	surfaces := map[string]string{
-		"hard non-overlap":      restrictedMessage(replayErrorNonOverlap, errors.New("replay interval does not overlap"), false, false),
-		"temporary non-overlap": restrictedMessage(replayErrorNonOverlap, errors.New("virtual interval pending"), true, false),
-		"readiness":             restrictedMessage(replayErrorReadiness, errors.New("session is stopped"), false, false),
-		"preparation":           restrictedMessage(replayErrorPrepare, errors.New("effective query unsupported"), false, false),
-		"validation":            restrictedMessage(replayErrorValidation, errors.New("interval spill invalid"), false, true),
-		"finalization":          restrictedMessage(replayErrorFinalize, errors.New("session completion failed"), false, true),
-		"sink preflight":        restrictedMessage(replayErrorSink, errors.New("replay sink unavailable"), false, false),
-		"sink post-execution":   restrictedMessage(replayErrorSink, errors.New("replay sink append failed"), false, true),
+		"hard non-overlap":      restrictedMessageForInfo(replayErrorNonOverlap, errors.New("replay interval does not overlap"), ReplayExecutionInfo{}, false, false),
+		"temporary non-overlap": restrictedMessageForInfo(replayErrorNonOverlap, errors.New("virtual interval pending"), ReplayExecutionInfo{}, true, false),
+		"readiness":             restrictedMessageForInfo(replayErrorReadiness, errors.New("session is stopped"), ReplayExecutionInfo{}, false, false),
+		"preparation":           restrictedMessageForInfo(replayErrorPrepare, errors.New("effective query unsupported"), ReplayExecutionInfo{}, false, false),
+		"validation":            restrictedMessageForInfo(replayErrorValidation, errors.New("interval spill invalid"), ReplayExecutionInfo{}, false, true),
+		"finalization":          restrictedMessageForInfo(replayErrorFinalize, errors.New("session completion failed"), ReplayExecutionInfo{}, false, true),
+		"sink preflight":        restrictedMessageForInfo(replayErrorSink, errors.New("replay sink unavailable"), ReplayExecutionInfo{}, false, false),
+		"sink post-execution":   restrictedMessageForInfo(replayErrorSink, errors.New("replay sink append failed"), ReplayExecutionInfo{}, false, true),
 		"remote fallback":       newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true).Error(),
-		"other":                 restrictedMessage("synthetic_other", errors.New("replay detail"), false, false),
+		"other":                 restrictedMessageForInfo("synthetic_other", errors.New("replay detail"), ReplayExecutionInfo{}, false, false),
 	}
 	for name, value := range surfaces {
 		if containsRestrictedGeneratedWord(value) {

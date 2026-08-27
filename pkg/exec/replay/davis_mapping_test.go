@@ -17,6 +17,31 @@ const (
 | filter event.start < toTimestamp("2026-06-14T10:00:00.000000000Z") and coalesce(event.end, toTimestamp("2026-06-14T10:00:00.000000000Z")) >= toTimestamp("2026-06-14T09:00:00.000000000Z")`
 )
 
+func TestDavisProblemsReconstructionVocabularyMatchesTemplate(t *testing.T) {
+	reconstruction := strings.ToLower(davisProblemsReconstruction("<logical-f>", "<logical-t>"))
+	fragments := DavisProblemsReconstructionFragments()
+	for _, fragment := range fragments {
+		if !strings.Contains(reconstruction, strings.ToLower(fragment)) {
+			t.Errorf("reconstruction is missing fragment %q: %q", fragment, reconstruction)
+		}
+	}
+	for _, lexeme := range DavisProblemsReconstructionLexemes() {
+		if !strings.Contains(reconstruction, strings.ToLower(lexeme)) {
+			t.Errorf("reconstruction is missing lexeme %q: %q", lexeme, reconstruction)
+		}
+	}
+
+	fragments[0] = "mutated"
+	if DavisProblemsReconstructionFragments()[0] == "mutated" {
+		t.Fatal("fragment accessor exposed mutable canonical vocabulary")
+	}
+	lexemes := DavisProblemsReconstructionLexemes()
+	lexemes[0] = "mutated"
+	if DavisProblemsReconstructionLexemes()[0] == "mutated" {
+		t.Fatal("lexeme accessor exposed mutable canonical vocabulary")
+	}
+}
+
 func TestDavisProblemsMappingUsesLiveOriginalAndEffectiveFixtures(t *testing.T) {
 	for _, role := range []string{"TIMESTAMP_VALUE", "STRING"} {
 		t.Run(role, func(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -294,10 +295,6 @@ func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {
 	}
 }
 
-func restrictedMessage(category replayErrorCategory, detail error, retryable, postExecution bool) string {
-	return restrictedMessageForInfo(category, detail, ReplayExecutionInfo{}, retryable, postExecution)
-}
-
 func restrictedMessageForInfo(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable, postExecution bool) string {
 	switch category {
 	case replayErrorNonOverlap:
@@ -363,43 +360,73 @@ func replayInfoHasDavisProblemsMapping(info ReplayExecutionInfo) bool {
 }
 
 func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
-	generated := value
+	generated := stripVerbatimOriginalQuery(value, info.OriginalQuery)
 	// A complete verbatim original query is ordinary remote content. Isolated
 	// token or timestamp collisions are ambiguous because the reconstruction
 	// also generated them, so those remain subject to the fail-closed scan.
-	if info.OriginalQuery != "" {
-		generated = strings.ReplaceAll(generated, info.OriginalQuery, "")
-	}
 	generated = strings.ReplaceAll(generated, `\"`, `"`)
 	lower := strings.ToLower(generated)
-	for _, fragment := range []string{
-		strings.ToLower(execreplay.DavisProblemsSnapshotTable),
-		"sort timestamp desc",
-		"dedup event.id",
-		"filter event.start",
-		"coalesce(event.end",
-	} {
-		if strings.Contains(lower, fragment) {
+	if strings.Contains(lower, strings.ToLower(execreplay.DavisProblemsSnapshotTable)) {
+		return true
+	}
+	for _, fragment := range execreplay.DavisProblemsReconstructionFragments() {
+		if strings.Contains(lower, strings.ToLower(fragment)) {
 			return true
 		}
 	}
-	for _, lexeme := range []string{"sort", "timestamp", "dedup", "event.id", "filter", "event.start", "coalesce", "event.end"} {
-		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(strings.ToLower(info.EffectiveQuery), lexeme) {
+	effectiveLower := strings.ToLower(info.EffectiveQuery)
+	for _, lexeme := range execreplay.DavisProblemsReconstructionLexemes() {
+		lexeme = strings.ToLower(lexeme)
+		if containsDQLLexeme(lower, lexeme) && containsDQLLexeme(effectiveLower, lexeme) {
 			return true
 		}
 	}
-	remoteTimestamps := rfc3339Instants(generated)
-	for instant := range dqlToTimestampInstants(info.EffectiveQuery) {
+	generatedInstants := dqlToTimestampInstants(info.EffectiveQuery)
+	for instant := range replayOutputGeneratedInstants(info.Output) {
+		generatedInstants[instant] = struct{}{}
+	}
+	remoteTimestamps := renderedTimestampInstants(generated)
+	for instant := range generatedInstants {
 		if _, disclosed := remoteTimestamps[instant]; disclosed {
 			return true
 		}
+		parsed, err := time.Parse(time.RFC3339Nano, instant)
+		if err == nil && containsEpochRendering(generated, parsed) {
+			return true
+		}
 	}
-	for _, query := range []string{info.EffectiveQuery, info.Output.GrailCanonicalEffectiveQuery} {
+	canonicalQuery := ""
+	if info.Output != nil {
+		canonicalQuery = info.Output.GrailCanonicalEffectiveQuery
+	}
+	for _, query := range []string{info.EffectiveQuery, canonicalQuery} {
 		if query != "" && query != info.OriginalQuery && strings.Contains(value, query) {
 			return true
 		}
 	}
 	return false
+}
+
+func stripVerbatimOriginalQuery(value, original string) string {
+	if original == "" || !strings.Contains(value, original) {
+		return value
+	}
+	var result strings.Builder
+	searchFrom := 0
+	for {
+		relative := strings.Index(value[searchFrom:], original)
+		if relative < 0 {
+			result.WriteString(value[searchFrom:])
+			return result.String()
+		}
+		start := searchFrom + relative
+		end := start + len(original)
+		result.WriteString(value[searchFrom:start])
+		if end < len(value) && (isDQLWordByte(value[end]) || value[end] == '.') {
+			result.WriteString(original)
+		}
+		searchFrom = end
+	}
 }
 
 func containsDQLLexeme(value, lexeme string) bool {
@@ -426,7 +453,7 @@ func isDQLWordByte(value byte) bool {
 }
 
 var dqlToTimestampLiteralPattern = regexp.MustCompile(`(?i)\btotimestamp[[:space:]]*\([[:space:]]*(?:value[[:space:]]*:[[:space:]]*)?"([^"]+)"[[:space:]]*\)`)
-var rfc3339Pattern = regexp.MustCompile(`(?i)\b[0-9]{4}-[0-9]{2}-[0-9]{2}t[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:z|[+-][0-9]{2}:[0-9]{2})\b`)
+var rfc3339LikePattern = regexp.MustCompile(`(?i)\b[0-9]{4}-[0-9]{2}-[0-9]{2}[t ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:z|[+-][0-9]{2}:[0-9]{2})?\b`)
 
 // dqlToTimestampInstants normalizes rendered timestamp calls before comparing
 // remote text with generated bounds. Grail errors may change whitespace,
@@ -444,19 +471,87 @@ func dqlToTimestampInstants(query string) map[string]struct{} {
 	return result
 }
 
-// rfc3339Instants also recognizes a bare rendered bound. Query API errors can
-// identify an invalid argument by value without repeating its toTimestamp()
-// expression, so wrapper-only matching would disclose the generated instant.
-func rfc3339Instants(value string) map[string]struct{} {
+func replayOutputGeneratedInstants(metadata *output.ReplayMetadata) map[string]struct{} {
 	result := make(map[string]struct{})
-	for _, match := range rfc3339Pattern.FindAllString(value, -1) {
-		parsed, err := time.Parse(time.RFC3339Nano, strings.ToUpper(match))
+	if metadata == nil {
+		return result
+	}
+	add := func(value string) {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err == nil {
+			result[parsed.UTC().Format(time.RFC3339Nano)] = struct{}{}
+		}
+	}
+	add(metadata.VirtualNow)
+	for _, source := range metadata.Sources {
+		add(source.EffectiveFrom)
+		add(source.EffectiveTo)
+		add(source.PhysicalFrom)
+		add(source.PhysicalTo)
+		if mapping := source.DavisProblemsMapping; mapping != nil {
+			add(mapping.LogicalF)
+			add(mapping.LogicalT)
+			add(mapping.PhysicalW)
+			add(mapping.PhysicalT)
+		}
+	}
+	return result
+}
+
+// renderedTimestampInstants recognizes zoned RFC 3339 bounds plus
+// space-separated and zone-less forms. Zone-less values are interpreted as UTC
+// because dtctl renders generated replay bounds in UTC.
+func renderedTimestampInstants(value string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, match := range rfc3339LikePattern.FindAllString(value, -1) {
+		normalized := strings.Replace(strings.ToUpper(match), " ", "T", 1)
+		parsed, err := time.Parse(time.RFC3339Nano, normalized)
+		if err != nil {
+			parsed, err = time.ParseInLocation("2006-01-02T15:04:05.999999999", normalized, time.UTC)
+		}
 		if err != nil {
 			continue
 		}
 		result[parsed.UTC().Format(time.RFC3339Nano)] = struct{}{}
 	}
 	return result
+}
+
+// containsEpochRendering recognizes Unix seconds, milliseconds, and
+// nanoseconds with decimal digit boundaries.
+func containsEpochRendering(value string, instant time.Time) bool {
+	for _, rendered := range []string{
+		strconv.FormatInt(instant.Unix(), 10),
+		strconv.FormatInt(instant.UnixMilli(), 10),
+		strconv.FormatInt(instant.UnixNano(), 10),
+	} {
+		if containsDecimalToken(value, rendered) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDecimalToken(value, token string) bool {
+	for searchFrom := 0; searchFrom < len(value); {
+		index := strings.Index(value[searchFrom:], token)
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		end := index + len(token)
+		leftBoundary := index == 0 || !isASCIIDigit(value[index-1])
+		rightBoundary := end == len(value) || !isASCIIDigit(value[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		searchFrom = index + 1
+	}
+	return false
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
 }
 
 func containsRestrictedGeneratedWord(value string) bool {

@@ -8,10 +8,44 @@ import (
 
 const davisProblemsWarmupCaveat = "When the visible window is short, the snapshot read may need to start before <visible-start> while the lifetime filter bounds stay at <visible-start> and <visible-end>; open problem snapshots have a documented six-hour refresh cadence, so retain at least six hours of warm-up."
 
-const davisProblemsReconstructionTemplate = `
-| sort timestamp desc
-| dedup event.id
-| filter event.start < %[2]s and coalesce(event.end, %[2]s) >= %[1]s`
+const (
+	davisProblemsSortLexeme       = "sort"
+	davisProblemsTimestampLexeme  = "timestamp"
+	davisProblemsDedupLexeme      = "dedup"
+	davisProblemsEventIDLexeme    = "event.id"
+	davisProblemsFilterLexeme     = "filter"
+	davisProblemsEventStartLexeme = "event.start"
+	davisProblemsCoalesceLexeme   = "coalesce"
+	davisProblemsEventEndLexeme   = "event.end"
+
+	davisProblemsSortStage         = davisProblemsSortLexeme + " " + davisProblemsTimestampLexeme + " desc"
+	davisProblemsDedupStage        = davisProblemsDedupLexeme + " " + davisProblemsEventIDLexeme
+	davisProblemsFilterPrefix      = davisProblemsFilterLexeme + " " + davisProblemsEventStartLexeme
+	davisProblemsCoalesceFragment  = davisProblemsCoalesceLexeme + "(" + davisProblemsEventEndLexeme
+	davisProblemsFilterStageFormat = davisProblemsFilterPrefix + " < %[2]s and " + davisProblemsCoalesceFragment + ", %[2]s) >= %[1]s"
+
+	davisProblemsReconstructionTemplate = "\n| " + davisProblemsSortStage +
+		"\n| " + davisProblemsDedupStage +
+		"\n| " + davisProblemsFilterStageFormat
+)
+
+var davisProblemsReconstructionFragments = [...]string{
+	davisProblemsSortStage,
+	davisProblemsDedupStage,
+	davisProblemsFilterPrefix,
+	davisProblemsCoalesceFragment,
+}
+
+var davisProblemsReconstructionLexemes = [...]string{
+	davisProblemsSortLexeme,
+	davisProblemsTimestampLexeme,
+	davisProblemsDedupLexeme,
+	davisProblemsEventIDLexeme,
+	davisProblemsFilterLexeme,
+	davisProblemsEventStartLexeme,
+	davisProblemsCoalesceLexeme,
+	davisProblemsEventEndLexeme,
+}
 
 const (
 	davisProblemsView          = "dt.davis.problems"
@@ -37,6 +71,18 @@ const (
 	// its bounded oldest-snapshot inspection.
 	DavisProblemsSnapshotTable = davisProblemsSnapshotTable
 )
+
+// DavisProblemsReconstructionFragments returns mapping-only stage fragments
+// that restricted remote-error routing must never disclose.
+func DavisProblemsReconstructionFragments() []string {
+	return append([]string(nil), davisProblemsReconstructionFragments[:]...)
+}
+
+// DavisProblemsReconstructionLexemes returns the executable vocabulary added
+// by the Davis problems reconstruction stages.
+func DavisProblemsReconstructionLexemes() []string {
+	return append([]string(nil), davisProblemsReconstructionLexemes[:]...)
+}
 
 // DavisProblemsMappingMode keeps the current-view exception separate from the
 // ordinary seven-table record allowlist.

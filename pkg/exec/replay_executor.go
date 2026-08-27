@@ -308,7 +308,7 @@ func (e *DQLExecutor) afterExecutionError(ctx context.Context, prepared Prepared
 	provenance.Detail = detail.Error()
 	provenance.CanonicalEffectiveDQL = canonicalEffectiveQuery(response)
 	provenance.GrailContributions = restrictedDavisGrailContributions(prepared, response)
-	info.Output = replayOutputMetadata(prepared, nil, provenance.CanonicalEffectiveDQL, nil)
+	info.Output.GrailCanonicalEffectiveQuery = provenance.CanonicalEffectiveDQL
 	if prepared.sink != nil {
 		if err := prepared.sink.Append(ctx, provenanceRecord("query_execution", provenance, nil)); err != nil {
 			return newReplayAttemptError(replayErrorSink, err, info, false, 0, true)
