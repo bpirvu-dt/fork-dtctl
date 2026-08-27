@@ -1694,11 +1694,12 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 			}}},
 		},
 	}
-	meta := outputQueryMetadata(result, opts)
+	policy := queryOutputPolicyFor(opts)
+	meta := outputQueryMetadata(result, opts, policy)
 	if meta == nil || meta.Query != original || meta.CanonicalQuery != "" || meta.Contributions != nil {
 		t.Fatalf("restricted metadata = %#v", meta)
 	}
-	selected, ok := queryMetadataOutputValue(meta, opts).(map[string]interface{})
+	selected, ok := queryMetadataOutputValue(meta, opts, policy).(map[string]interface{})
 	if !ok || selected["query"] != original {
 		t.Fatalf("selected restricted metadata = %#v", selected)
 	}
@@ -1710,14 +1711,17 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	}
 
 	opts.MetadataFields = []string{"canonicalQuery"}
-	if value := queryMetadataOutputValue(meta, opts); value != nil {
+	if value := queryMetadataOutputValue(meta, opts, policy); value != nil {
 		t.Fatalf("canonical-only restricted metadata = %#v", value)
 	}
 	opts.MetadataFields = []string{"contributions"}
-	if value := queryMetadataOutputValue(meta, opts); value != nil {
+	if value := queryMetadataOutputValue(meta, opts, policy); value != nil {
 		t.Fatalf("contributions-only mapped restricted metadata = %#v", value)
 	}
-	visible := visibleQueryMetadata(meta, opts)
+	visible := meta
+	if queryMetadataOutputValue(meta, opts, policy) == nil {
+		visible = nil
+	}
 	for name, rendered := range map[string]string{
 		"table": output.FormatMetadataFooter(visible, opts.MetadataFields),
 		"csv":   output.FormatMetadataCSVComments(visible, opts.MetadataFields),
@@ -1727,7 +1731,8 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 		}
 	}
 
-	nonReplay := queryMetadataOutputValue(&output.QueryMetadata{}, DQLExecuteOptions{MetadataFields: []string{"canonicalQuery"}})
+	nonReplayOpts := DQLExecuteOptions{MetadataFields: []string{"canonicalQuery"}}
+	nonReplay := queryMetadataOutputValue(&output.QueryMetadata{}, nonReplayOpts, queryOutputPolicyFor(nonReplayOpts))
 	nonReplayMap, ok := nonReplay.(map[string]interface{})
 	if !ok {
 		t.Fatalf("non-replay explicit metadata = %#v", nonReplay)
@@ -1755,12 +1760,13 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	} {
 		t.Run(name+" keeps contributions", func(t *testing.T) {
 			controlOpts := DQLExecuteOptions{MetadataFields: []string{"contributions"}, replay: replayInfo}
-			control := outputQueryMetadata(result, controlOpts)
+			controlPolicy := queryOutputPolicyFor(controlOpts)
+			control := outputQueryMetadata(result, controlOpts, controlPolicy)
 			if control == nil || control.Contributions == nil || len(control.Contributions.Buckets) != 1 ||
 				control.Contributions.Buckets[0].Table != "dt.davis.problems.snapshots" {
 				t.Fatalf("control metadata = %#v", control)
 			}
-			selected, ok := queryMetadataOutputValue(control, controlOpts).(map[string]interface{})
+			selected, ok := queryMetadataOutputValue(control, controlOpts, controlPolicy).(map[string]interface{})
 			if !ok || selected["contributions"] != control.Contributions {
 				t.Fatalf("selected control metadata = %#v", selected)
 			}
@@ -1770,7 +1776,7 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	metricsOnly := &DQLQueryResponse{Result: &DQLResult{Metadata: &DQLMetadata{
 		Metrics: []MetricInfo{{MetricKey: "synthetic.metric", FieldName: "value"}},
 	}}}
-	if got := outputQueryMetadata(metricsOnly, opts); got == nil || got.Query != "" {
+	if got := outputQueryMetadata(metricsOnly, opts, policy); got == nil || got.Query != "" {
 		t.Fatalf("metrics-only replay metadata gained query text: %#v", got)
 	}
 
@@ -1795,13 +1801,14 @@ func TestOutputQueryMetadataRestrictedReplaySelectors(t *testing.T) {
 	} {
 		t.Run(name+" keeps absent query", func(t *testing.T) {
 			controlOpts := DQLExecuteOptions{replay: replayInfo}
-			got := outputQueryMetadata(emptyQuery, controlOpts)
+			controlPolicy := queryOutputPolicyFor(controlOpts)
+			got := outputQueryMetadata(emptyQuery, controlOpts, controlPolicy)
 			if got == nil || got.Query != "" {
 				t.Fatalf("control metadata gained query text: %#v", got)
 			}
 			if replayInfo.Disclosure == session.ReplayDisclosureRestricted {
 				controlOpts.MetadataFields = []string{"canonicalQuery"}
-				selected, ok := queryMetadataOutputValue(got, controlOpts).(map[string]interface{})
+				selected, ok := queryMetadataOutputValue(got, controlOpts, controlPolicy).(map[string]interface{})
 				if !ok || len(selected) != 1 || selected["canonicalQuery"] != "" {
 					t.Fatalf("control canonical selector changed shape: %#v", selected)
 				}
@@ -1846,6 +1853,242 @@ func TestPrintResultsRestrictedReplayEmptyLegacyResponseIsSanitized(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+func TestPrintResultsRestrictedNonMappedEmptyRawFallbackSanitizesMetadata(t *testing.T) {
+	const (
+		original  = "fetch logs"
+		effective = `fetch logs, from:toTimestamp("2031-04-05T06:07:08Z"), to:toTimestamp("2031-04-05T07:08:09Z")`
+	)
+	newMetadata := func() *DQLMetadata {
+		return &DQLMetadata{Grail: &GrailMetadata{
+			Query: effective, CanonicalQuery: effective,
+			Notifications: []QueryNotification{{Severity: "WARNING", Message: "private synthetic notification"}},
+			Contributions: &Contributions{Buckets: []BucketContribution{{
+				Name: "synthetic_logs", Table: "logs", ScannedBytes: 2048, MatchedRecordsRatio: 1,
+			}}},
+		}}
+	}
+	replayInfo := &ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted,
+		OriginalQuery: original, EffectiveQuery: effective,
+		Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "logs"}}},
+	}
+	tests := []struct {
+		name             string
+		format           string
+		response         *DQLQueryResponse
+		metadataAtTop    bool
+		metadataInResult bool
+	}{
+		{
+			name: "modern result metadata through chart fallback", format: "chart", metadataInResult: true,
+			response: &DQLQueryResponse{State: "SUCCEEDED", Result: &DQLResult{
+				Records: []map[string]interface{}{}, Metadata: newMetadata(),
+			}},
+		},
+		{
+			name: "legacy top-level metadata through structured default", format: "json", metadataAtTop: true,
+			response: &DQLQueryResponse{
+				State: "SUCCEEDED", Records: []map[string]interface{}{}, Metadata: newMetadata(),
+			},
+		},
+		{
+			name: "both metadata locations through chart fallback", format: "chart", metadataAtTop: true, metadataInResult: true,
+			response: &DQLQueryResponse{
+				State: "SUCCEEDED", Metadata: newMetadata(),
+				Result: &DQLResult{Records: []map[string]interface{}{}, Metadata: newMetadata()},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var printErr error
+			raw := captureStdout(t, func() {
+				printErr = (&DQLExecutor{}).printResults(original, test.response, DQLExecuteOptions{
+					OutputFormat: test.format, replay: replayInfo,
+				})
+			})
+			if printErr != nil {
+				t.Fatal(printErr)
+			}
+			for _, leaked := range []string{
+				"toTimestamp", "2031-04-05T06:07:08Z", "2031-04-05T07:08:09Z",
+				"canonicalQuery", "private synthetic notification",
+			} {
+				if bytes.Contains(raw, []byte(leaked)) {
+					t.Fatalf("restricted raw fallback leaked %q: %s", leaked, raw)
+				}
+			}
+			if !bytes.Contains(raw, []byte(`"query": "fetch logs"`)) ||
+				!bytes.Contains(raw, []byte(`"contributions"`)) ||
+				!bytes.Contains(raw, []byte(`"table": "logs"`)) {
+				t.Fatalf("restricted raw fallback lost safe metadata: %s", raw)
+			}
+
+			start := bytes.IndexByte(raw, '{')
+			if start < 0 {
+				t.Fatalf("raw fallback has no JSON object: %s", raw)
+			}
+			var rendered map[string]interface{}
+			if err := json.Unmarshal(raw[start:], &rendered); err != nil {
+				t.Fatalf("decode raw fallback %q: %v", raw, err)
+			}
+			if rendered["state"] != "SUCCEEDED" {
+				t.Fatalf("raw fallback state = %#v", rendered["state"])
+			}
+			var metadataOwners []map[string]interface{}
+			topMetadata, hasTopMetadata := rendered["metadata"].(map[string]interface{})
+			if hasTopMetadata != test.metadataAtTop {
+				t.Fatalf("top-level metadata presence = %v, want %v: %#v", hasTopMetadata, test.metadataAtTop, rendered)
+			}
+			if hasTopMetadata {
+				metadataOwners = append(metadataOwners, topMetadata)
+			}
+			_, hasResult := rendered["result"]
+			if test.metadataInResult {
+				result, ok := rendered["result"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("modern response lost result wrapper: %#v", rendered)
+				}
+				resultMetadata, ok := result["metadata"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("result metadata = %#v", result["metadata"])
+				}
+				metadataOwners = append(metadataOwners, resultMetadata)
+			} else if hasResult {
+				t.Fatalf("legacy response gained result wrapper: %#v", rendered)
+			}
+			for _, metadata := range metadataOwners {
+				grail, ok := metadata["grail"].(map[string]interface{})
+				if !ok || grail["query"] != original {
+					t.Fatalf("grail metadata = %#v", metadata["grail"])
+				}
+				if _, exists := grail["canonicalQuery"]; exists {
+					t.Fatalf("canonical query survived: %#v", grail)
+				}
+				if _, exists := grail["notifications"]; exists {
+					t.Fatalf("notifications survived: %#v", grail)
+				}
+			}
+
+			// Sanitization is output-only. Provenance and raw-result callers still see
+			// the untouched SDK response.
+			var originalMetadata []*GrailMetadata
+			if test.response.Metadata != nil {
+				originalMetadata = append(originalMetadata, test.response.Metadata.Grail)
+			}
+			if test.response.Result != nil && test.response.Result.Metadata != nil {
+				originalMetadata = append(originalMetadata, test.response.Result.Metadata.Grail)
+			}
+			for _, metadata := range originalMetadata {
+				if metadata == nil || metadata.Query != effective ||
+					metadata.CanonicalQuery != effective || len(metadata.Notifications) != 1 ||
+					metadata.Contributions == nil {
+					t.Fatalf("input response was mutated: %#v", metadata)
+				}
+			}
+		})
+	}
+}
+
+func TestRestrictedReplayDisplayResponsePreservesQueryInjectionRule(t *testing.T) {
+	const (
+		original  = "fetch logs"
+		effective = `fetch logs, from:toTimestamp("2031-04-05T06:07:08Z")`
+	)
+	response := &DQLQueryResponse{Metadata: &DQLMetadata{Grail: &GrailMetadata{
+		CanonicalQuery: effective,
+	}}}
+	opts := DQLExecuteOptions{replay: &ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original,
+		Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{Name: "logs"}}},
+	}}
+	clone := restrictedReplayDisplayResponse(response, opts, queryOutputPolicyFor(opts))
+	if clone.Metadata.Grail.Query != "" {
+		t.Fatalf("non-mapped response gained an absent query: %#v", clone.Metadata.Grail)
+	}
+	if clone.Metadata.Grail.CanonicalQuery != "" {
+		t.Fatalf("differing canonical query survived: %#v", clone.Metadata.Grail)
+	}
+	if response.Metadata.Grail.CanonicalQuery != effective {
+		t.Fatalf("input response was mutated: %#v", response.Metadata.Grail)
+	}
+}
+
+func TestPrintResultsRestrictedMappedEmptyRecordsAreArrays(t *testing.T) {
+	const original = "fetch dt.davis.problems"
+	replayInfo := &ReplayExecutionInfo{
+		Active: true, Disclosure: session.ReplayDisclosureRestricted, OriginalQuery: original,
+		Output: &output.ReplayMetadata{Sources: []output.ReplaySourceMetadata{{
+			DavisProblemsMapping: &output.DavisProblemsMappingMetadata{Eligible: true},
+		}}},
+	}
+	newResponse := func(modern bool) *DQLQueryResponse {
+		response := &DQLQueryResponse{State: "SUCCEEDED"}
+		if modern {
+			response.Result = &DQLResult{Records: []map[string]interface{}{}}
+		}
+		return response
+	}
+	for _, modern := range []bool{true, false} {
+		shape := "result absent"
+		if modern {
+			shape = "modern result"
+		}
+		for _, format := range []string{"chart", "json"} {
+			t.Run(shape+" "+format, func(t *testing.T) {
+				var printErr error
+				raw := captureStdout(t, func() {
+					printErr = (&DQLExecutor{}).printResults(original, newResponse(modern), DQLExecuteOptions{
+						OutputFormat: format, replay: replayInfo,
+					})
+				})
+				if printErr != nil {
+					t.Fatal(printErr)
+				}
+				if bytes.Contains(raw, []byte(`"records": null`)) {
+					t.Fatalf("empty records rendered as null: %s", raw)
+				}
+				start := bytes.IndexByte(raw, '{')
+				if start < 0 {
+					t.Fatalf("output has no JSON object: %s", raw)
+				}
+				var rendered map[string]interface{}
+				if err := json.Unmarshal(raw[start:], &rendered); err != nil {
+					t.Fatalf("decode output %q: %v", raw, err)
+				}
+				if len(rendered) != 1 {
+					t.Fatalf("output keys = %#v, want only records; output=%s", rendered, raw)
+				}
+				records, ok := rendered["records"].([]interface{})
+				if !ok || records == nil || len(records) != 0 {
+					t.Fatalf("records = %#v, want non-nil empty array; output=%s", rendered["records"], raw)
+				}
+			})
+		}
+	}
+
+	// Agent mode is handled before the two fallthrough guards. Keep its ordinary
+	// non-replay byte shape instead of broadening this fix into an envelope change.
+	response := newResponse(true)
+	var mappedErr, plainErr error
+	mapped := captureStdout(t, func() {
+		mappedErr = (&DQLExecutor{}).printResults(original, response, DQLExecuteOptions{
+			OutputFormat: "json", AgentMode: true, replay: replayInfo,
+		})
+	})
+	plain := captureStdout(t, func() {
+		plainErr = (&DQLExecutor{}).printResults(original, response, DQLExecuteOptions{
+			OutputFormat: "json", AgentMode: true,
+		})
+	})
+	if mappedErr != nil || plainErr != nil {
+		t.Fatalf("mapped err=%v plain err=%v", mappedErr, plainErr)
+	}
+	if !bytes.Equal(mapped, plain) || !bytes.Contains(mapped, []byte(`"records":null`)) {
+		t.Fatalf("agent empty-result baseline changed:\nmapped=%s\nplain=%s", mapped, plain)
 	}
 }
 
