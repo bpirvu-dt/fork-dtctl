@@ -1066,6 +1066,9 @@ func TestReplayQueryCLIMappedRestrictedAndNonReplayAgentResultsAreByteIdentical(
 		executeResponse: &sdkquery.Response{State: "SUCCEEDED", Result: &sdkquery.Result{
 			Records: []map[string]interface{}{returned},
 			Metadata: &sdkquery.Metadata{Grail: &sdkquery.GrailMetadata{
+				// The response is shared by the mapped and plain executions. It models
+				// the plain baseline, so canonical metadata must match the original here.
+				// TestReplayQueryCLIMappedRestrictedMetadataContract covers the rewritten form.
 				Query: replayCLIDavisOriginal, CanonicalQuery: replayCLIDavisOriginal,
 			}},
 		}},
@@ -1315,15 +1318,15 @@ func TestReplayQueryCLIMappedAnalysisTimeframeLiveFixture(t *testing.T) {
 	if err := json.Unmarshal(raw, &capture); err != nil {
 		t.Fatal(err)
 	}
-	if capture.Evidence.Source != "synthetic metadata contract derived from a sanitized live observation" ||
+	if capture.Evidence.Source != "metadata contract verified against a live observation; all committed query text and timestamp values are synthetic" ||
 		len(capture.Evidence.Sanitization) != 3 || strings.Contains(string(raw), `"records"`) {
 		t.Fatalf("contract evidence = %#v", capture.Evidence)
 	}
 	const (
-		originalStart = "2026-06-14T09:00:00.000Z"
-		logicalStart  = "2026-06-14T09:00:00.000000000Z"
-		physicalStart = "2026-06-14T07:50:19.000000000Z"
-		upperBound    = "2026-06-14T10:00:00.000000000Z"
+		originalStart = "2027-02-03T09:17:43.000Z"
+		logicalStart  = "2027-02-03T09:17:43.000000000Z"
+		physicalStart = "2027-02-03T07:52:11.000000000Z"
+		upperBound    = "2027-02-03T10:41:37.000000000Z"
 	)
 	timeframe := capture.Metadata.AnalysisTimeframe
 	if timeframe == nil || timeframe.Start != physicalStart || timeframe.End != upperBound ||
@@ -1392,6 +1395,9 @@ func TestReplayQueryCLIMappedRestrictedMetadataContract(t *testing.T) {
 			})
 			if runErr != nil || stderr != "" {
 				t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, runErr)
+			}
+			if mode.name == "agent-all" {
+				testutil.AssertGolden(t, "replay/agent-restricted-davis-mapping-canonical-suppressed", stdout)
 			}
 			var envelope struct {
 				Metadata map[string]json.RawMessage `json:"metadata"`
