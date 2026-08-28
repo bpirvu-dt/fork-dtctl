@@ -242,10 +242,18 @@ Examples:
 
 func effectiveWaitQueryMinInterval(cmd *cobra.Command, replayEnabled bool) time.Duration {
 	minInterval, _ := cmd.Flags().GetDuration("min-interval")
-	if replayEnabled && !cmd.Flags().Changed("min-interval") {
-		return exec.MinReplayExecutionInterval
+	if !replayEnabled || cmd.Flags().Changed("min-interval") {
+		return minInterval
 	}
-	return minInterval
+	// An explicit --max-interval below the replay floor cannot hold the
+	// substituted default. Keep the raw value so the stated flags reach the
+	// disclosure-aware replay cadence rejection, which names the floor,
+	// instead of a min/max validation error about a flag the user never set.
+	if maxInterval, err := cmd.Flags().GetDuration("max-interval"); err == nil &&
+		cmd.Flags().Changed("max-interval") && maxInterval < exec.MinReplayExecutionInterval {
+		return minInterval
+	}
+	return exec.MinReplayExecutionInterval
 }
 
 func init() {

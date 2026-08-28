@@ -437,8 +437,10 @@ func TestReplayWaitQueryCLIExplicitIncompatibleMaxIntervalIsNotChanged(t *testin
 		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
 	setReplayWaitQueryCadenceFlags(t, time.Second, false, 4*time.Second, true)
 
+	// A sub-floor explicit --max-interval suppresses the replay default
+	// substitution, so the raw cadence reaches the replay floor rejection.
 	err := waitQueryCmd.RunE(waitQueryCmd, []string{replayCLIRecordOriginal})
-	if err == nil || !strings.Contains(err.Error(), "min-interval: must be less than or equal to max-interval") {
+	if err == nil || !strings.Contains(err.Error(), "supported minimum of 5s") {
 		t.Fatalf("error = %v", err)
 	}
 	if parses, executes := api.counts(); parses != 0 || executes != 0 {
