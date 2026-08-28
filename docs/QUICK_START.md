@@ -1458,7 +1458,7 @@ dtctl replay start --context historical-window
 # Run normal DQL at the current virtual now
 dtctl query 'fetch logs, from:now()-1h' --context historical-window
 
-# Move the virtual clock forward by a positive fixed duration
+# Jump the virtual clock forward; realtime continues ticking afterward
 dtctl replay advance 10m --context historical-window
 
 # Read a lock-free local snapshot without a network call or state write
