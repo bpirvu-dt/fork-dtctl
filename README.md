@@ -69,12 +69,17 @@ Token-based authentication and multi-environment configuration are covered in th
 ## Historical replay
 
 Historical replay lets you investigate past telemetry with normal DQL while
-dtctl controls what `now()` means. This makes it easier to reproduce incident
-timelines and test time-dependent queries without rewriting timestamps by hand.
+dtctl controls what `now()` means. Queries can only see data recorded up to
+the virtual moment, and DQL that replay cannot prove safe is rejected instead
+of answered with misleading results. This makes it easier to reproduce
+incident timelines and test time-dependent queries without rewriting
+timestamps by hand.
 
 Replay is designed for safe, read-only investigation. Replay contexts require
 `safety-level: readonly` and the built-in `replay` profile. Store the complete
-replay configuration in the context for automation.
+replay configuration in the context for automation; the commands below assume
+a context named `historical-window` with such a stored replay block (the
+Quick Start shows the full configuration).
 
 ```bash
 dtctl replay start --context historical-window

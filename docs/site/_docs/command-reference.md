@@ -255,7 +255,8 @@ dtctl wait query "fetch logs | filter status == 'ERROR'" --for=any --timeout 2m
 ```
 
 Outside replay, the omitted minimum interval is `1s`. In a replay context it is
-`5s`; an explicitly supplied value below `5s` is rejected.
+`5s`; an explicitly supplied value below `5s` is rejected, and so is a
+`--max-interval` below `5s`.
 
 ## Execution Commands
 

@@ -1519,7 +1519,9 @@ guarded completion cannot complete a stopped or replacement session.
 `data_end` and then exit. They do not run an empty tail. Outside replay, omitting
 `wait query --min-interval` uses one second. In replay, omitting it uses an
 effective five-second minimum. An explicit value below five seconds is rejected.
-`query --live` also requires at least five seconds between replay executions. A
+An explicit `--max-interval` below five seconds is also rejected; it is never
+silently raised. `query --live` also requires at least five seconds between
+replay executions. A
 returned `Retry-After` delay is honored. Long-running replay loops preserve
 normal OAuth refresh. They surface the first rate-limit response instead of
 hiding it behind an automatic retry.
@@ -1730,8 +1732,9 @@ and identifies the query with the original user text. If Grail returns bucket
 contributions, mapped restricted output omits them and provenance records the
 returned contribution block.
 
-An empty mapped restricted result is normalized to `{"records":[]}` in
-non-agent JSON and chart fallback output. Agent output keeps its ordinary
+An empty mapped restricted result is normalized to an explicit empty record
+list — `{"records":[]}` in JSON, `records: []` in YAML — in non-agent
+structured and chart fallback output. Agent output keeps its ordinary
 non-replay empty-result shape.
 
 Grail's returned `analysisTimeframe` remains ordinary metadata. It is treated
@@ -1786,7 +1789,8 @@ replay preparer.
 The guarded command allowlist is `query`, `wait query`, `verify query`, the
 deprecated `exec dql`, `inventory`, `inspect`, `replay start`, `replay advance`,
 `replay status`, `replay stop`, `ctx current`, `ctx describe`, `doctor`, and
-`auth status`.
+`auth status`, plus the always-available `commands` and `help`. `version` and
+`completion` are not on the list, so an active replay context blocks them.
 
 Safe DQL and management paths remain available. Mutations, live workflow or
 function execution, current-state resource APIs, unsafe context operations,

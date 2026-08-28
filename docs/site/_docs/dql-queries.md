@@ -464,8 +464,9 @@ dtctl wait query "..." --for=count=1 -o json > result.json
 `--max-result-records`, etc.).
 
 In a replay context, omitting `--min-interval` uses an effective `5s` minimum.
-An explicitly supplied value below `5s` is rejected. Non-replay behavior keeps
-the ordinary `1s` default.
+An explicitly supplied value below `5s` is rejected, and so is a
+`--max-interval` below `5s`. Non-replay behavior keeps the ordinary `1s`
+default.
 
 ### Exit Codes
 
