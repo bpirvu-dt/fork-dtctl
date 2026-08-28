@@ -411,7 +411,7 @@ func parseDurationNode(node *Node) (durationValue, error) {
 	}
 	unit := units[0].Canonical
 	if unit != "d" {
-		return durationValue{}, replayError(ErrorTimeframe, node, text, "Genuine calendar intervals are not supported in milestone 1.", "Use a fixed duration; calendar months, weeks, and years remain rejected.")
+		return durationValue{}, replayError(ErrorTimeframe, node, text, "Genuine calendar intervals are not supported.", "Use a fixed duration; calendar months, weeks, and years remain rejected.")
 	}
 	calendar := calendarDuration{amount: amount, unit: unit}
 	return durationValue{calendar: &calendar}, nil
@@ -454,7 +454,7 @@ func applyDuration(base TimeEndpoint, operator string, node *Node, location *tim
 func alignEndpoint(base TimeEndpoint, operator string, context timeframeContext) (TimeEndpoint, error) {
 	location := context.location()
 	if location != time.UTC {
-		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "Calendar or DST-sensitive alignment outside UTC is not supported in milestone 1.", "Use an absolute timestamp or a UTC replay timezone for the tested @h and @d forms.")
+		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "Calendar or DST-sensitive alignment outside UTC is not supported.", "Use an absolute timestamp or a UTC replay timezone for the tested @h and @d forms.")
 	}
 	local := base.Value.In(location)
 	var aligned time.Time
@@ -464,7 +464,7 @@ func alignEndpoint(base TimeEndpoint, operator string, context timeframeContext)
 	case "@d":
 		aligned = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 	default:
-		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "This time alignment is not supported in milestone 1.", "Use @h, @d, or an absolute timestamp.")
+		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "This time alignment is not supported.", "Use @h, @d, or an absolute timestamp.")
 	}
 	base.Value = aligned.UTC()
 	base.Dependency = EndpointUnknown

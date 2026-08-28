@@ -1415,8 +1415,8 @@ execution and sends that text to Grail only after a fail-closed audit.
 
 #### Configure an automated replay
 
-Automation must store a complete replay block in the context. Use manual clock
-mode and restricted disclosure explicitly:
+Automation must store a complete replay block in the context. This example uses
+realtime clock mode with restricted disclosure:
 
 ```yaml
 apiVersion: dtctl.io/v1
@@ -1433,7 +1433,7 @@ contexts:
         data_start: "2026-06-14T08:00:00Z"
         data_end: "2026-06-14T12:00:00Z"
         virtual_start: "2026-06-14T10:00:00Z"
-        clock_mode: manual
+        clock_mode: realtime
         disclosure: restricted
 ```
 
@@ -1445,9 +1445,9 @@ Replay contexts require `safety-level: readonly` and the reserved built-in
 `replay` profile. Replay changes DQL reads. It does not virtualize mutations.
 
 `realtime` is the clock default. It advances with host time. `manual` stays
-fixed until `replay advance`. `full` is the disclosure default. The example
-above is for automation, so it selects `manual` and `restricted` explicitly.
-Use `realtime` with `full` only as an explicitly chosen interactive workflow.
+fixed until `replay advance`. `full` is the disclosure default. Clock mode and
+disclosure are independent. The example keeps `realtime` and explicitly selects
+`restricted` disclosure.
 
 #### Manage the replay session
 
@@ -1458,12 +1458,13 @@ dtctl replay start --context historical-window
 # Run normal DQL at the current virtual now
 dtctl query 'fetch logs, from:now()-1h' --context historical-window
 
-# Move a manual clock by a positive fixed duration
+# Jump the virtual clock forward; realtime continues ticking afterward
 dtctl replay advance 10m --context historical-window
 
-# Read the local state without a network call
+# Read a lock-free local snapshot without a network call or state write
 dtctl replay status --context historical-window
 dtctl replay status --context historical-window -o json
+dtctl replay status --context historical-window -o yaml
 
 # Replace the session and reset virtual now to virtual_start
 dtctl replay start --context historical-window --restart
@@ -1475,6 +1476,15 @@ dtctl replay stop --context historical-window
 `replay start` can override `data_start`, `data_end`, `virtual_start`, and
 `clock_mode`. A flag wins over the context field. It cannot override
 `disclosure` or `provenance_path`.
+
+`replay advance` moves a manual clock and leaves it fixed. In realtime mode, it
+jumps the clock forward and then continues at the host-clock rate. An advance
+may reach `data_end` exactly. An overshoot fails without changing state.
+
+`replay status` defaults to table output and also supports JSON and YAML. It
+reads a lock-free local snapshot, makes no network call, and does not write
+replay state. `replay stop` preserves the final status snapshot. It does not
+contact the tenant or cancel a query that was already submitted.
 
 ```bash
 # Interactive example. Realtime and full disclosure are the documented defaults.
@@ -1492,6 +1502,13 @@ as the clock advances. Manual mode needs `replay advance`. To give a query its
 complete lookback on the first execution, set `virtual_start` after
 `data_start` by at least the largest required lookback.
 
+When a source has no `from:`, `to:`, or `timeframe:` and the command does not
+supply both `--default-timeframe-start` and `--default-timeframe-end`, dtctl uses
+the half-open two-hour default window
+`[virtual_now - 2h, virtual_now)`. It then intersects that requested window with
+the visible replay interval. Explicit source bounds or a complete command
+default timeframe replace this implicit window.
+
 Virtual time never passes `data_end`. A query at exactly `data_end` is the
 terminal execution. Success completes the same terminal-ready session. Failure
 does not change state and can be retried. In a rare race, two processes can run
@@ -1499,13 +1516,24 @@ the same read-only terminal query. This consumes duplicate query budget, but
 guarded completion cannot complete a stopped or replacement session.
 
 `wait query` and `query --live` schedule their own terminal execution at
-`data_end` and then exit. They do not run an empty tail. Replay loops require a
-cadence of at least five seconds. A faster cadence is rejected. A returned
-`Retry-After` delay is honored.
+`data_end` and then exit. They do not run an empty tail. Outside replay, omitting
+`wait query --min-interval` uses one second. In replay, omitting it uses an
+effective five-second minimum. An explicit value below five seconds is rejected.
+An explicit `--max-interval` below five seconds is also rejected; it is never
+silently raised. `query --live` also requires at least five seconds between
+replay executions. A
+returned `Retry-After` delay is honored. Long-running replay loops preserve
+normal OAuth refresh. They surface the first rate-limit response instead of
+hiding it behind an automatic retry.
+
+One unchanged original query parse may be reused only within the current command
+invocation. Every effective query is reparsed because its absolute virtual-time
+bounds can change on each attempt. Parse results are not persisted or shared
+between commands.
 
 #### Supported record sources
 
-The milestone 1 record allowlist is exact:
+The supported record-table allowlist is exact:
 
 | Record table | Record-time field | Boundary |
 |---|---|---|
@@ -1527,6 +1555,16 @@ function is allowed only after a sanitized parse fixture and a recorded safety
 rationale show that it does not escape the source contract. Unknown commands,
 functions, sources, and semantic AST forms fail closed. AST shape alone is not
 evidence that a new construct is safe.
+
+The supported command names are `fetch`, `timeseries`, `data`, `append`, `join`,
+`lookup`, `filter`, `fields`, `fieldsAdd`, `limit`, `sort`, `summarize`, `dedup`,
+`parse`, `filterOut`, `fieldsRemove`, `fieldsRename`, and `expand`. The supported
+scalar function names are `now`, `toTimestamp`, `timeframe`, `record`, `count`,
+`countIf`, `countDistinctExact`, `min`, `max`, `array`, `isNotNull`, `in`,
+`contains`, `startsWith`, `endsWith`, `matchesPhrase`, `matchesValue`, `lower`,
+`upper`, `bin`, `if`, `coalesce`, `toString`, `toLong`, and `toDuration`. A name
+being listed does not override the source, parameter, nesting, or AST-shape
+rules described here.
 
 The DQL `data` command is supported because it creates records and reads no
 tenant telemetry. Semantic `now()` inside it still becomes virtual now.
@@ -1554,7 +1592,7 @@ result, emit equal endpoints, or use a one-nanosecond workaround.
 
 #### Metrics
 
-Milestone 1 supports automatic intervals and parser-accepted positive fixed
+Replay supports automatic intervals and parser-accepted positive fixed
 durations. It supports only these tested aggregation shapes:
 
 - one plain `avg` aggregation;
@@ -1596,7 +1634,7 @@ fetch dt.davis.problems.snapshots, from:now()-6h, to:now()
 Use `dt.davis.events.snapshots` for event history with the same sort/dedup
 reduction. Event-view equivalence is not verified, so do not copy the
 problem-lifetime filter to events. Direct queries of either snapshot table keep
-this ordinary milestone 1 behavior and never use automatic view mapping.
+this ordinary record-source behavior and never use automatic view mapping.
 
 Both disclosure modes map only an exact original `fetch dt.davis.problems`
 token. They compute the logical view interval `[F,T)` through the ordinary
@@ -1639,8 +1677,8 @@ probe.
 Dynatrace documents a six-hour refresh cadence for open problem snapshots. Set
 `data_start` at least six hours before `virtual_start` when reconstructing
 problem state. This is guidance, not an execution requirement. The short-gap
-hazard was not observed in the Phase 0B evidence. A Davis snapshot query with a
-shorter gap produces a non-blocking warning and continues. Restricted
+hazard was not observed in the supporting live evidence. A Davis snapshot query
+with a shorter gap produces a non-blocking warning and continues. Restricted
 disclosure writes the warning only to provenance.
 
 For automatic problems mapping, a `data_start` clamp that makes `W` later than
@@ -1694,6 +1732,11 @@ and identifies the query with the original user text. If Grail returns bucket
 contributions, mapped restricted output omits them and provenance records the
 returned contribution block.
 
+An empty mapped restricted result is normalized to an explicit empty record
+list — `{"records":[]}` in JSON, `records: []` in YAML — in non-agent
+structured and chart fallback output. Agent output keeps its ordinary
+non-replay empty-result shape.
+
 Grail's returned `analysisTimeframe` remains ordinary metadata. It is treated
 like returned historical timestamps, not generated replay text. A sanitized
 live mapped capture established that its endpoints are the physical snapshot-
@@ -1743,6 +1786,12 @@ A separate hard guard checks the resolved command path. Setting
 Plugin dispatch is blocked because an external plugin does not receive the
 replay preparer.
 
+The guarded command allowlist is `query`, `wait query`, `verify query`, the
+deprecated `exec dql`, `inventory`, `inspect`, `replay start`, `replay advance`,
+`replay status`, `replay stop`, `ctx current`, `ctx describe`, `doctor`, and
+`auth status`, plus the always-available `commands` and `help`. `version` and
+`completion` are not on the list, so an active replay context blocks them.
+
 Safe DQL and management paths remain available. Mutations, live workflow or
 function execution, current-state resource APIs, unsafe context operations,
 and plugins are blocked. `ctx set`, `ctx delete`, its `ctx rm` alias, and
@@ -1784,12 +1833,14 @@ sampling, scan limits, unordered `limit`, or new Davis snapshots. Pin the dtctl
 version, use sampling ratio `1`, sort before `limit`, and retain provenance when
 building regression tests.
 
-Before stored telemetry execution, dtctl makes one best-effort read of current
-aggregate retention metadata per command invocation. If the replay interval
-starts before a known current retention boundary, dtctl warns and continues.
-If the read is unavailable or fails, dtctl warns that retention was not
-verified and continues. The read has a five-second limit. It does not run for
-`verify query` or `--explain-replay`.
+Before ordinary supported record or metric execution, dtctl makes one
+best-effort read of current aggregate retention metadata per command invocation.
+This includes direct Davis snapshot-table queries. The two snapshot tables use
+the aggregate `events` family for this inspection. If the replay interval starts
+before a known current retention boundary, dtctl warns and continues. If the
+read is unavailable or fails, dtctl warns that retention was not verified and
+continues. The read has a five-second limit. It does not run for `verify query`
+or `--explain-replay`.
 
 Current bucket metadata does not prove that one historical instant is still
 available. It also does not expose past metric-resolution transitions. Metric
@@ -1800,11 +1851,12 @@ Restricted disclosure writes them only to provenance. dtctl never changes
 tenant retention and does not guarantee that old fine-grained data still
 exists.
 
-Automatic Davis problems mapping uses its separate blocking oldest-snapshot
-coverage probe instead of this best-effort retention check. That probe proves
-only that the observed snapshot horizon reaches `W`; it is not a per-problem
-completeness proof. A result reused during one long-running command can become
-stale as retention changes.
+For an automatically mapped problems source, aggregate retention metadata is
+not accepted as coverage. The separate blocking oldest-snapshot probe described
+above must prove that the observed snapshot horizon reaches `W`. It is not a
+per-problem completeness proof. A result reused during one long-running command
+can become stale as retention changes. Other ordinary record or metric sources
+in the same query still use the best-effort inspection.
 
 The mapping evidence has three additional limits:
 

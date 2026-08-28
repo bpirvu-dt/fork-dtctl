@@ -161,7 +161,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Full-file predicate filtering via a streaming `--jq` program (per record over the whole file, re-spill-guarded): `dtctl inspect <file> --jq 'select(.status == 500)'`
 - [x] Recover a lost file handle by listing spilled files in the active context: `dtctl inspect --list`
 
-### Historical Replay (Milestone 1)
+### Historical Replay
 
 - [x] Normal DQL uses a shared local historical clock; semantic `now()` becomes virtual now
 - [x] Half-open replay interval and visible replay interval with partial-overlap support
@@ -183,9 +183,9 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Full disclosure default and restricted disclosure with private serialized provenance
 - [x] Reserved `replay` profile, canonical-path hard guard, plugin block, and safe context exits
 - [x] Original/effective DQL provenance for full agent/spill output and restricted JSON Lines records
-- [x] Bounded best-effort current retention inspection once per command invocation, known-boundary and `not verified` warnings, historical metric-resolution warning, and disclosure-aware provenance routing
+- [x] Bounded best-effort current retention inspection for ordinary record and metric execution, known-boundary and `not verified` warnings, historical metric-resolution warning, and disclosure-aware provenance routing
 
-### Historical Replay (Milestone 2, deliverable 1)
+### Historical Replay: Davis Problems View
 
 - [x] Exact `dt.davis.problems` mapping in both disclosure modes without widening the seven-table record allowlist
 - [x] Separately typed logical `[F,T)` and physical `[W,T)` ranges with `W = max(data_start, F - 6h)`

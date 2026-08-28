@@ -29,6 +29,18 @@ var (
 	authEnsureKeyringFunc = config.EnsureKeyringCollection
 )
 
+// authOAuthFlow is the browser-based OAuth boundary used by auth login.
+// Keeping the constructor behind a narrow interface lets command tests verify
+// that the flow would start without opening a real browser or callback server.
+type authOAuthFlow interface {
+	Start(context.Context) (*auth.TokenSet, error)
+	GetUserInfo(string) (*auth.UserInfo, error)
+}
+
+var authNewOAuthFlowFunc = func(cfg *auth.OAuthConfig) (authOAuthFlow, error) {
+	return auth.NewOAuthFlow(cfg)
+}
+
 // authCmd represents the auth command
 var authCmd = &cobra.Command{
 	Use:   "auth",
@@ -548,7 +560,7 @@ instead (dtctl config set-credentials).`,
 		output.PrintInfo("Requesting OAuth scopes for safety level %s...", oauthConfig.SafetyLevel)
 
 		// Create OAuth flow
-		flow, err := auth.NewOAuthFlow(oauthConfig)
+		flow, err := authNewOAuthFlowFunc(oauthConfig)
 		if err != nil {
 			return fmt.Errorf("failed to initialize OAuth: %w", err)
 		}

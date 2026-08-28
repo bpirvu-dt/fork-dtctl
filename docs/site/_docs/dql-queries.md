@@ -455,13 +455,18 @@ dtctl wait query "..." --for=count=1 -o json > result.json
 | `--timeout` | Maximum time to wait (default `5m`, `0` = unlimited) |
 | `--max-attempts` | Maximum number of attempts (`0` = unlimited) |
 | `--initial-delay` | Delay before the first attempt |
-| `--min-interval` / `--max-interval` | Backoff bounds (defaults `1s` / `10s`) |
+| `--min-interval` / `--max-interval` | Backoff bounds (defaults `1s` / `10s` outside replay) |
 | `--backoff-multiplier` | Exponential backoff multiplier (must be `> 1.0`, default `2`) |
 | `-q, --quiet` | Suppress progress messages |
 
 `wait query` also accepts the standard query tuning flags (`--timezone`,
 `--locale`, `--default-timeframe-start/-end`, `--default-sampling-ratio`,
 `--max-result-records`, etc.).
+
+In a replay context, omitting `--min-interval` uses an effective `5s` minimum.
+An explicitly supplied value below `5s` is rejected, and so is a
+`--max-interval` below `5s`. Non-replay behavior keeps the ordinary `1s`
+default.
 
 ### Exit Codes
 

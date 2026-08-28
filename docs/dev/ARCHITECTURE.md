@@ -936,14 +936,14 @@ DQL, reparses that exact text, and audits the validation AST before execution.
 It never falls back to the original DQL after a parse, adaptation, transform,
 or audit failure.
 
-Phase 0 selected Method B. It preserves the original query and edits only
+The replay compiler uses Method B. It preserves the original query and edits only
 AST-identified spans. The measured position contract uses UTF-16 code units
 with inclusive end positions. The editor converts those coordinates to Go byte
 offsets, rejects surrogate splits and overlapping edits, and permits insertion
 only at an AST-proven command boundary. Tests cover ASCII, Unicode, strings,
 comments, escapes, adjacent edits, and nested insertions.
 
-Phase 0B approved a Narrow compatibility surface. Production keeps exact
+Replay has a narrow compatibility surface. Production keeps exact
 allowlists for record tables, metric forms, pipeline commands, and scalar
 functions. Every pipeline or scalar entry needs a sanitized parse fixture and
 a recorded safety rationale. A structurally familiar unknown construct is not
@@ -963,16 +963,17 @@ loop with `N` executions of one unchanged key performs one original parse and
 `N` effective parses. Each execution captures a fresh virtual now. Polling one
 submitted asynchronous query keeps that timestamp fixed.
 
-Stored-telemetry execution also makes at most one retention inspection per
-top-level executor. This is an intentional direct Query API read of aggregate
-`dt.system.buckets` metadata. The fixed query returns public table families and
-minimum and maximum retention days. It does not return bucket names. A
-five-second context bounds the call. The result is reused across loop ticks.
-Failure produces a warning and never changes query execution. Current metadata
-cannot prove past availability or historical metric-resolution transitions.
-Metric replay records that limit as a warning. `verify query` and
-`--explain-replay` skip the read to preserve their execution-free contract.
-No path writes tenant retention settings.
+Ordinary supported record or metric execution also makes at most one retention
+inspection per top-level executor. This is an intentional direct Query API read
+of aggregate `dt.system.buckets` metadata. The fixed query returns public table
+families and minimum and maximum retention days. It does not return bucket
+names. A five-second context bounds the call. The result is reused across loop
+ticks. Failure produces a warning and never changes query execution. Automatic
+Davis problems mapping uses its separate blocking oldest-snapshot coverage
+probe instead. Current metadata cannot prove past availability or historical
+metric-resolution transitions. Metric replay records that limit as a warning.
+`verify query` and `--explain-replay` skip both reads to preserve their
+execution-free contract. No path writes tenant retention settings.
 
 `sdk/session` owns replay configuration, private state, locks, atomic writes,
 and provenance appends. Queries and status take lock-free snapshots. Lifecycle

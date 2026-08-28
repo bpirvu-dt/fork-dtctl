@@ -173,7 +173,7 @@ and terminal non-overlap fail closed. dtctl never substitutes an empty source,
 fabricates an empty result, emits equal endpoints, or uses a one-nanosecond
 window.
 
-The milestone 1 record allowlist is exact:
+The supported record allowlist is exact:
 
 | Table | Record-time field |
 |---|---|
@@ -185,7 +185,7 @@ The milestone 1 record allowlist is exact:
 | `dt.davis.events.snapshots` | `timestamp` |
 | `dt.davis.problems.snapshots` | `timestamp` |
 
-Phase 0B established from-inclusive and to-exclusive behavior for every table.
+Supporting evidence established from-inclusive and to-exclusive behavior for every table.
 The compiler also accepts the tested nested `append`, `join`, and
 source-bearing `lookup` shapes, but it classifies and bounds each nested source
 independently.
@@ -211,7 +211,7 @@ entry needs a sanitized `query:parse` fixture and a recorded safety rationale.
 Unknown pipeline commands, functions, sources, and semantic AST roles fail
 closed. AST structure by itself is not evidence of safety.
 
-The server-provided DQL AST is the semantic contract. Phase 0 established that
+The server-provided DQL AST is the semantic contract. Supporting evidence established that
 Method B can use its UTF-16, inclusive-end source positions to edit semantic
 time expressions without changing strings, comments, or unrelated formatting.
 dtctl adapts the server tree into a private internal representation. It emits
@@ -285,7 +285,7 @@ session in a context without a replay block loses configured protection after
 stop, so it is not a complete automation setup.
 
 Davis event and problem snapshot tables are historical records. Direct queries
-remain ordinary milestone 1 sources whose DQL author owns latest-per-`event.id`
+remain ordinary supported sources whose DQL author owns latest-per-`event.id`
 reconstruction. A shorter than six-hour warm-up produces the shipped
 non-blocking warning.
 
@@ -318,7 +318,7 @@ clamp state, sanitized coverage result, and effective-query facts only in
 provenance. A restricted coverage failure returns
 `The query could not be prepared. It was not executed.` Every
 `dt.davis.events` view remains rejected and makes no mapping probe. Direct
-snapshot queries retain their ordinary milestone 1 behavior.
+snapshot queries retain their ordinary record-source behavior.
 
 Mapped restricted output omits Grail bucket contributions because the returned
 `table` field can identify the snapshot source. The complete returned
@@ -349,16 +349,19 @@ read safe, for every active problem. The coverage probe establishes only the
 oldest observed horizon, not per-problem completeness, and an invocation-local
 memo can stale during a long-running command as retention changes.
 
-Before stored telemetry execution, one bounded best-effort inspection reads
-current aggregate retention bounds. The result is cached for one command
-invocation. A replay interval older than a known current boundary produces a
-warning. An unavailable or failed inspection produces a `not verified`
-warning. Neither condition blocks execution. Current metadata cannot prove
-past availability or past metric-resolution transitions. Metric replay
-therefore also carries a historical-resolution warning. `verify query` and
-`--explain-replay` remain execution-free and skip this inspection. Restricted
-disclosure routes every such notice only to provenance. Grail query
-notifications remain warnings too. dtctl never changes tenant retention.
+Before ordinary supported record or metric execution, one bounded best-effort
+inspection reads current aggregate retention bounds. The result is cached for
+one command invocation. A replay interval older than a known current boundary
+produces a warning. An unavailable or failed inspection produces a
+`not verified` warning. Neither condition blocks execution. Automatic Davis
+problems mapping uses its separate blocking oldest-snapshot coverage probe
+instead.
+Current metadata cannot prove past availability or past metric-resolution
+transitions. Metric replay therefore also carries a historical-resolution
+warning. `verify query` and `--explain-replay` remain execution-free and skip
+the inspection and coverage probe. Restricted disclosure routes every such
+notice only to provenance. Grail query notifications remain warnings too. dtctl
+never changes tenant retention.
 
 The replay interval is a semantic correctness boundary. It is not a physical
 storage-scan, privacy, authorization, or billing boundary.

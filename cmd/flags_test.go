@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 )
 
@@ -309,6 +311,42 @@ func TestWaitFlags(t *testing.T) {
 
 			if flag.DefValue != tt.defaultValue {
 				t.Errorf("Flag --%s default = %q, want %q", tt.flagName, flag.DefValue, tt.defaultValue)
+			}
+		})
+	}
+}
+
+func TestEffectiveWaitQueryMinInterval(t *testing.T) {
+	tests := []struct {
+		name          string
+		replayEnabled bool
+		explicit      bool
+		explicitMax   string
+		want          time.Duration
+	}{
+		{name: "ordinary omitted default remains one second", want: time.Second},
+		{name: "replay omitted default uses replay minimum", replayEnabled: true, want: exec.MinReplayExecutionInterval},
+		{name: "replay explicit one second is preserved for validation", replayEnabled: true, explicit: true, want: time.Second},
+		{name: "replay omitted default with sub-floor explicit max keeps the raw value", replayEnabled: true, explicitMax: "4s", want: time.Second},
+		{name: "replay omitted default with floor-or-above explicit max uses replay minimum", replayEnabled: true, explicitMax: "6s", want: exec.MinReplayExecutionInterval},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "test"}
+			cmd.Flags().Duration("min-interval", time.Second, "test interval")
+			cmd.Flags().Duration("max-interval", 10*time.Second, "test interval")
+			if tt.explicit {
+				if err := cmd.Flags().Set("min-interval", time.Second.String()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.explicitMax != "" {
+				if err := cmd.Flags().Set("max-interval", tt.explicitMax); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := effectiveWaitQueryMinInterval(cmd, tt.replayEnabled); got != tt.want {
+				t.Fatalf("effectiveWaitQueryMinInterval() = %s, want %s", got, tt.want)
 			}
 		})
 	}

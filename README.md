@@ -68,29 +68,18 @@ Token-based authentication and multi-environment configuration are covered in th
 
 ## Historical replay
 
-Historical replay runs normal DQL against a local historical clock. dtctl
-replaces semantic uses of `now()`, bounds every supported source to the visible
-replay interval, reparses the effective DQL, and audits it before execution.
-Unsupported DQL fails closed.
+Historical replay lets you investigate past telemetry with normal DQL while
+dtctl controls what `now()` means. Queries can only see data recorded up to
+the virtual moment, and DQL that replay cannot prove safe is rejected instead
+of answered with misleading results. This makes it easier to reproduce
+incident timelines and test time-dependent queries without rewriting
+timestamps by hand.
 
-For automation, store the complete replay block in the context. Use manual
-clock mode and restricted disclosure explicitly:
-
-```yaml
-contexts:
-  - name: historical-window
-    context:
-      environment: https://example.apps.dynatrace.com
-      token-ref: readonly-reader
-      safety-level: readonly
-      profile: replay
-      replay:
-        data_start: "2026-06-14T08:00:00Z"
-        data_end: "2026-06-14T12:00:00Z"
-        virtual_start: "2026-06-14T10:00:00Z"
-        clock_mode: manual
-        disclosure: restricted
-```
+Replay is designed for safe, read-only investigation. Replay contexts require
+`safety-level: readonly` and the built-in `replay` profile. Store the complete
+replay configuration in the context for automation; the commands below assume
+a context named `historical-window` with such a stored replay block (the
+Quick Start shows the full configuration).
 
 ```bash
 dtctl replay start --context historical-window
@@ -100,62 +89,8 @@ dtctl replay status --context historical-window
 dtctl replay stop --context historical-window
 ```
 
-`realtime` and `full` remain the defaults. They are intended for interactive
-exploration. `full` keeps replay details visible in notices, errors, explain,
-agent, and spill output. `restricted` keeps normal output shaped like non-replay
-output and writes replay facts to a private JSON Lines provenance file.
-Restricted disclosure is not a sandbox. A process running as the same
-operating-system user can read accessible state and invoke hidden management
-verbs. Historical timestamps also remain unchanged.
-
-Milestone 1 supports exactly these historical record tables:
-
-| Table | Record-time field |
-|---|---|
-| `logs` | `timestamp` |
-| `spans` | `start_time` |
-| `events` | `timestamp` |
-| `bizevents` | `timestamp` |
-| `dt.system.events` | `timestamp` |
-| `dt.davis.events.snapshots` | `timestamp` |
-| `dt.davis.problems.snapshots` | `timestamp` |
-
-An exact `fetch dt.davis.problems` uses the same snapshot reconstruction,
-coverage probe, audit, and execution in both disclosure modes. Full disclosure
-announces the mapping and exposes replay details in ordinary output. Restricted
-disclosure writes the mapping notification, clamp warning, coverage reason, and
-effective-query facts only to provenance. The coverage reason is sanitized. A
-mapped restricted result also omits Grail bucket contributions from ordinary
-metadata because their `table` field can name the snapshot source; the returned
-contribution block is retained in private provenance. A restricted coverage
-failure returns
-`The query could not be prepared. It was not executed.` Automatic
-`dt.davis.events` mapping remains unsupported, and direct snapshot queries keep
-their ordinary behavior.
-
-Metrics support automatic and fixed-duration natural metric buckets, plus only
-the tested advanced forms. `interval:1d` means fixed `24h`, not a calendar day,
-and dtctl prints a notification. Calendar intervals and every `shift:` form are
-rejected.
-
-> **Metric look-ahead:** The newest natural metric bucket shows its final stored
-> aggregate even while virtual now is still inside that bucket. Only the bucket
-> being traversed is affected. There is no partial-bucket look-ahead when virtual
-> now is exactly on a bucket boundary. A fixed 24-hour bucket can therefore look
-> ahead by almost 24 hours.
-
-Before stored telemetry execution, dtctl makes one best-effort read of current
-aggregate retention metadata per command invocation. It warns when the replay
-interval starts before a known current retention boundary. If the read fails,
-it warns that retention was not verified. Current metadata cannot report past
-metric-resolution transitions, so metric replay also warns that historical
-resolution was not verified. These warnings never block an otherwise valid
-query. dtctl never changes tenant retention. Restricted disclosure writes the
-warnings only to the provenance file.
-
-See [Historical replay](docs/QUICK_START.md#historical-replay) for source limits,
-Davis snapshot reconstruction, non-overlap behavior, provenance, command
-guardrails, and determinism limits.
+See [Historical replay in the Quick Start](docs/QUICK_START.md#historical-replay)
+for setup, usage, supported data, guardrails, and current limitations.
 
 ## Supported Resources
 

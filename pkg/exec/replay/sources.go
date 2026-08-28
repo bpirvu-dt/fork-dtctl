@@ -42,7 +42,7 @@ type SourcePolicy struct {
 	DefaultLookback time.Duration
 }
 
-// Milestone1SourcePolicy returns the exact approved Wave 1 source policy.
+// Milestone1SourcePolicy returns the current supported replay source policy.
 func Milestone1SourcePolicy() SourcePolicy {
 	tables := []RecordSourcePolicy{
 		{Table: "logs", RecordTimeField: "timestamp"},
@@ -123,7 +123,7 @@ type PrecomputedSourceAnalysis struct {
 	mappingMode DavisProblemsMappingMode
 }
 
-// ClassifySources applies the milestone policy without reading state, the
+// ClassifySources applies the supported source policy without reading state, the
 // clock, configuration, or the network.
 func ClassifySources(ast *AST, policy SourcePolicy) ([]SourceDescriptor, error) {
 	return ClassifySourcesWithMapping(ast, policy, DavisProblemsMappingPolicy{})
@@ -406,7 +406,7 @@ func validateFunctions(ast *AST) error {
 func classifyMetric(command *Node, params []parameterView) (*MetricForm, error) {
 	byKey := parametersByKey(params)
 	if len(byKey["shift"]) > 0 {
-		return nil, replayError(ErrorShift, byKey["shift"][0].node, "shift", "Every timeseries shift form is rejected in milestone 1.", "Remove shift or wait for a separately evidenced milestone.")
+		return nil, replayError(ErrorShift, byKey["shift"][0].node, "shift", "Every timeseries shift form is rejected.", "Remove shift; replay currently supports only unshifted timeseries.")
 	}
 	if err := validateParameterKeys(params, "series", "from", "to", "timeframe", "interval", "by", "shift"); err != nil {
 		return nil, err
@@ -558,5 +558,5 @@ func ownAggregationName(function *Node) string {
 }
 
 func unsupportedMetric(node *Node) error {
-	return replayError(ErrorUnsupportedForm, node, "timeseries", "The timeseries form is outside the exact milestone 1 metric allowlist.", "Use single avg, sum with rate:1s, avg with rollup:avg, the tested single split, or the tested avg/max pair.")
+	return replayError(ErrorUnsupportedForm, node, "timeseries", "The timeseries form is outside the supported metric allowlist.", "Use single avg, sum with rate:1s, avg with rollup:avg, the tested single split, or the tested avg/max pair.")
 }

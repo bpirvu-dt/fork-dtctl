@@ -254,6 +254,10 @@ dtctl wait query "fetch logs | filter status == 'ERROR'" --for=any --timeout 2m
 # Polling:    --timeout --max-attempts --initial-delay --min-interval --max-interval --backoff-multiplier
 ```
 
+Outside replay, the omitted minimum interval is `1s`. In a replay context it is
+`5s`; an explicitly supplied value below `5s` is rejected, and so is a
+`--max-interval` below `5s`.
+
 ## Execution Commands
 
 ```bash
