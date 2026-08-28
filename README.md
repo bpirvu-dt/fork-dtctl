@@ -68,15 +68,13 @@ Token-based authentication and multi-environment configuration are covered in th
 
 ## Historical replay
 
-Historical replay runs normal DQL against the configured Dynatrace environment
-with a controlled historical clock. dtctl replaces semantic uses of `now()`,
-bounds each supported telemetry source to the visible replay interval, reparses
-the effective DQL, and audits it before execution. Unsupported DQL fails closed.
+Historical replay lets you investigate past telemetry with normal DQL while
+dtctl controls what `now()` means. This makes it easier to reproduce incident
+timelines and test time-dependent queries without rewriting timestamps by hand.
 
-Replay contexts require `safety-level: readonly` and the built-in `replay`
-profile. Store the complete replay configuration in the context for automation.
-Use `manual` clock mode with `restricted` disclosure for automated runs;
-`realtime` and `full` are the interactive defaults.
+Replay is designed for safe, read-only investigation. Replay contexts require
+`safety-level: readonly` and the built-in `replay` profile. Store the complete
+replay configuration in the context for automation.
 
 ```bash
 dtctl replay start --context historical-window
@@ -86,48 +84,8 @@ dtctl replay status --context historical-window
 dtctl replay stop --context historical-window
 ```
 
-Normal replay-aware `query`, `query --live`, `wait query`, `verify query`, and
-replay management commands remain available. Mutations, current-state resource
-commands, workflow or function execution, and plugins are blocked. `full`
-disclosure shows replay details. `restricted` routes replay-generated details
-to a private JSON Lines provenance file and uses ordinary non-replay schemas,
-apart from documented mapped-Davis metadata exceptions. Restricted disclosure
-is not a sandbox, and returned historical timestamps remain unchanged.
-
-Replay supports exactly these historical record tables:
-
-| Table | Record-time field |
-|---|---|
-| `logs` | `timestamp` |
-| `spans` | `start_time` |
-| `events` | `timestamp` |
-| `bizevents` | `timestamp` |
-| `dt.system.events` | `timestamp` |
-| `dt.davis.events.snapshots` | `timestamp` |
-| `dt.davis.problems.snapshots` | `timestamp` |
-
-During data execution, an exact `fetch dt.davis.problems` is reconstructed
-from problem snapshots only after a blocking snapshot-coverage probe succeeds.
-`verify query` and `--explain-replay` prepare and audit the mapping without
-probing or executing data. Automatic `dt.davis.events` mapping remains
-unsupported. Direct snapshot queries keep their ordinary replay behavior.
-
-Metrics support automatic and fixed-duration natural metric buckets, plus only
-the tested advanced forms. `interval:1d` means fixed `24h`, not a calendar day,
-and dtctl prints a notification. Calendar intervals and every `shift:` form are
-rejected. Testing observed that a natural bucket can expose its final aggregate
-before virtual now reaches the bucket end. dtctl validates bucket placement,
-not the measurements that contributed to the aggregate.
-
-Ordinary record and metric execution makes at most one best-effort read of
-current aggregate retention metadata per command. Its warnings do not block the
-query. Automatic Davis problems mapping uses the separate blocking coverage
-probe instead. Current metadata cannot prove historical availability or past
-metric resolution, and dtctl never changes tenant retention.
-
-See [Historical replay](docs/QUICK_START.md#historical-replay) for source limits,
-Davis snapshot reconstruction and coverage, metric limits, retention checks,
-non-overlap behavior, provenance, command guardrails, and determinism limits.
+See [Historical replay in the Quick Start](docs/QUICK_START.md#historical-replay)
+for setup, usage, supported data, guardrails, and current limitations.
 
 ## Supported Resources
 
