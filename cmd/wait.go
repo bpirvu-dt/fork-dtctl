@@ -135,12 +135,16 @@ Examples:
 		if err != nil {
 			return err
 		}
+		executor, err := newDQLExecutorFromConfig(cfg, c)
+		if err != nil {
+			return err
+		}
 
 		// Parse timing flags
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		maxAttempts, _ := cmd.Flags().GetInt("max-attempts")
 		initialDelay, _ := cmd.Flags().GetDuration("initial-delay")
-		minInterval, _ := cmd.Flags().GetDuration("min-interval")
+		minInterval := effectiveWaitQueryMinInterval(cmd, executor.ReplayEnabled())
 		maxInterval, _ := cmd.Flags().GetDuration("max-interval")
 		backoffMultiplier, _ := cmd.Flags().GetFloat64("backoff-multiplier")
 
@@ -204,11 +208,7 @@ Examples:
 			AgentMode:    agentMode,
 		}
 
-		// Create executor and waiter
-		executor, err := newDQLExecutorFromConfig(cfg, c)
-		if err != nil {
-			return err
-		}
+		// Create waiter
 		waiter := wait.NewQueryWaiter(executor, waitConfig)
 
 		// Execute wait
@@ -240,6 +240,14 @@ Examples:
 	},
 }
 
+func effectiveWaitQueryMinInterval(cmd *cobra.Command, replayEnabled bool) time.Duration {
+	minInterval, _ := cmd.Flags().GetDuration("min-interval")
+	if replayEnabled && !cmd.Flags().Changed("min-interval") {
+		return exec.MinReplayExecutionInterval
+	}
+	return minInterval
+}
+
 func init() {
 	rootCmd.AddCommand(waitCmd)
 	waitCmd.AddCommand(waitQueryCmd)
@@ -256,7 +264,7 @@ func init() {
 	waitQueryCmd.Flags().Duration("timeout", 5*time.Minute, "maximum time to wait (0 = unlimited)")
 	waitQueryCmd.Flags().Int("max-attempts", 0, "maximum number of attempts (0 = unlimited)")
 	waitQueryCmd.Flags().Duration("initial-delay", 0, "delay before first query attempt")
-	waitQueryCmd.Flags().Duration("min-interval", 1*time.Second, "minimum interval between retries")
+	waitQueryCmd.Flags().Duration("min-interval", 1*time.Second, fmt.Sprintf("minimum interval between retries (replay uses %s when omitted)", exec.MinReplayExecutionInterval))
 	waitQueryCmd.Flags().Duration("max-interval", 10*time.Second, "maximum interval between retries")
 	waitQueryCmd.Flags().Float64("backoff-multiplier", 2.0, "exponential backoff multiplier (must be > 1.0)")
 

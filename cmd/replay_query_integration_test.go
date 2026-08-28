@@ -322,22 +322,36 @@ func setReplayQueryContributionsFlag(t *testing.T, value bool) {
 
 func setReplayWaitQueryFlags(t *testing.T, interval time.Duration) {
 	t.Helper()
+	setReplayWaitQueryCadenceFlags(t, interval, true, interval, true)
+}
+
+func setReplayWaitQueryCadenceFlags(t *testing.T, minInterval time.Duration, minChanged bool, maxInterval time.Duration, maxChanged bool) {
+	t.Helper()
 	wanted := map[string]string{
 		"for": "any", "timeout": "0", "max-attempts": "2", "initial-delay": "0",
-		"min-interval": interval.String(), "max-interval": interval.String(), "backoff-multiplier": "2",
+		"min-interval": minInterval.String(), "max-interval": maxInterval.String(), "backoff-multiplier": "2",
 		"quiet": "false", "verbose": "false", "file": "",
 	}
-	previous := make(map[string]string, len(wanted))
+	type flagState struct {
+		value   string
+		changed bool
+	}
+	previous := make(map[string]flagState, len(wanted))
 	for name, value := range wanted {
 		flag := waitQueryCmd.Flags().Lookup(name)
-		previous[name] = flag.Value.String()
-		if err := waitQueryCmd.Flags().Set(name, value); err != nil {
+		previous[name] = flagState{value: flag.Value.String(), changed: flag.Changed}
+		if err := flag.Value.Set(value); err != nil {
 			t.Fatal(err)
 		}
+		flag.Changed = true
 	}
+	waitQueryCmd.Flags().Lookup("min-interval").Changed = minChanged
+	waitQueryCmd.Flags().Lookup("max-interval").Changed = maxChanged
 	t.Cleanup(func() {
-		for name, value := range previous {
-			_ = waitQueryCmd.Flags().Set(name, value)
+		for name, state := range previous {
+			flag := waitQueryCmd.Flags().Lookup(name)
+			_ = flag.Value.Set(state.value)
+			flag.Changed = state.changed
 		}
 	})
 }
@@ -371,6 +385,60 @@ func TestReplayQueryCLICadenceRejectsBeforeParseOrExecute(t *testing.T) {
 	setReplayQueryFlags(t, true, 4*time.Second, false)
 	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
 	if err == nil || !strings.Contains(err.Error(), "supported minimum of 5s") {
+		t.Fatalf("error = %v", err)
+	}
+	if parses, executes := api.counts(); parses != 0 || executes != 0 {
+		t.Fatalf("parse=%d execute=%d, want zero", parses, executes)
+	}
+}
+
+func TestReplayWaitQueryCLIOmittedMinIntervalUsesReplayDefault(t *testing.T) {
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal,
+		originalBody:   replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody: replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayWaitQueryCadenceFlags(t, time.Second, false, 10*time.Second, false)
+
+	if err := waitQueryCmd.RunE(waitQueryCmd, []string{replayCLIRecordOriginal}); err != nil {
+		t.Fatalf("wait query with omitted --min-interval failed: %v", err)
+	}
+	if parses, executes := api.counts(); parses != 2 || executes != 1 {
+		t.Fatalf("parse=%d execute=%d, want two parses and one execution", parses, executes)
+	}
+}
+
+func TestReplayWaitQueryCLIExplicitFastMinIntervalRemainsRejected(t *testing.T) {
+	api := &replayCLIQueryAPI{t: t}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayWaitQueryCadenceFlags(t, time.Second, true, 10*time.Second, false)
+
+	err := waitQueryCmd.RunE(waitQueryCmd, []string{replayCLIRecordOriginal})
+	if err == nil || !strings.Contains(err.Error(), "supported minimum of 5s") {
+		t.Fatalf("error = %v", err)
+	}
+	if parses, executes := api.counts(); parses != 0 || executes != 0 {
+		t.Fatalf("parse=%d execute=%d, want zero", parses, executes)
+	}
+}
+
+func TestReplayWaitQueryCLIExplicitIncompatibleMaxIntervalIsNotChanged(t *testing.T) {
+	api := &replayCLIQueryAPI{t: t}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayWaitQueryCadenceFlags(t, time.Second, false, 4*time.Second, true)
+
+	err := waitQueryCmd.RunE(waitQueryCmd, []string{replayCLIRecordOriginal})
+	if err == nil || !strings.Contains(err.Error(), "min-interval: must be less than or equal to max-interval") {
 		t.Fatalf("error = %v", err)
 	}
 	if parses, executes := api.counts(); parses != 0 || executes != 0 {
