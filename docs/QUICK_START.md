@@ -1415,8 +1415,8 @@ execution and sends that text to Grail only after a fail-closed audit.
 
 #### Configure an automated replay
 
-Automation must store a complete replay block in the context. Use manual clock
-mode and restricted disclosure explicitly:
+Automation must store a complete replay block in the context. This example uses
+realtime clock mode with restricted disclosure:
 
 ```yaml
 apiVersion: dtctl.io/v1
@@ -1433,7 +1433,7 @@ contexts:
         data_start: "2026-06-14T08:00:00Z"
         data_end: "2026-06-14T12:00:00Z"
         virtual_start: "2026-06-14T10:00:00Z"
-        clock_mode: manual
+        clock_mode: realtime
         disclosure: restricted
 ```
 
@@ -1445,9 +1445,9 @@ Replay contexts require `safety-level: readonly` and the reserved built-in
 `replay` profile. Replay changes DQL reads. It does not virtualize mutations.
 
 `realtime` is the clock default. It advances with host time. `manual` stays
-fixed until `replay advance`. `full` is the disclosure default. The example
-above is for automation, so it selects `manual` and `restricted` explicitly.
-Use `realtime` with `full` only as an explicitly chosen interactive workflow.
+fixed until `replay advance`. `full` is the disclosure default. Clock mode and
+disclosure are independent. The example keeps `realtime` and explicitly selects
+`restricted` disclosure.
 
 #### Manage the replay session
 
@@ -1458,7 +1458,7 @@ dtctl replay start --context historical-window
 # Run normal DQL at the current virtual now
 dtctl query 'fetch logs, from:now()-1h' --context historical-window
 
-# Move a manual clock by a positive fixed duration
+# Move the virtual clock forward by a positive fixed duration
 dtctl replay advance 10m --context historical-window
 
 # Read a lock-free local snapshot without a network call or state write
