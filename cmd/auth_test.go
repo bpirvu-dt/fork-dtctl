@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,39 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/dynatrace-oss/dtctl/pkg/auth"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 )
+
+var errTestOAuthFlowStarted = errors.New("test OAuth flow started")
+
+type testAuthOAuthFlow struct {
+	startCalls int
+}
+
+func (f *testAuthOAuthFlow) Start(context.Context) (*auth.TokenSet, error) {
+	f.startCalls++
+	return nil, errTestOAuthFlowStarted
+}
+
+func (f *testAuthOAuthFlow) GetUserInfo(string) (*auth.UserInfo, error) {
+	return nil, errors.New("unexpected GetUserInfo call")
+}
+
+func installTestAuthOAuthFlow(t *testing.T) *testAuthOAuthFlow {
+	t.Helper()
+
+	original := authNewOAuthFlowFunc
+	flow := &testAuthOAuthFlow{}
+	authNewOAuthFlowFunc = func(*auth.OAuthConfig) (authOAuthFlow, error) {
+		return flow, nil
+	}
+	t.Cleanup(func() {
+		authNewOAuthFlowFunc = original
+	})
+
+	return flow
+}
 
 // setupAuthTestConfig creates a temporary config with the given context and returns the path.
 func setupAuthTestConfig(t *testing.T, contextName, environment, tokenRef string) string {
@@ -48,6 +80,8 @@ func resetAuthLoginFlags(t *testing.T) {
 // TestAuthLogin_FlagValidation checks that the login command fails correctly when
 // neither flags nor a current context are available.
 func TestAuthLogin_FlagValidation(t *testing.T) {
+	installTestAuthOAuthFlow(t)
+
 	tests := []struct {
 		name        string
 		args        []string
@@ -117,6 +151,8 @@ func TestAuthLogin_FlagValidation(t *testing.T) {
 // error – i.e. it gets past flag validation.
 func TestAuthLogin_CurrentContextFallback(t *testing.T) {
 	viper.Reset()
+	testFlow := installTestAuthOAuthFlow(t)
+	t.Setenv(config.EnvTokenStorage, "")
 
 	const (
 		ctxName  = "my-context"
@@ -132,13 +168,12 @@ func TestAuthLogin_CurrentContextFallback(t *testing.T) {
 	// keyring check (which fails in a test environment).
 	rootCmd.SetArgs([]string{"auth", "login"})
 	err := rootCmd.Execute()
+	if testFlow.startCalls != 0 {
+		t.Fatal("expected disabled keyring to stop login before OAuth")
+	}
 
-	// We expect the command to fail, but NOT because of missing flags.
-	// It should fail later (keyring unavailable or similar infrastructure error).
 	if err == nil {
-		// Unlikely in a unit test environment without a real keyring/browser,
-		// but not a failure of the logic we are testing.
-		return
+		t.Fatal("expected disabled keyring to reject login")
 	}
 
 	if strings.Contains(err.Error(), "--context and --environment are required") {
@@ -159,6 +194,8 @@ func TestAuthLogin_CurrentContextFallback(t *testing.T) {
 func TestAuthLogin_PartialFlags_EnvironmentFromContext(t *testing.T) {
 	viper.Reset()
 	resetAuthLoginFlags(t)
+	testFlow := installTestAuthOAuthFlow(t)
+	t.Setenv(config.EnvTokenStorage, "")
 
 	const (
 		ctxName  = "my-context"
@@ -173,8 +210,14 @@ func TestAuthLogin_PartialFlags_EnvironmentFromContext(t *testing.T) {
 	// --context is the active context, so environment resolution uses its own URL.
 	rootCmd.SetArgs([]string{"auth", "login", "--context", ctxName})
 	err := rootCmd.Execute()
+	if testFlow.startCalls != 0 {
+		t.Fatal("expected disabled keyring to stop login before OAuth")
+	}
+	if err == nil {
+		t.Fatal("expected disabled keyring to reject login")
+	}
 
-	if err != nil && strings.Contains(err.Error(), "--context and --environment are required") {
+	if strings.Contains(err.Error(), "--context and --environment are required") {
 		t.Errorf("expected environment to be filled from named context, got: %v", err)
 	}
 }
@@ -185,6 +228,8 @@ func TestAuthLogin_PartialFlags_EnvironmentFromContext(t *testing.T) {
 // allows the flow to continue past the keyring gate.
 func TestAuthLogin_KeyringRecovery(t *testing.T) {
 	viper.Reset()
+	resetAuthLoginFlags(t)
+	testFlow := installTestAuthOAuthFlow(t)
 
 	const (
 		ctxName = "recover-ctx"
@@ -226,13 +271,11 @@ func TestAuthLogin_KeyringRecovery(t *testing.T) {
 	if !ensureCalled {
 		t.Fatal("expected EnsureKeyringCollection to be called during recovery")
 	}
-
-	// After recovery the command should proceed past the keyring gate.
-	// It will eventually fail further along (no real keyring for token
-	// storage, or OAuth infrastructure issues), but not with the initial
-	// keyring gate error about requiring a working keyring.
-	if err != nil && strings.Contains(err.Error(), "OAuth login requires a working system keyring") {
-		t.Errorf("expected recovery to succeed and proceed past keyring gate, got: %v", err)
+	if testFlow.startCalls != 1 {
+		t.Fatalf("expected recovery to start OAuth once, got %d calls", testFlow.startCalls)
+	}
+	if !errors.Is(err, errTestOAuthFlowStarted) {
+		t.Fatalf("expected controlled OAuth boundary error, got: %v", err)
 	}
 }
 
@@ -493,7 +536,9 @@ func TestResolveLoginContext(t *testing.T) {
 func TestAuthLogin_ContextOnly_UsesNamedContextURL(t *testing.T) {
 	viper.Reset()
 	resetAuthLoginFlags(t)
+	installTestAuthOAuthFlow(t)
 	t.Setenv("DTCTL_DISABLE_KEYRING", "1")
+	t.Setenv(config.EnvTokenStorage, "")
 
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -511,17 +556,20 @@ func TestAuthLogin_ContextOnly_UsesNamedContextURL(t *testing.T) {
 
 	rootCmd.SetArgs([]string{"auth", "login", "--context", "hardsfm"})
 	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected disabled keyring to reject login")
+	}
 
 	// The command must NOT fail with a context/environment validation error —
 	// that would indicate hardsfm's URL was not resolved from config.
-	if err != nil && strings.Contains(err.Error(), "--context and --environment are required") {
+	if strings.Contains(err.Error(), "--context and --environment are required") {
 		t.Errorf("expected hardsfm's URL to be resolved from config, got: %v", err)
 	}
-	if err != nil && strings.Contains(err.Error(), "not found in config") {
+	if strings.Contains(err.Error(), "not found in config") {
 		t.Errorf("expected hardsfm to be found in config, got: %v", err)
 	}
 	// The command should fail at the keyring gate (disabled in tests), not earlier.
-	if err != nil && !strings.Contains(err.Error(), "keyring") {
+	if !strings.Contains(err.Error(), "keyring") {
 		t.Errorf("expected keyring error after successful URL resolution, got: %v", err)
 	}
 }
@@ -531,6 +579,7 @@ func TestAuthLogin_ContextOnly_UsesNamedContextURL(t *testing.T) {
 func TestAuthLogin_NewContext_RequiresEnvironment(t *testing.T) {
 	viper.Reset()
 	resetAuthLoginFlags(t)
+	installTestAuthOAuthFlow(t)
 	t.Setenv("DTCTL_DISABLE_KEYRING", "1")
 
 	tmpDir := t.TempDir()
@@ -562,6 +611,8 @@ func TestAuthLogin_NewContext_RequiresEnvironment(t *testing.T) {
 // diagnostic error with suggestions including file-based storage.
 func TestAuthLogin_KeyringRecoveryFailure(t *testing.T) {
 	viper.Reset()
+	installTestAuthOAuthFlow(t)
+	t.Setenv(config.EnvTokenStorage, "")
 
 	const (
 		ctxName = "fail-ctx"
@@ -605,11 +656,11 @@ func TestAuthLogin_KeyringRecoveryFailure(t *testing.T) {
 
 // TestAuthLogin_FileStorage_PassesKeyringGate verifies that when the keyring
 // is unavailable but DTCTL_TOKEN_STORAGE=file is set, auth login proceeds
-// past the keyring gate (it will fail later at the actual OAuth flow, but
-// the keyring gate itself should not block).
+// past the keyring gate and reaches the OAuth boundary.
 func TestAuthLogin_FileStorage_PassesKeyringGate(t *testing.T) {
 	viper.Reset()
 	resetAuthLoginFlags(t)
+	testFlow := installTestAuthOAuthFlow(t)
 	t.Setenv("DTCTL_DISABLE_KEYRING", "1")
 	t.Setenv(config.EnvTokenStorage, "file")
 
@@ -629,21 +680,14 @@ func TestAuthLogin_FileStorage_PassesKeyringGate(t *testing.T) {
 		return fmt.Errorf("keyring disabled via %s environment variable", config.EnvDisableKeyring)
 	}
 
-	// Use a very short timeout so the OAuth flow fails quickly instead of hanging
-	rootCmd.SetArgs([]string{"auth", "login", "--context", ctxName, "--environment", envURL, "--timeout", "1s"})
+	rootCmd.SetArgs([]string{"auth", "login", "--context", ctxName, "--environment", envURL})
 	err := rootCmd.Execute()
 
-	// The command should NOT fail at the keyring gate.
-	// It will fail further along (OAuth timeout or no browser),
-	// but the error should NOT be about requiring a keyring.
-	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "requires a token storage backend") {
-			t.Errorf("expected file storage to pass keyring gate, got blocking error: %v", err)
-		}
-		if strings.Contains(errMsg, "requires a working system keyring") {
-			t.Errorf("expected file storage to pass keyring gate, got old-style keyring error: %v", err)
-		}
+	if testFlow.startCalls != 1 {
+		t.Fatalf("expected file storage to start OAuth once, got %d calls", testFlow.startCalls)
+	}
+	if !errors.Is(err, errTestOAuthFlowStarted) {
+		t.Fatalf("expected controlled OAuth boundary error, got: %v", err)
 	}
 }
 
@@ -653,6 +697,7 @@ func TestAuthLogin_FileStorage_PassesKeyringGate(t *testing.T) {
 func TestAuthLogin_KeyringRecovery_WithFileStorage(t *testing.T) {
 	viper.Reset()
 	resetAuthLoginFlags(t)
+	testFlow := installTestAuthOAuthFlow(t)
 	t.Setenv("DTCTL_DISABLE_KEYRING", "1")
 	t.Setenv(config.EnvTokenStorage, "file")
 
@@ -672,13 +717,14 @@ func TestAuthLogin_KeyringRecovery_WithFileStorage(t *testing.T) {
 		return fmt.Errorf("keyring disabled via %s environment variable", config.EnvDisableKeyring)
 	}
 
-	// Use a very short timeout so the OAuth flow fails quickly instead of hanging
-	rootCmd.SetArgs([]string{"auth", "login", "--context", ctxName, "--environment", envURL, "--timeout", "1s"})
+	rootCmd.SetArgs([]string{"auth", "login", "--context", ctxName, "--environment", envURL})
 	err := rootCmd.Execute()
 
-	// Should NOT fail at the keyring gate — file storage should let it through.
-	if err != nil && strings.Contains(err.Error(), "requires a token storage backend") {
-		t.Errorf("expected file storage to bypass keyring gate, got: %v", err)
+	if testFlow.startCalls != 1 {
+		t.Fatalf("expected file storage to start OAuth once, got %d calls", testFlow.startCalls)
+	}
+	if !errors.Is(err, errTestOAuthFlowStarted) {
+		t.Fatalf("expected controlled OAuth boundary error, got: %v", err)
 	}
 }
 
