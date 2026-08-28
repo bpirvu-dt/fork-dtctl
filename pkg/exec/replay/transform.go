@@ -407,7 +407,7 @@ func sourceNotices(source *sourceAnalysis, compiled SourceCompilation, input Com
 		input.VirtualStart.Sub(input.ReplayInterval.Start) < 6*time.Hour {
 		notices = append(notices, Notice{
 			Kind: NoticeWarning, Code: NoticeDavisWarmup, SourceOrdinal: source.Ordinal,
-			Message: "The Davis snapshot query has less than six hours of warm-up between data_start and virtual_start. Problem-state reconstruction at virtual_start may be incomplete; Phase 0B did not observe this short-gap hazard live. Compilation continues, and this warning does not change the replay boundaries.",
+			Message: "The Davis snapshot query has less than six hours of warm-up between data_start and virtual_start. Problem-state reconstruction at virtual_start may be incomplete; supporting live tests did not observe this short-gap hazard. Compilation continues, and this warning does not change the replay boundaries.",
 		})
 	}
 	if source.Class == SourceDavisProblemsView {

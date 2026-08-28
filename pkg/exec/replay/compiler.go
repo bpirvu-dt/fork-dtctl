@@ -335,7 +335,7 @@ func validateCompileInput(input CompileInput) (CompileInput, error) {
 		input.GlobalDefault = &Interval{Start: input.GlobalDefault.Start.UTC(), End: input.GlobalDefault.End.UTC()}
 	}
 	if len(input.SourcePolicy.RecordTables) == 0 {
-		return input, replayError(ErrorUnsupportedSource, nil, "source policy", "The replay source policy is empty.", "Pass the explicit milestone 1 source policy.")
+		return input, replayError(ErrorUnsupportedSource, nil, "source policy", "The replay source policy is empty.", "Pass the explicit supported replay source policy.")
 	}
 	if err := validateDavisMappingPolicy(input.DavisMapping); err != nil {
 		return input, err
