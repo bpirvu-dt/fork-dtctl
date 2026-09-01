@@ -1,0 +1,1 @@
+{"ok":false,"result":null,"error":{"code":"query_failed","message":"The query is being run too frequently; the minimum time between runs is 5s (requested 4s)."}}

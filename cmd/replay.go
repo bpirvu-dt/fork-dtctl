@@ -70,7 +70,9 @@ when the context safety level is readonly.
 The context must use safety-level readonly and the reserved replay profile.
 Realtime is the default clock mode. Full is the default disclosure mode. For
 automation, store a complete replay block and select clock_mode manual with
-disclosure restricted explicitly.
+disclosure restricted explicitly. Restricted query errors describe the failure
+well enough to act on — an unsupported element, a too-fast cadence, a rejected
+timeframe — without echoing internal query rewrites.
 
 Run normal DQL after start. dtctl prepares and audits effective DQL for the
 current virtual now. Unsupported sources and time semantics fail closed.

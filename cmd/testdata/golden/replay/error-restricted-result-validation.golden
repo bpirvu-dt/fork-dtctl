@@ -1,1 +1,1 @@
-{"ok":false,"result":null,"error":{"code":"query_failed","message":"The returned data could not be validated. No result was returned."}}
+{"ok":false,"result":null,"error":{"code":"query_failed","message":"The query result failed a consistency check: metric result record 0 has an invalid timeframe or natural interval."}}

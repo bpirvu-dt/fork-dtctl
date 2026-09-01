@@ -152,16 +152,36 @@ const (
 )
 
 const (
-	restrictedNoDataMessage            = "No data is available for the requested timeframe. The query was not executed."
-	restrictedTemporaryNoDataMessage   = "no data yet for the requested timeframe; retrying"
-	restrictedReadinessMessage         = "this context is not ready for queries"
-	restrictedPreparationMessage       = "The query could not be prepared. It was not executed."
-	restrictedValidationMessage        = "The returned data could not be validated. No result was returned."
-	restrictedFinalizationMessage      = "The result could not be finalized. No result was returned."
-	restrictedPreflightSinkMessage     = "Required local recording is unavailable. The query was not executed."
-	restrictedPostExecutionSinkMessage = "Required local recording failed. No result was returned."
-	restrictedRemoteExecutionMessage   = "The query failed. No result was returned."
-	fullTemporaryNonOverlapMessage     = "no visible overlap yet"
+	restrictedNoDataMessage             = "No data is available for the requested timeframe."
+	restrictedTemporaryNoDataMessage    = "The requested timeframe is not available yet."
+	restrictedReadinessMessage          = "This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query."
+	restrictedQueryInvalidMessage       = "The query could not be run as written."
+	restrictedValidationFallbackMessage = "The query result could not be validated and was withheld."
+	restrictedGenericExecutionMessage   = "The query failed and no result was returned."
+	restrictedSinkConfigMessage         = "Query execution is not available in this environment. This is a configuration issue that cannot be resolved by changing or retrying the query."
+	fullTemporaryNonOverlapMessage      = "no visible overlap yet"
+)
+
+// ReplayCadenceError reports a replay request rate below the supported floor.
+// Error returns the exact ordinary text so full disclosure and existing tests
+// are unchanged; the typed fields let restricted disclosure author a rate hint
+// that keeps the numbers without naming the replay loop.
+type ReplayCadenceError struct {
+	Requested time.Duration
+	Minimum   time.Duration
+}
+
+func (e *ReplayCadenceError) Error() string {
+	return fmt.Sprintf("replay query interval %s is faster than the supported minimum of %s", e.Requested, e.Minimum)
+}
+
+// ErrReplayProvenancePathMissing and ErrReplayProvenanceSinkUnavailable mark
+// the two restricted-disclosure sink failures that are configuration faults an
+// operator must fix, distinct from transient sink I/O. Their text is unchanged
+// so full disclosure is unaffected.
+var (
+	ErrReplayProvenancePathMissing     = errors.New("restricted disclosure has no provenance path")
+	ErrReplayProvenanceSinkUnavailable = errors.New("restricted provenance sink is unavailable")
 )
 
 // ReplayAttemptError retains the detailed cause for policy and provenance
@@ -295,7 +315,7 @@ func replayInfoFromPrepared(prepared PreparedQuery) ReplayExecutionInfo {
 	}
 }
 
-func restrictedMessageForInfo(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable, postExecution bool) string {
+func restrictedMessageForInfo(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable bool) string {
 	switch category {
 	case replayErrorNonOverlap:
 		if retryable {
@@ -304,28 +324,108 @@ func restrictedMessageForInfo(category replayErrorCategory, detail error, info R
 		return restrictedNoDataMessage
 	case replayErrorReadiness:
 		return restrictedReadinessMessage
+	case replayErrorPrepare:
+		return restrictedPreparationMessage(detail, info)
 	case replayErrorValidation:
-		return restrictedValidationMessage
+		return restrictedValidationMessage(detail, info)
 	case replayErrorFinalize:
-		return restrictedFinalizationMessage
+		return restrictedGenericExecutionMessage
 	case replayErrorSink:
-		if postExecution {
-			return restrictedPostExecutionSinkMessage
+		if errors.Is(detail, ErrReplayProvenancePathMissing) || errors.Is(detail, ErrReplayProvenanceSinkUnavailable) {
+			return restrictedSinkConfigMessage
 		}
-		return restrictedPreflightSinkMessage
+		return restrictedGenericExecutionMessage
 	case replayErrorRemote:
 		if detail != nil && restrictedRemoteTextMayPass(detail, info) {
 			return detail.Error()
 		}
-		return restrictedRemoteExecutionMessage
+		if replayRemoteFailurePermanent(detail) {
+			return restrictedQueryInvalidMessage
+		}
+		return restrictedGenericExecutionMessage
 	default:
-		return restrictedPreparationMessage
+		return restrictedQueryInvalidMessage
 	}
+}
+
+// restrictedPreparationMessage authors an actionable, replay-silent hint for a
+// preparation failure. It mines the typed rejection fields (never the
+// replay-worded Message), passes a user's own parse error through the content
+// scanner, and falls back to the generic invalid-query text otherwise.
+func restrictedPreparationMessage(detail error, info ReplayExecutionInfo) string {
+	var cadence *ReplayCadenceError
+	if errors.As(detail, &cadence) {
+		return fmt.Sprintf("The query is being run too frequently; the minimum time between runs is %s (requested %s).", cadence.Minimum, cadence.Requested)
+	}
+	var replayErr *execreplay.ReplayError
+	if errors.As(detail, &replayErr) {
+		if hint := preparationHintFromReplayError(replayErr); hint != "" && !replayTextExposesInternals(hint, info, true) {
+			return hint
+		}
+		return restrictedQueryInvalidMessage
+	}
+	// A real parse error against the user's own query is safe to surface once
+	// scanned. The original query is the only DQL parsed before the effective
+	// query is computed, so an empty EffectiveQuery proves the failure predates
+	// any rewrite; later parse errors describe rewritten DQL and stay generic.
+	var queryErr *sdkquery.QueryError
+	if errors.As(detail, &queryErr) && info.EffectiveQuery == "" && !replayTextExposesInternals(detail.Error(), info, false) {
+		return detail.Error()
+	}
+	return restrictedQueryInvalidMessage
+}
+
+// preparationHintFromReplayError authors a query hint from a typed compiler
+// rejection's stable Code, Construct, and Remedy. User-fault codes yield a
+// concrete hint; internal-mismatch codes yield "" so the caller stays generic.
+func preparationHintFromReplayError(re *execreplay.ReplayError) string {
+	withRemedy := func(base string) string {
+		if re.Remedy != "" {
+			return base + " " + re.Remedy
+		}
+		return base
+	}
+	switch re.Code {
+	case execreplay.ErrorUnsupportedForm, execreplay.ErrorUnsupportedSource:
+		return withRemedy("The query uses an unsupported element: " + re.Construct + ".")
+	case execreplay.ErrorTimeframe:
+		return withRemedy("The query's timeframe could not be interpreted.")
+	case execreplay.ErrorShift:
+		// The compiler's only shift remedy names the replay machinery, so it
+		// would fail the scan and drop to generic. Author a safe remedy here
+		// instead of appending re.Remedy; the message is actionable on its own.
+		return "The query uses an unsupported time shift. Remove the time shift."
+	default:
+		return ""
+	}
+}
+
+// restrictedValidationMessage surfaces a concrete result-consistency reason
+// when it exposes no replay internals. Ordinary metric vocabulary such as
+// "interval" or "natural bucket" is allowed; a hard tell falls back to generic.
+func restrictedValidationMessage(detail error, info ReplayExecutionInfo) string {
+	if detail != nil && !replayTextExposesInternals(detail.Error(), info, true) {
+		return "The query result failed a consistency check: " + detail.Error() + "."
+	}
+	return restrictedValidationFallbackMessage
+}
+
+// replayTextExposesInternals reports whether a candidate string reveals replay
+// machinery: a guard word, the Davis reconstruction table/lexemes, a generated
+// virtual timestamp, or the rewritten effective/canonical query. allowMetricTerms
+// permits ordinary metric vocabulary ("interval", "natural bucket") that a
+// result-consistency reason may legitimately use; the hard tells always block.
+func replayTextExposesInternals(text string, info ReplayExecutionInfo, allowMetricTerms bool) bool {
+	return containsRestrictedGeneratedWord(text, allowMetricTerms) || containsDavisMappingText(text, info)
 }
 
 func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	generated := detail.Error()
-	if replayInfoHasDavisProblemsMapping(info) && containsDavisMappingText(generated, info) {
+	// A generated virtual timestamp, the rewritten effective/canonical query, or
+	// a Davis reconstruction token is never ordinary remote content. Block it for
+	// every remote error, not only Davis-mapped ones, before the verbatim body is
+	// stripped as trusted API text.
+	if containsDavisMappingText(generated, info) {
 		return false
 	}
 	// QueryError fields are verbatim remote API content wrapped in the normal
@@ -334,7 +434,7 @@ func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	var queryErr *sdkquery.QueryError
 	if errors.As(detail, &queryErr) {
 		generated = strings.Replace(generated, queryErr.Error(), "", 1)
-		return !containsRestrictedGeneratedWord(generated)
+		return !containsRestrictedGeneratedWord(generated, false)
 	}
 	// Poll errors use APIError. Its formatter contributes only the fixed
 	// normal error shape; remove it as a unit for the same reason. Any outer
@@ -342,9 +442,9 @@ func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	var apiErr *httpclient.APIError
 	if errors.As(detail, &apiErr) {
 		generated = strings.Replace(generated, apiErr.Error(), "", 1)
-		return !containsRestrictedGeneratedWord(generated)
+		return !containsRestrictedGeneratedWord(generated, false)
 	}
-	return !containsRestrictedGeneratedWord(generated)
+	return !containsRestrictedGeneratedWord(generated, false)
 }
 
 func replayInfoHasDavisProblemsMapping(info ReplayExecutionInfo) bool {
@@ -554,9 +654,13 @@ func isASCIIDigit(value byte) bool {
 	return value >= '0' && value <= '9'
 }
 
-func containsRestrictedGeneratedWord(value string) bool {
+func containsRestrictedGeneratedWord(value string, allowMetricTerms bool) bool {
 	value = strings.ToLower(value)
-	for _, word := range []string{"replay", "virtual", "session", "clock", "interval", "effective"} {
+	words := []string{"replay", "virtual", "session", "clock", "effective"}
+	if !allowMetricTerms {
+		words = append(words, "interval")
+	}
+	for _, word := range words {
 		if strings.Contains(value, word) {
 			return true
 		}
@@ -564,11 +668,14 @@ func containsRestrictedGeneratedWord(value string) bool {
 	return false
 }
 
+// postExecution is retained for call-site symmetry between pre- and
+// post-execution failures; sink message selection now keys off typed sentinels.
 func newReplayAttemptError(category replayErrorCategory, detail error, info ReplayExecutionInfo, retryable bool, retryAfter time.Duration, postExecution bool) *ReplayAttemptError {
+	_ = postExecution
 	public := ""
 	switch {
 	case info.Disclosure == session.ReplayDisclosureRestricted:
-		public = restrictedMessageForInfo(category, detail, info, retryable, postExecution)
+		public = restrictedMessageForInfo(category, detail, info, retryable)
 	case category == replayErrorNonOverlap && retryable:
 		public = fullTemporaryNonOverlapMessage
 	case detail != nil:
