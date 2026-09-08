@@ -1,1 +1,1 @@
-{"ok":false,"result":null,"error":{"code":"query_failed","message":"this context is not ready for queries"}}
+{"ok":false,"result":null,"error":{"code":"query_failed","message":"This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query."}}

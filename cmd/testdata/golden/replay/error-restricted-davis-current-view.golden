@@ -1,1 +1,1 @@
-{"ok":false,"result":null,"error":{"code":"query_failed","message":"The query could not be prepared. It was not executed."}}
+{"ok":false,"result":null,"error":{"code":"query_failed","message":"The query could not be run as written."}}

@@ -1,1 +1,1 @@
-{"ok":false,"result":null,"error":{"code":"query_failed","message":"no data yet for the requested timeframe; retrying"}}
+{"ok":false,"result":null,"error":{"code":"query_failed","message":"The requested timeframe is not available yet."}}

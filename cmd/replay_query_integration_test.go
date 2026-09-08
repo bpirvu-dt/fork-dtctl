@@ -448,7 +448,7 @@ func TestReplayWaitQueryCLIExplicitIncompatibleMaxIntervalIsNotChanged(t *testin
 	}
 }
 
-func TestReplayQueryCLIRestrictedCadenceIsGenericAndRecordedBeforeLoop(t *testing.T) {
+func TestReplayQueryCLIRestrictedCadenceSurfacesRateAndRecordsBeforeLoop(t *testing.T) {
 	api := &replayCLIQueryAPI{t: t}
 	server := httptest.NewServer(api)
 	defer server.Close()
@@ -456,7 +456,7 @@ func TestReplayQueryCLIRestrictedCadenceIsGenericAndRecordedBeforeLoop(t *testin
 		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
 	setReplayQueryFlags(t, true, 4*time.Second, false)
 	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
-	if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+	if err == nil || err.Error() != "The query is being run too frequently; the minimum time between runs is 5s (requested 4s)." {
 		t.Fatalf("error = %v", err)
 	}
 	if parses, executes := api.counts(); parses != 0 || executes != 0 {
@@ -645,7 +645,7 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
 		setReplayQueryFlags(t, false, time.Minute, false)
 		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
-		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+		if err == nil || err.Error() != "The query could not be run as written." {
 			t.Fatalf("error = %v", err)
 		}
 		var rendered strings.Builder
@@ -673,7 +673,7 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
 		setReplayQueryFlags(t, false, time.Minute, false)
 		err := queryCmd.RunE(queryCmd, []string{replayCLIDavisOriginal})
-		if err == nil || err.Error() != "The query failed. No result was returned." || strings.Contains(err.Error(), "dt.davis.problems.snapshots") {
+		if err == nil || err.Error() != "The query could not be run as written." || strings.Contains(err.Error(), "dt.davis.problems.snapshots") {
 			t.Fatalf("error = %v", err)
 		}
 		var rendered strings.Builder
@@ -707,7 +707,7 @@ func TestReplayQueryCLIDavisProblemsMappingDisclosureCoverageAndInspection(t *te
 		fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual, start, virtual, end)
 		setReplayQueryFlags(t, false, time.Minute, false)
 		err := queryCmd.RunE(queryCmd, []string{original})
-		if err == nil || err.Error() != "The query could not be prepared. It was not executed." {
+		if err == nil || err.Error() != "The query could not be run as written." {
 			t.Fatalf("error = %v", err)
 		}
 		var rendered strings.Builder
@@ -900,8 +900,8 @@ func TestReplayQueryCLIRealtimeWaitAndLiveRetryTemporaryNonOverlap(t *testing.T)
 	}{
 		{"wait", session.ReplayDisclosureFull, "no visible overlap yet"},
 		{"live", session.ReplayDisclosureFull, "no visible overlap yet"},
-		{"wait", session.ReplayDisclosureRestricted, "no data yet for the requested timeframe; retrying"},
-		{"live", session.ReplayDisclosureRestricted, "no data yet for the requested timeframe; retrying"},
+		{"wait", session.ReplayDisclosureRestricted, "The requested timeframe is not available yet."},
+		{"live", session.ReplayDisclosureRestricted, "The requested timeframe is not available yet."},
 	}
 	for _, test := range tests {
 		t.Run(test.mode+"-"+test.disclosure, func(t *testing.T) {
@@ -1013,7 +1013,7 @@ func TestReplayQueryCLIRestrictedSinkFailureUsesGenericErrorBeforeParse(t *testi
 	}
 	setReplayQueryFlags(t, false, time.Minute, false)
 	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
-	if err == nil || err.Error() != "Required local recording is unavailable. The query was not executed." {
+	if err == nil || err.Error() != "The query failed and no result was returned." {
 		t.Fatalf("error = %v", err)
 	}
 	if parses, executes := api.counts(); parses != 0 || executes != 0 {
@@ -1037,7 +1037,7 @@ func TestReplayQueryCLIRestrictedNoSessionPreflightsAndRecordsBeforeGenericReadi
 	configureReplayCLI(t, configPath, stateDir, &replayCLIFakeClock{now: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)})
 	setReplayQueryFlags(t, false, time.Minute, false)
 	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
-	if err == nil || err.Error() != "this context is not ready for queries" {
+	if err == nil || err.Error() != "This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query." {
 		t.Fatalf("error = %v", err)
 	}
 	if parses, executes := api.counts(); parses != 0 || executes != 0 {

@@ -263,17 +263,18 @@ func TestReplayRestrictedQueryErrorGoldens(t *testing.T) {
 		name    string
 		message string
 	}{
-		{"non-overlap", "No data is available for the requested timeframe. The query was not executed."},
-		{"temporary-no-data", "no data yet for the requested timeframe; retrying"},
-		{"readiness", "this context is not ready for queries"},
-		{"preparation", "The query could not be prepared. It was not executed."},
-		{"result-validation", "The returned data could not be validated. No result was returned."},
-		{"finalization", "The result could not be finalized. No result was returned."},
-		{"sink-preflight", "Required local recording is unavailable. The query was not executed."},
-		{"sink-post-execution", "Required local recording failed. No result was returned."},
-		{"remote", "The query failed. No result was returned."},
-		{"davis-current-view", "The query could not be prepared. It was not executed."},
-		{"other", "The query could not be prepared. It was not executed."},
+		{"non-overlap", "No data is available for the requested timeframe."},
+		{"temporary-no-data", "The requested timeframe is not available yet."},
+		{"readiness", "This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query."},
+		{"query-invalid", "The query could not be run as written."},
+		{"cadence", "The query is being run too frequently; the minimum time between runs is 5s (requested 4s)."},
+		{"unsupported-element", "The query uses an unsupported element: dt.davis.problems. Use one of the seven approved historical record tables."},
+		{"result-validation", "The query result failed a consistency check: metric result record 0 has an invalid timeframe or natural interval."},
+		{"result-validation-withheld", "The query result could not be validated and was withheld."},
+		{"generic-execution", "The query failed and no result was returned."},
+		{"sink-config", "Query execution is not available in this environment. This is a configuration issue that cannot be resolved by changing or retrying the query."},
+		{"remote", "The query could not be run as written."},
+		{"davis-current-view", "The query could not be run as written."},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
