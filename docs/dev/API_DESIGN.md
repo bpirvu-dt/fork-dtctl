@@ -316,7 +316,7 @@ both disclosure modes. Full disclosure announces each mapping and exposes its
 details in ordinary output. Restricted disclosure records the notification,
 clamp state, sanitized coverage result, and effective-query facts only in
 provenance. A restricted coverage failure returns
-`The query could not be prepared. It was not executed.` Every
+`The query could not be run as written.` Every
 `dt.davis.events` view remains rejected and makes no mapping probe. Direct
 snapshot queries retain their ordinary record-source behavior.
 

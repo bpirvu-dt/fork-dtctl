@@ -53,6 +53,8 @@ type ValidatedResultContract struct {
 type ResultContractError struct {
 	Source ResultSourceIdentity
 	Reason string
+	// PublicReason is approved restricted guidance; an empty value stays private.
+	PublicReason string `json:"-" yaml:"-"`
 }
 
 func (e *ResultContractError) Error() string {
@@ -63,16 +65,17 @@ func (e *ResultContractError) Error() string {
 // cannot inspect which stored measurements contributed to an aggregate.
 func ValidateResultContract(contract ReplayResultContract, observed ObservedResultMetadata) (ValidatedResultContract, error) {
 	if contract.BoundaryPolicy != BoundaryMetricBucket || !contract.LogicalWindow.Valid() || !contract.NaturalIntervalRequired {
-		return ValidatedResultContract{}, resultError(contract.Source, "the pre-execution metric contract is invalid")
+		return ValidatedResultContract{}, resultError(contract.Source, "the pre-execution metric contract is invalid", "")
 	}
 	if observed.Source != contract.Source {
-		return ValidatedResultContract{}, resultError(contract.Source, "the observed source identity does not match the compiled source")
+		return ValidatedResultContract{}, resultError(contract.Source, "the observed source identity does not match the compiled source", "")
 	}
 	if contract.NaturalIntervalRequired && observed.NaturalInterval <= 0 {
-		return ValidatedResultContract{}, resultError(contract.Source, "the natural metric interval is unknown")
+		return ValidatedResultContract{}, resultError(contract.Source, "the natural metric interval is unknown", "the natural metric interval is unknown")
 	}
 	if contract.DeclaredNaturalInterval != nil && observed.NaturalInterval != *contract.DeclaredNaturalInterval {
-		return ValidatedResultContract{}, resultError(contract.Source, fmt.Sprintf("the observed natural interval %s does not match the declared interval %s", observed.NaturalInterval, *contract.DeclaredNaturalInterval))
+		reason := fmt.Sprintf("the observed natural interval %s does not match the declared interval %s", observed.NaturalInterval, *contract.DeclaredNaturalInterval)
+		return ValidatedResultContract{}, resultError(contract.Source, reason, reason)
 	}
 	validated := ValidatedResultContract{
 		Source: contract.Source, LogicalWindow: contract.LogicalWindow,
@@ -81,13 +84,15 @@ func ValidateResultContract(contract ReplayResultContract, observed ObservedResu
 	}
 	for index, bucket := range observed.Buckets {
 		if !bucket.Range.Valid() {
-			return ValidatedResultContract{}, resultError(contract.Source, fmt.Sprintf("bucket %d is empty or reversed", index))
+			reason := fmt.Sprintf("bucket %d is empty or reversed", index)
+			return ValidatedResultContract{}, resultError(contract.Source, reason, reason)
 		}
 		if bucket.Range.End.Sub(bucket.Range.Start) != observed.NaturalInterval {
-			return ValidatedResultContract{}, resultError(contract.Source, fmt.Sprintf("bucket %d does not have the observed natural interval", index))
+			reason := fmt.Sprintf("bucket %d does not have the observed natural interval", index)
+			return ValidatedResultContract{}, resultError(contract.Source, reason, reason)
 		}
 		if _, intersects := bucket.Range.Intersect(contract.LogicalWindow); !intersects {
-			return ValidatedResultContract{}, resultError(contract.Source, fmt.Sprintf("bucket %d does not intersect the logical window", index))
+			return ValidatedResultContract{}, resultError(contract.Source, fmt.Sprintf("bucket %d does not intersect the logical window", index), fmt.Sprintf("bucket %d does not intersect the requested timeframe", index))
 		}
 		if bucket.Range.Start.Before(contract.LogicalWindow.Start) {
 			validated.LowerBoundaryBuckets++
@@ -98,7 +103,7 @@ func ValidateResultContract(contract ReplayResultContract, observed ObservedResu
 		validated.PhysicalRange = extendPhysicalRange(validated.PhysicalRange, bucket.Range)
 	}
 	if validated.LowerBoundaryBuckets > 1 || validated.UpperBoundaryBuckets > 1 {
-		return ValidatedResultContract{}, resultError(contract.Source, "more than one natural bucket spills across a logical boundary")
+		return ValidatedResultContract{}, resultError(contract.Source, "more than one natural bucket spills across a logical boundary", "more than one natural bucket extends beyond a timeframe boundary")
 	}
 	if validated.PhysicalRange != nil {
 		if validated.PhysicalRange.Start.Before(contract.LogicalWindow.Start) {
@@ -109,7 +114,7 @@ func ValidateResultContract(contract ReplayResultContract, observed ObservedResu
 		}
 	}
 	if validated.LowerSpill > observed.NaturalInterval || validated.UpperSpill > observed.NaturalInterval {
-		return ValidatedResultContract{}, resultError(contract.Source, "boundary spill exceeds one complete natural interval")
+		return ValidatedResultContract{}, resultError(contract.Source, "boundary spill exceeds one complete natural interval", "returned buckets extend beyond the timeframe by more than one natural interval")
 	}
 	expectedProvenance := ResultProvenance{
 		Source: contract.Source, LogicalWindow: contract.LogicalWindow,
@@ -118,7 +123,7 @@ func ValidateResultContract(contract ReplayResultContract, observed ObservedResu
 		BoundaryPolicy: contract.BoundaryPolicy,
 	}
 	if !equalResultProvenance(observed.Provenance, expectedProvenance) {
-		return ValidatedResultContract{}, resultError(contract.Source, "the reported provenance does not match the observed interval and bounds")
+		return ValidatedResultContract{}, resultError(contract.Source, "the reported provenance does not match the observed interval and bounds", "")
 	}
 	return validated, nil
 }
@@ -154,6 +159,6 @@ func equalInterval(left, right Interval) bool {
 	return left.Start.Equal(right.Start) && left.End.Equal(right.End)
 }
 
-func resultError(source ResultSourceIdentity, reason string) *ResultContractError {
-	return &ResultContractError{Source: source, Reason: reason}
+func resultError(source ResultSourceIdentity, reason, publicReason string) *ResultContractError {
+	return &ResultContractError{Source: source, Reason: reason, PublicReason: publicReason}
 }

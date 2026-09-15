@@ -159,18 +159,18 @@ type timeframeContext struct {
 func resolveRequestedRange(source *sourceAnalysis, context timeframeContext) (RequestedRange, error) {
 	params := source.parametersByKey()
 	if len(params["timeframe"]) > 0 && (len(params["from"]) > 0 || len(params["to"]) > 0) {
-		return RequestedRange{}, replayError(ErrorTimeframe, source.node, "timeframe", "The source combines mutually exclusive timeframe forms.", "Use either timeframe or from and to.")
+		return RequestedRange{}, queryTimeframeError(source.node, "timeframe", "The source combines mutually exclusive timeframe forms.", "Use either timeframe or from and to.")
 	}
 	for _, key := range []string{"from", "to", "timeframe"} {
 		if len(params[key]) > 1 {
-			return RequestedRange{}, replayError(ErrorTimeframe, source.node, key, "The source repeats a timeframe parameter.", "Provide each timeframe parameter at most once.")
+			return RequestedRange{}, queryTimeframeError(source.node, key, "The source repeats a timeframe parameter.", "Provide each timeframe parameter at most once.")
 		}
 	}
 	if len(params["timeframe"]) == 1 {
 		return parseTimeframeParameter(params["timeframe"][0], context)
 	}
 	if len(params["to"]) == 1 && len(params["from"]) == 0 {
-		return RequestedRange{}, replayError(ErrorTimeframe, params["to"][0].node, "to", "A source with to but no from has no proven requested start.", "Add an explicit from value.")
+		return RequestedRange{}, queryTimeframeError(params["to"][0].node, "to", "A source with to but no from has no proven requested start.", "Add an explicit from value.")
 	}
 	if len(params["from"]) == 0 {
 		if context.GlobalDefault != nil {
@@ -218,10 +218,10 @@ func absoluteRequested(value Interval, basis string) RequestedRange {
 func requestedFromEndpoints(from, to TimeEndpoint, basis string) (RequestedRange, error) {
 	value := Interval{Start: from.Value.UTC(), End: to.Value.UTC()}
 	if !value.Valid() {
-		return RequestedRange{}, replayError(ErrorTimeframe, nil, basis, "The requested source timeframe is empty or reversed.", "Use a start that is earlier than the end.")
+		return RequestedRange{}, queryTimeframeError(nil, basis, "The requested source timeframe is empty or reversed.", "Use a start that is earlier than the end.")
 	}
 	if value.End.Sub(value.Start) <= time.Nanosecond {
-		return RequestedRange{}, replayError(ErrorTimeframe, nil, basis, "A one-nanosecond source timeframe is not a valid replay window.", "Use a wider non-empty timeframe.")
+		return RequestedRange{}, queryTimeframeError(nil, basis, "A one-nanosecond source timeframe is not a valid replay window.", "Use a wider non-empty timeframe.")
 	}
 	from.Value, to.Value = value.Start, value.End
 	return RequestedRange{Range: value, From: from, To: to, Basis: basis}, nil
@@ -234,18 +234,18 @@ func relativeEndpoint(value time.Time, offset time.Duration) TimeEndpoint {
 func parseTimeframeParameter(parameter parameterView, context timeframeContext) (RequestedRange, error) {
 	value, err := parameterValue(parameter.node)
 	if err != nil {
-		return RequestedRange{}, replayError(ErrorTimeframe, parameter.node, "timeframe", "The timeframe parameter has an unsupported AST shape.", "Use a quoted absolute start/end timeframe or timeframe(from:, to:).")
+		return RequestedRange{}, queryTimeframeError(parameter.node, "timeframe", "The timeframe parameter has an unsupported AST shape.", "Use a quoted absolute start/end timeframe or timeframe(from:, to:).")
 	}
 	if value.Kind == NodeTerminal && value.Role == "STRING" {
 		literal, err := strconv.Unquote(value.Canonical)
 		if err != nil || strings.Count(literal, "/") != 1 {
-			return RequestedRange{}, replayError(ErrorTimeframe, value, "timeframe", "The quoted timeframe is malformed.", "Use two absolute RFC 3339 timestamps separated by one slash.")
+			return RequestedRange{}, queryTimeframeError(value, "timeframe", "The quoted timeframe is malformed.", "Use two absolute RFC 3339 timestamps separated by one slash.")
 		}
 		startText, endText, _ := strings.Cut(literal, "/")
 		start, startErr := time.Parse(time.RFC3339Nano, startText)
 		end, endErr := time.Parse(time.RFC3339Nano, endText)
 		if startErr != nil || endErr != nil {
-			return RequestedRange{}, replayError(ErrorTimeframe, value, "timeframe", "The quoted timeframe contains an invalid timestamp.", "Use absolute RFC 3339 timestamps with a timezone.")
+			return RequestedRange{}, queryTimeframeError(value, "timeframe", "The quoted timeframe contains an invalid timestamp.", "Use absolute RFC 3339 timestamps with a timezone.")
 		}
 		return requestedFromEndpoints(
 			TimeEndpoint{Value: start.UTC(), Dependency: EndpointAbsolute},
@@ -254,7 +254,7 @@ func parseTimeframeParameter(parameter parameterView, context timeframeContext) 
 		)
 	}
 	if value.Role != "FUNCTION" || !strings.EqualFold(ownFunctionName(value), "timeframe") {
-		return RequestedRange{}, replayError(ErrorTimeframe, value, "timeframe", "The timeframe value is dynamic or unsupported.", "Use a quoted absolute start/end timeframe or timeframe(from:, to:).")
+		return RequestedRange{}, queryTimeframeError(value, "timeframe", "The timeframe value is dynamic or unsupported.", "Use a quoted absolute start/end timeframe or timeframe(from:, to:).")
 	}
 	params, err := collectDirectParameters(value)
 	if err != nil {
@@ -262,7 +262,7 @@ func parseTimeframeParameter(parameter parameterView, context timeframeContext) 
 	}
 	byKey := parametersByKey(params)
 	if len(byKey) != 2 || len(byKey["from"]) != 1 || len(byKey["to"]) != 1 {
-		return RequestedRange{}, replayError(ErrorTimeframe, value, "timeframe", "The structured timeframe must contain exactly from and to.", "Use timeframe(from:<timestamp>, to:<timestamp>).")
+		return RequestedRange{}, queryTimeframeError(value, "timeframe", "The structured timeframe must contain exactly from and to.", "Use timeframe(from:<timestamp>, to:<timestamp>).")
 	}
 	from, err := evaluateTimeParameter(byKey["from"][0], context)
 	if err != nil {
@@ -278,7 +278,7 @@ func parseTimeframeParameter(parameter parameterView, context timeframeContext) 
 func evaluateTimeParameter(parameter parameterView, context timeframeContext) (TimeEndpoint, error) {
 	value, err := parameterValue(parameter.node)
 	if err != nil {
-		return TimeEndpoint{}, replayError(ErrorTimeframe, parameter.node, parameter.key, "The time expression has an unsupported AST shape.", "Use an absolute timestamp, now() with fixed arithmetic, or a supported implicit-now form.")
+		return TimeEndpoint{}, queryTimeframeError(parameter.node, parameter.key, "The time expression has an unsupported AST shape.", "Use an absolute timestamp, now() with fixed arithmetic, or a supported implicit-now form.")
 	}
 	endpoint, err := evaluateTimeNode(value, context)
 	if err != nil {
@@ -322,7 +322,7 @@ func evaluateTimeNode(node *Node, context timeframeContext) (TimeEndpoint, error
 				return TimeEndpoint{Value: value.UTC(), Dependency: EndpointAbsolute}, nil
 			}
 			if literal != nil {
-				return TimeEndpoint{}, replayError(ErrorTimeframe, literal, "toTimestamp", "The timestamp literal is not an absolute RFC 3339 value.", "Use an RFC 3339 timestamp with a timezone.")
+				return TimeEndpoint{}, queryTimeframeError(literal, "toTimestamp", "The timestamp literal is not an absolute RFC 3339 value.", "Use an RFC 3339 timestamp with a timezone.")
 			}
 		}
 	case "DURATION", "CALENDAR_DURATION":
@@ -341,7 +341,8 @@ func evaluateTimeNode(node *Node, context timeframeContext) (TimeEndpoint, error
 			return TimeEndpoint{Value: value.UTC(), Dependency: EndpointUnknown}, nil
 		}
 	}
-	return TimeEndpoint{}, replayError(ErrorTimeframe, node, node.Role, "The time expression is not supported by replay.", "Rewrite it using an absolute timestamp or a supported virtual-now expression.")
+	return TimeEndpoint{}, queryTimeframeError(node, node.Role, "The time expression is not supported by replay.", "Rewrite it using an absolute timestamp or a supported virtual-now expression.").
+		withPublicMessage("The query's timeframe could not be interpreted. Use an absolute start and end timestamp.")
 }
 
 // parseToTimestampLiteral accepts the two server-observed terminal roles for
@@ -395,23 +396,23 @@ func parseDurationNode(node *Node) (durationValue, error) {
 	numbers := terminalsWithRole(node, "NUMBER")
 	units := terminalsWithRole(node, "TIME_UNIT")
 	if len(numbers) != 1 || len(units) != 1 {
-		return durationValue{}, replayError(ErrorTimeframe, node, node.Role, "The duration AST shape is unsupported.", "Use one numeric fixed duration.")
+		return durationValue{}, queryTimeframeError(node, node.Role, "The duration AST shape is unsupported.", "Use one numeric fixed duration.")
 	}
 	text := numbers[0].Canonical + units[0].Canonical
 	if node.Role == "DURATION" {
 		value, err := time.ParseDuration(text)
 		if err != nil {
-			return durationValue{}, replayError(ErrorTimeframe, node, text, "The fixed duration is unsupported.", "Use a parser-accepted fixed duration.")
+			return durationValue{}, queryTimeframeError(node, text, "The fixed duration is unsupported.", "Use a parser-accepted fixed duration.")
 		}
 		return durationValue{fixed: &value}, nil
 	}
 	amount, err := strconv.Atoi(numbers[0].Canonical)
 	if err != nil {
-		return durationValue{}, replayError(ErrorTimeframe, node, text, "The calendar duration is unsupported.", "Use a supported day-based implicit-now expression.")
+		return durationValue{}, queryTimeframeError(node, text, "The calendar duration is unsupported.", "Use a supported day-based implicit-now expression.")
 	}
 	unit := units[0].Canonical
 	if unit != "d" {
-		return durationValue{}, replayError(ErrorTimeframe, node, text, "Genuine calendar intervals are not supported.", "Use a fixed duration; calendar months, weeks, and years remain rejected.")
+		return durationValue{}, queryTimeframeError(node, text, "Genuine calendar intervals are not supported.", "Use a fixed duration; calendar months, weeks, and years remain rejected.")
 	}
 	calendar := calendarDuration{amount: amount, unit: unit}
 	return durationValue{calendar: &calendar}, nil
@@ -454,7 +455,8 @@ func applyDuration(base TimeEndpoint, operator string, node *Node, location *tim
 func alignEndpoint(base TimeEndpoint, operator string, context timeframeContext) (TimeEndpoint, error) {
 	location := context.location()
 	if location != time.UTC {
-		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "Calendar or DST-sensitive alignment outside UTC is not supported.", "Use an absolute timestamp or a UTC replay timezone for the tested @h and @d forms.")
+		return TimeEndpoint{}, queryTimeframeError(nil, operator, "Calendar or DST-sensitive alignment outside UTC is not supported.", "Use an absolute timestamp or a UTC replay timezone for the tested @h and @d forms.").
+			withPublicMessage("The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.")
 	}
 	local := base.Value.In(location)
 	var aligned time.Time
@@ -464,7 +466,7 @@ func alignEndpoint(base TimeEndpoint, operator string, context timeframeContext)
 	case "@d":
 		aligned = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 	default:
-		return TimeEndpoint{}, replayError(ErrorTimeframe, nil, operator, "This time alignment is not supported.", "Use @h, @d, or an absolute timestamp.")
+		return TimeEndpoint{}, queryTimeframeError(nil, operator, "This time alignment is not supported.", "Use @h, @d, or an absolute timestamp.")
 	}
 	base.Value = aligned.UTC()
 	base.Dependency = EndpointUnknown

@@ -1,0 +1,1 @@
+{"ok":false,"result":null,"error":{"code":"remote_error","message":"query failed (REMOTE_ERROR): query failed — Invalid argument to filter: expected boolean, got string","status_code":400}}

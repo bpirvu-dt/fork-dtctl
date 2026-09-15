@@ -93,6 +93,7 @@ type replayMockAPI struct {
 	remoteErrorMessage       string
 	pollErrorMessage         string
 	parseErrorMessage        string
+	parseErrorBody           json.RawMessage
 
 	mu               sync.Mutex
 	parseRequests    []sdkquery.ParseRequest
@@ -193,6 +194,10 @@ func (a *replayMockAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
+			if len(a.parseErrorBody) != 0 {
+				_, _ = w.Write(a.parseErrorBody)
+				return
+			}
 			if a.parseErrorMessage == "" {
 				_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
 				return
@@ -715,7 +720,7 @@ func TestDQLExecutorDavisCoverageFailuresAreFailClosedBeforeEffectiveParse(t *te
 						t.Fatalf("result=%#v error=%v", result, err)
 					}
 				} else {
-					if result != nil || err == nil || err.Error() != restrictedPreparationMessage {
+					if result != nil || err == nil || err.Error() != restrictedQueryInvalidMessage {
 						t.Fatalf("result=%#v restricted error=%v", result, err)
 					}
 					preflights, appends, records := sink.snapshot()
@@ -744,7 +749,7 @@ func TestDQLExecutorRestrictedDavisEffectiveParseFailureIsGenericAndPrivate(t *t
 		func(string) session.ProvenanceSink { return sink })
 
 	result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-	if result != nil || err == nil || err.Error() != restrictedPreparationMessage || strings.Contains(err.Error(), execreplay.DavisProblemsSnapshotTable) {
+	if result != nil || err == nil || err.Error() != restrictedQueryInvalidMessage || strings.Contains(err.Error(), execreplay.DavisProblemsSnapshotTable) {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 	parseCalls, executeCalls, _ := api.counts()
@@ -1065,7 +1070,7 @@ func TestDQLExecutorDavisValidationTamperingAlwaysPreventsMainExecute(t *testing
 					t.Fatalf("error = %T %v", err, err)
 				}
 				if disclosure == session.ReplayDisclosureRestricted {
-					if err.Error() != restrictedPreparationMessage {
+					if err.Error() != restrictedQueryInvalidMessage {
 						t.Fatalf("restricted audit error = %q", err)
 					}
 					preflights, appends, records := sink.snapshot()
@@ -1411,7 +1416,7 @@ func TestDQLExecutorReplayRestrictedPreflightAndPreparationFailures(t *testing.T
 		sink := &replayTestSink{preflightErr: errors.New("synthetic sink unavailable")}
 		fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, func(string) session.ProvenanceSink { return sink })
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPreflightSinkMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		preflight, appends, _ := sink.snapshot()
@@ -1427,7 +1432,7 @@ func TestDQLExecutorReplayRestrictedPreflightAndPreparationFailures(t *testing.T
 		sink := &replayTestSink{}
 		fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, func(string) session.ProvenanceSink { return sink })
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPreparationMessage {
+		if result != nil || err == nil || err.Error() != restrictedQueryInvalidMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		_, appends, records := sink.snapshot()
@@ -1474,7 +1479,7 @@ func TestDQLExecutorReplayRestrictedPreflightAndPreparationFailures(t *testing.T
 			mustReplayTestTime("2026-08-08T00:00:00Z"), mustReplayTestTime("2026-08-10T13:00:00Z"), mustReplayTestTime("2026-08-11T00:00:00Z"),
 			func(string) session.ProvenanceSink { return sink })
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), query, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPreflightSinkMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		parseCalls, executeCalls, _ := api.counts()
@@ -1526,7 +1531,7 @@ func TestDQLExecutorReplayRestrictedPostExecutionOrderingAndFailures(t *testing.
 		sink := &replayTestSink{appendFailures: map[int]error{1: errors.New("synthetic append failure")}}
 		fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, func(string) session.ProvenanceSink { return sink })
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPostExecutionSinkMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		_, appends, records := sink.snapshot()
@@ -1564,7 +1569,7 @@ func TestDQLExecutorReplayRestrictedPostExecutionOrderingAndFailures(t *testing.
 		tracking := &replayTrackingStore{ReplayStore: fixture.store, order: order}
 		fixture.useStore(tracking)
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPostExecutionSinkMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		state, stateErr := fixture.store.Status(fixture.locator)
@@ -1584,7 +1589,7 @@ func TestDQLExecutorReplayRestrictedPostExecutionOrderingAndFailures(t *testing.
 		tracking := &replayTrackingStore{ReplayStore: fixture.store, order: order}
 		fixture.useStore(tracking)
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedPostExecutionSinkMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		state, stateErr := fixture.store.Status(fixture.locator)
@@ -1648,7 +1653,7 @@ func TestDQLExecutorReplayTerminalFailureReplacementAndConcurrency(t *testing.T)
 		fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayRecordDataStart, replayRecordDataEnd, replayRecordDataEnd, func(string) session.ProvenanceSink { return sink })
 		fixture.useStore(&replayFailingCompletionStore{ReplayStore: fixture.store, err: errors.New("synthetic completion write failure")})
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedFinalizationMessage {
+		if result != nil || err == nil || err.Error() != restrictedGenericExecutionMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		state, stateErr := fixture.store.Status(fixture.locator)
@@ -1872,13 +1877,14 @@ func TestDQLExecutorReplayMetricResultContractGatesTerminalOutput(t *testing.T) 
 		})
 	}
 
-	t.Run("restricted contract failure is generic and recorded", func(t *testing.T) {
+	t.Run("restricted contract failure surfaces a scanned reason and is recorded", func(t *testing.T) {
 		api := newReplayMetricMockAPI(t)
 		delete(api.executeResponse.Result.Records[0], "interval")
 		sink := &replayTestSink{}
 		fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayMetricDataStart, replayMetricDataEnd, replayMetricDataEnd, func(string) session.ProvenanceSink { return sink })
 		result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayMetricOriginal, DQLExecuteOptions{AgentMode: true})
-		if result != nil || err == nil || err.Error() != restrictedValidationMessage {
+		wantMessage := "The query result failed a consistency check: metric result record 0 has an invalid timeframe or natural interval."
+		if result != nil || err == nil || err.Error() != wantMessage {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
 		parseCalls, executeCalls, _ := api.counts()
@@ -1951,6 +1957,14 @@ func TestDQLExecutorRestrictedMetricProvenanceContainsCompleteExecutionFacts(t *
 	testutil.AssertGolden(t, "replay/restricted-provenance-jsonl", string(encoded)+"\n")
 }
 
+// isRestrictedRemoteFallback reports whether a masked remote error resolved to
+// one of the two authored safe fallbacks (permanent 4xx → query-invalid,
+// transient/other → generic execution). The split itself is covered by
+// TestDQLExecutorReplayRestrictedRemoteFallbackSplitsOnStatus.
+func isRestrictedRemoteFallback(message string) bool {
+	return message == restrictedGenericExecutionMessage || message == restrictedQueryInvalidMessage
+}
+
 func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	t.Run("first 429 preserves retry after", func(t *testing.T) {
 		api := newReplayMockAPI(t)
@@ -2015,7 +2029,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			sink := &replayTestSink{}
 			fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayRecordDataStart, replayRecordVirtual, replayRecordDataEnd, func(string) session.ProvenanceSink { return sink })
 			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayRecordOriginal, DQLExecuteOptions{AgentMode: true})
-			if result != nil || err == nil || !strings.Contains(err.Error(), remoteMessage) || err.Error() == restrictedRemoteExecutionMessage {
+			if result != nil || err == nil || !strings.Contains(err.Error(), remoteMessage) || isRestrictedRemoteFallback(err.Error()) {
 				t.Fatalf("result=%#v err=%v, want normal remote error passthrough", result, err)
 			}
 			if !ReplayLoopHardFailure(err) {
@@ -2061,7 +2075,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 				DefaultTimeframeStart: "2026-06-14T09:00:00Z",
 				DefaultTimeframeEnd:   "2026-06-14T10:00:00Z",
 			})
-			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), test.message) {
+			if result != nil || err == nil || !isRestrictedRemoteFallback(err.Error()) || strings.Contains(err.Error(), test.message) {
 				t.Fatalf("result=%#v err=%v, want mapped remote fallback", result, err)
 			}
 			parses, executions := api.queries()
@@ -2101,7 +2115,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 				mustReplayTestTime("2026-06-14T02:00:00Z"), mustReplayTestTime("2026-06-14T10:00:00Z"), mustReplayTestTime("2026-06-14T12:00:00Z"),
 				func(string) session.ProvenanceSink { return sink })
 			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), remoteMessage) {
+			if result != nil || err == nil || !isRestrictedRemoteFallback(err.Error()) || strings.Contains(err.Error(), remoteMessage) {
 				t.Fatalf("result=%#v err=%v, want mapped remote fallback", result, err)
 			}
 			_, _, records := sink.snapshot()
@@ -2135,7 +2149,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 				func(string) session.ProvenanceSink { return sink })
 
 			result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayDavisOriginal, DQLExecuteOptions{AgentMode: true})
-			if result != nil || err == nil || err.Error() != restrictedRemoteExecutionMessage || strings.Contains(err.Error(), api.pollErrorMessage) {
+			if result != nil || err == nil || !isRestrictedRemoteFallback(err.Error()) || strings.Contains(err.Error(), api.pollErrorMessage) {
 				t.Fatalf("result=%#v err=%v, want mapped polling fallback", result, err)
 			}
 			_, _, records := sink.snapshot()
@@ -2157,7 +2171,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 
 	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
 	generated := newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true)
-	if generated.Error() != restrictedRemoteExecutionMessage {
+	if !isRestrictedRemoteFallback(generated.Error()) {
 		t.Fatalf("generated restricted-word remote error = %q", generated)
 	}
 	remotePoll := httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"remote session unavailable"}`)
@@ -2167,7 +2181,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	}
 	generatedWrapper := fmt.Errorf("effective request failed: %w", remotePoll)
 	masked := newReplayAttemptError(replayErrorRemote, generatedWrapper, info, false, 0, true)
-	if masked.Error() != restrictedRemoteExecutionMessage {
+	if !isRestrictedRemoteFallback(masked.Error()) {
 		t.Fatalf("dtctl-generated restricted wrapper was not masked: %q", masked)
 	}
 
@@ -2191,7 +2205,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	} {
 		t.Run("mapped rendered instant "+test.name, func(t *testing.T) {
 			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: test.message}
-			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 				t.Fatalf("mapped rendered instant was not masked: %q", got)
 			}
 		})
@@ -2247,7 +2261,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	} {
 		t.Run("mapped Output-only instant "+test.name, func(t *testing.T) {
 			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "invalid bound " + test.instant}
-			if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 				t.Fatalf("Output-only instant was not masked: %q", got)
 			}
 		})
@@ -2259,7 +2273,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			ErrorType:  "REMOTE_ERROR",
 			Message:    fmt.Sprintf("invalid bound %d", instant.UnixMilli()),
 		}
-		if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+		if got := newReplayAttemptError(replayErrorRemote, detail, outputOnlyInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 			t.Fatalf("Output-only epoch instant was not masked: %q", got)
 		}
 	})
@@ -2276,7 +2290,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		"poll inserted token":                 httpclient.NewAPIError(http.StatusBadGateway, "Bad Gateway", `{"error":"event.id"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 				t.Fatalf("mapped polling detail was not masked: %q", got)
 			}
 		})
@@ -2285,7 +2299,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 		StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR",
 		Message: `invalid bound toTimestamp ( "2026-06-14T09:00:00Z" )`,
 	}
-	if got := newReplayAttemptError(replayErrorRemote, collidingBound, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+	if got := newReplayAttemptError(replayErrorRemote, collidingBound, mappedInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 		t.Fatalf("user/generated timestamp collision was not masked: %q", got)
 	}
 	for name, message := range map[string]string{
@@ -2294,7 +2308,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 	} {
 		t.Run("standalone user-generated collision "+name, func(t *testing.T) {
 			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: message}
-			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			if got := newReplayAttemptError(replayErrorRemote, detail, mappedInfo, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 				t.Fatalf("standalone user/generated timestamp collision was not masked: %q", got)
 			}
 		})
@@ -2304,7 +2318,7 @@ func TestDQLExecutorReplayRateLimitAndRestrictedRemoteMapping(t *testing.T) {
 			userAuthored := mappedInfo
 			userAuthored.OriginalQuery += " | fields " + lexeme
 			detail := &sdkquery.QueryError{StatusCode: http.StatusBadRequest, ErrorType: "REMOTE_ERROR", Message: "unknown field " + lexeme}
-			if got := newReplayAttemptError(replayErrorRemote, detail, userAuthored, false, 0, true); got.Error() != restrictedRemoteExecutionMessage {
+			if got := newReplayAttemptError(replayErrorRemote, detail, userAuthored, false, 0, true); !isRestrictedRemoteFallback(got.Error()) {
 				t.Fatalf("user/generated mapping lexeme collision was not masked: %q", got)
 			}
 		})
@@ -2353,19 +2367,20 @@ func TestDQLExecutorFullDisclosureRoutesCompilerNoticesOnce(t *testing.T) {
 func TestRestrictedReplayDisclosureLeakMatrixMessagesAndNotices(t *testing.T) {
 	info := ReplayExecutionInfo{Active: true, Disclosure: session.ReplayDisclosureRestricted}
 	surfaces := map[string]string{
-		"hard non-overlap":      restrictedMessageForInfo(replayErrorNonOverlap, errors.New("replay interval does not overlap"), ReplayExecutionInfo{}, false, false),
-		"temporary non-overlap": restrictedMessageForInfo(replayErrorNonOverlap, errors.New("virtual interval pending"), ReplayExecutionInfo{}, true, false),
-		"readiness":             restrictedMessageForInfo(replayErrorReadiness, errors.New("session is stopped"), ReplayExecutionInfo{}, false, false),
-		"preparation":           restrictedMessageForInfo(replayErrorPrepare, errors.New("effective query unsupported"), ReplayExecutionInfo{}, false, false),
-		"validation":            restrictedMessageForInfo(replayErrorValidation, errors.New("interval spill invalid"), ReplayExecutionInfo{}, false, true),
-		"finalization":          restrictedMessageForInfo(replayErrorFinalize, errors.New("session completion failed"), ReplayExecutionInfo{}, false, true),
-		"sink preflight":        restrictedMessageForInfo(replayErrorSink, errors.New("replay sink unavailable"), ReplayExecutionInfo{}, false, false),
-		"sink post-execution":   restrictedMessageForInfo(replayErrorSink, errors.New("replay sink append failed"), ReplayExecutionInfo{}, false, true),
+		"hard non-overlap":      restrictedMessageForInfo(replayErrorNonOverlap, errors.New("replay interval does not overlap"), ReplayExecutionInfo{}, false),
+		"temporary non-overlap": restrictedMessageForInfo(replayErrorNonOverlap, errors.New("virtual interval pending"), ReplayExecutionInfo{}, true),
+		"readiness":             restrictedMessageForInfo(replayErrorReadiness, errors.New("session is stopped"), ReplayExecutionInfo{}, false),
+		"preparation":           restrictedMessageForInfo(replayErrorPrepare, errors.New("effective query unsupported"), ReplayExecutionInfo{}, false),
+		"validation":            restrictedMessageForInfo(replayErrorValidation, errors.New("session spill invalid"), ReplayExecutionInfo{}, false),
+		"finalization":          restrictedMessageForInfo(replayErrorFinalize, errors.New("session completion failed"), ReplayExecutionInfo{}, false),
+		"sink preflight":        restrictedMessageForInfo(replayErrorSink, errors.New("replay sink unavailable"), ReplayExecutionInfo{}, false),
+		"sink post-execution":   restrictedMessageForInfo(replayErrorSink, errors.New("replay sink append failed"), ReplayExecutionInfo{}, false),
+		"sink config missing":   restrictedMessageForInfo(replayErrorSink, ErrReplayProvenancePathMissing, ReplayExecutionInfo{}, false),
 		"remote fallback":       newReplayAttemptError(replayErrorRemote, errors.New("effective request failed"), info, false, 0, true).Error(),
-		"other":                 restrictedMessageForInfo("synthetic_other", errors.New("replay detail"), ReplayExecutionInfo{}, false, false),
+		"other":                 restrictedMessageForInfo("synthetic_other", errors.New("replay detail"), ReplayExecutionInfo{}, false),
 	}
 	for name, value := range surfaces {
-		if containsRestrictedGeneratedWord(value) {
+		if containsRestrictedGeneratedWord(value, false) {
 			t.Errorf("restricted %s contains a disclosure word: %q", name, value)
 		}
 	}
@@ -2614,7 +2629,7 @@ func TestDQLExecutorDavisCurrentViewGuidanceUsesUnchangedDisclosureRoutes(t *tes
 					t.Fatalf("full Davis events guidance = %v", err)
 				}
 			} else {
-				if err.Error() != restrictedPreparationMessage {
+				if err.Error() != restrictedQueryInvalidMessage {
 					t.Fatalf("restricted error = %q", err)
 				}
 				_, _, records := sink.snapshot()

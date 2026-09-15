@@ -1,0 +1,1 @@
+{"ok":false,"result":null,"error":{"code":"command_unavailable","message":"this command is not available in this context","suggestions":["switch to an existing context with: dtctl ctx \u003cname\u003e","select a context for one invocation with: dtctl --context \u003cname\u003e ...","or set DTCTL_CONTEXT=\u003cname\u003e for the invocation"]}}

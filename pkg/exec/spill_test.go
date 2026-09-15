@@ -275,7 +275,7 @@ func TestBuildSpillResponse_RestrictedReplayUsesNormalManifestSchemas(t *testing
 		t.Fatal(err)
 	}
 	generatedText := strings.ReplaceAll(string(generatedJSON), string(encodedPath[1:len(encodedPath)-1]), "<result-path>")
-	if containsRestrictedGeneratedWord(generatedText) {
+	if containsRestrictedGeneratedWord(generatedText, false) {
 		t.Fatalf("restricted generated envelope fields contain a disclosure word: %s", generatedJSON)
 	}
 }

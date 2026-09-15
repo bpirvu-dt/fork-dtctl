@@ -270,7 +270,7 @@ func (e *DQLExecutor) ValidateReplayCadenceWithContext(ctx context.Context, inte
 		if validator, ok := e.preparer.(replayCadenceValidator); ok {
 			return validator.ValidateCadence(ctx, interval)
 		}
-		return fmt.Errorf("replay query interval %s is faster than the supported minimum of %s", interval, MinReplayExecutionInterval)
+		return &ReplayCadenceError{Requested: interval, Minimum: MinReplayExecutionInterval}
 	}
 	return nil
 }

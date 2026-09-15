@@ -334,7 +334,7 @@ func (p *ReplayQueryPreparer) ValidateCadence(ctx context.Context, interval time
 	if interval >= MinReplayExecutionInterval {
 		return nil
 	}
-	detail := fmt.Errorf("replay query interval %s is faster than the supported minimum of %s", interval, MinReplayExecutionInterval)
+	detail := &ReplayCadenceError{Requested: interval, Minimum: MinReplayExecutionInterval}
 	state, stateErr := p.config.Store.Status(p.config.Locator)
 	disclosure, provenancePath := p.authoritativeRoute(state, stateErr)
 	info := ReplayExecutionInfo{Active: true, Disclosure: disclosure}
@@ -356,11 +356,11 @@ func (p *ReplayQueryPreparer) preflightSink(ctx context.Context, disclosure, pro
 		return nil, nil
 	}
 	if provenancePath == "" {
-		return nil, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted disclosure has no provenance path"), info, false, 0, false)
+		return nil, newReplayAttemptError(replayErrorSink, ErrReplayProvenancePathMissing, info, false, 0, false)
 	}
 	sink := p.config.SinkFactory(provenancePath)
 	if sink == nil {
-		return nil, newReplayAttemptError(replayErrorSink, fmt.Errorf("restricted provenance sink is unavailable"), info, false, 0, false)
+		return nil, newReplayAttemptError(replayErrorSink, ErrReplayProvenanceSinkUnavailable, info, false, 0, false)
 	}
 	// This is intentionally before readiness, drift, parse, adaptation, or
 	// any other preparation that could disclose replay-specific detail.
