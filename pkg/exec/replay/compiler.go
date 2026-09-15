@@ -30,6 +30,9 @@ type ReplayError struct {
 	Construct string
 	Path      string
 	Span      *Span
+	// PublicMessage is approved restricted guidance. Empty means no guidance
+	// has been approved. It never changes Error() or serialized error fields.
+	PublicMessage string `json:"-" yaml:"-"`
 }
 
 func (e *ReplayError) Error() string {
@@ -50,6 +53,18 @@ func replayError(code ErrorCode, node *Node, construct, message, remedy string) 
 		}
 	}
 	return err
+}
+
+func (e *ReplayError) withPublicMessage(message string) *ReplayError {
+	e.PublicMessage = message
+	return e
+}
+
+// queryTimeframeError is only for rejected user time expressions. Internal
+// state and compiler failures use replayError without public guidance.
+func queryTimeframeError(node *Node, construct, message, remedy string) *ReplayError {
+	return replayError(ErrorTimeframe, node, construct, message, remedy).
+		withPublicMessage("The query's timeframe could not be interpreted. " + remedy)
 }
 
 // DavisCurrentViewError rejects a mutable Davis view while carrying the safe,

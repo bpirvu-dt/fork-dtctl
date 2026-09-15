@@ -40,8 +40,8 @@ func TestPreparationHintFromReplayError(t *testing.T) {
 			want: "The query uses an unsupported element: join.",
 		},
 		{
-			name: "timeframe uses a fixed base plus remedy",
-			err:  &execreplay.ReplayError{Code: execreplay.ErrorTimeframe, Construct: "timeframe", Remedy: "Use an absolute RFC 3339 timeframe."},
+			name: "timeframe uses approved public guidance",
+			err:  &execreplay.ReplayError{Code: execreplay.ErrorTimeframe, Construct: "timeframe", Remedy: "Use an absolute RFC 3339 timeframe.", PublicMessage: "The query's timeframe could not be interpreted. Use an absolute RFC 3339 timeframe."},
 			want: "The query's timeframe could not be interpreted. Use an absolute RFC 3339 timeframe.",
 		},
 		{

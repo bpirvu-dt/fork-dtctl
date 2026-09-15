@@ -369,15 +369,15 @@ func restrictedPreparationMessage(detail error, info ReplayExecutionInfo) string
 	// query is computed, so an empty EffectiveQuery proves the failure predates
 	// any rewrite; later parse errors describe rewritten DQL and stay generic.
 	var queryErr *sdkquery.QueryError
-	if errors.As(detail, &queryErr) && info.EffectiveQuery == "" && !replayTextExposesInternals(detail.Error(), info, false) {
+	if errors.As(detail, &queryErr) && info.EffectiveQuery == "" && !replayTextExposesInternals(detail.Error(), info, true) {
 		return detail.Error()
 	}
 	return restrictedQueryInvalidMessage
 }
 
 // preparationHintFromReplayError authors a query hint from a typed compiler
-// rejection's stable Code, Construct, and Remedy. User-fault codes yield a
-// concrete hint; internal-mismatch codes yield "" so the caller stays generic.
+// rejection's stable fields. Timeframe errors require an approved PublicMessage;
+// internal failures yield "" so the caller stays generic.
 func preparationHintFromReplayError(re *execreplay.ReplayError) string {
 	withRemedy := func(base string) string {
 		if re.Remedy != "" {
@@ -389,7 +389,7 @@ func preparationHintFromReplayError(re *execreplay.ReplayError) string {
 	case execreplay.ErrorUnsupportedForm, execreplay.ErrorUnsupportedSource:
 		return withRemedy("The query uses an unsupported element: " + re.Construct + ".")
 	case execreplay.ErrorTimeframe:
-		return withRemedy("The query's timeframe could not be interpreted.")
+		return re.PublicMessage
 	case execreplay.ErrorShift:
 		// The compiler's only shift remedy names the replay machinery, so it
 		// would fail the scan and drop to generic. Author a safe remedy here
@@ -400,12 +400,20 @@ func preparationHintFromReplayError(re *execreplay.ReplayError) string {
 	}
 }
 
-// restrictedValidationMessage surfaces a concrete result-consistency reason
-// when it exposes no replay internals. Ordinary metric vocabulary such as
-// "interval" or "natural bucket" is allowed; a hard tell falls back to generic.
+// restrictedValidationMessage uses the approved public reason for typed contract
+// errors, or the detailed text for plain metadata-inspection errors. Ordinary
+// metric vocabulary is allowed; missing or protected reasons stay generic.
 func restrictedValidationMessage(detail error, info ReplayExecutionInfo) string {
-	if detail != nil && !replayTextExposesInternals(detail.Error(), info, true) {
-		return "The query result failed a consistency check: " + detail.Error() + "."
+	if detail == nil {
+		return restrictedValidationFallbackMessage
+	}
+	reason := detail.Error()
+	var contractErr *execreplay.ResultContractError
+	if errors.As(detail, &contractErr) {
+		reason = contractErr.PublicReason
+	}
+	if reason != "" && !replayTextExposesInternals(reason, info, true) {
+		return "The query result failed a consistency check: " + reason + "."
 	}
 	return restrictedValidationFallbackMessage
 }
@@ -416,16 +424,16 @@ func restrictedValidationMessage(detail error, info ReplayExecutionInfo) string 
 // permits ordinary metric vocabulary ("interval", "natural bucket") that a
 // result-consistency reason may legitimately use; the hard tells always block.
 func replayTextExposesInternals(text string, info ReplayExecutionInfo, allowMetricTerms bool) bool {
-	return containsRestrictedGeneratedWord(text, allowMetricTerms) || containsDavisMappingText(text, info)
+	return containsRestrictedGeneratedWord(text, allowMetricTerms) || containsGeneratedReplayText(text, info) ||
+		containsDavisMappingText(text, info)
 }
 
 func restrictedRemoteTextMayPass(detail error, info ReplayExecutionInfo) bool {
 	generated := detail.Error()
-	// A generated virtual timestamp, the rewritten effective/canonical query, or
-	// a Davis reconstruction token is never ordinary remote content. Block it for
-	// every remote error, not only Davis-mapped ones, before the verbatim body is
-	// stripped as trusted API text.
-	if containsDavisMappingText(generated, info) {
+	// Every query can contain generated bounds or rewritten DQL. Reconstruction
+	// vocabulary is only evidence of generated content when a Davis mapping ran.
+	if containsGeneratedReplayText(generated, info) ||
+		(replayInfoHasDavisProblemsMapping(info) && containsDavisMappingText(generated, info)) {
 		return false
 	}
 	// QueryError fields are verbatim remote API content wrapped in the normal
@@ -481,6 +489,12 @@ func containsDavisMappingText(value string, info ReplayExecutionInfo) bool {
 			return true
 		}
 	}
+	return false
+}
+
+func containsGeneratedReplayText(value string, info ReplayExecutionInfo) bool {
+	generated := stripVerbatimOriginalQuery(value, info.OriginalQuery)
+	generated = strings.ReplaceAll(generated, `\"`, `"`)
 	generatedInstants := dqlToTimestampInstants(info.EffectiveQuery)
 	for instant := range replayOutputGeneratedInstants(info.Output) {
 		generatedInstants[instant] = struct{}{}

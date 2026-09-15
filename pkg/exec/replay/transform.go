@@ -285,7 +285,8 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 		return compiled, nil
 	}
 	if effective.End.Sub(effective.Start) <= time.Nanosecond {
-		return compiled, replayError(ErrorTimeframe, source.node, "effective source timeframe", "The intersected source timeframe is only one nanosecond wide.", "Use a wider requested range or advance virtual time before retrying.")
+		return compiled, replayError(ErrorTimeframe, source.node, "effective source timeframe", "The intersected source timeframe is only one nanosecond wide.", "Use a wider requested range or advance virtual time before retrying.").
+			withPublicMessage("No data can be returned for the requested timeframe.")
 	}
 	compiled.Effective = cloneInterval(&effective)
 	if source.Class == SourceDavisProblemsView {

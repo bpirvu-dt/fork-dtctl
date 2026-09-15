@@ -130,7 +130,7 @@ func semanticNowEdits(ast *AST, covered []Span, virtualNow time.Time) ([]Positio
 		}
 		parts := semanticChildren(node)
 		if len(parts) != 1 || parts[0].Kind != NodeTerminal || parts[0].Role != "FUNCTION_NAME" {
-			return replayError(ErrorTimeframe, node, "now", "The semantic now function has an unsupported argument shape.", "Use now() without arguments.")
+			return queryTimeframeError(node, "now", "The semantic now function has an unsupported argument shape.", "Use now() without arguments.")
 		}
 		if node.Span == nil {
 			return replayError(ErrorASTContract, node, "now", "A semantic now function has no source position.", "Update dtctl if the server AST position contract changed.")

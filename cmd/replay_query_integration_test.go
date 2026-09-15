@@ -392,6 +392,38 @@ func TestReplayQueryCLICadenceRejectsBeforeParseOrExecute(t *testing.T) {
 	}
 }
 
+func TestReplayOrdinaryRemoteErrorPreservesAgentFields(t *testing.T) {
+	const diagnostic = "Invalid argument to filter: expected boolean, got string"
+	api := &replayCLIQueryAPI{
+		t: t, originalQuery: replayCLIRecordOriginal,
+		originalBody:    replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/parse.json"),
+		validationBody:  replayCLIQueryFixtureBody(t, "phase0b/fixtures/records/logs/01-to-at-t/validation-parse.json"),
+		executeFailures: 1, executeStatus: http.StatusBadRequest, remoteError: diagnostic,
+	}
+	server := httptest.NewServer(api)
+	defer server.Close()
+	fixture := newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureRestricted, session.ReplayClockManual,
+		mustReplayCLITime("2026-08-10T10:50:02.718012207Z"), mustReplayCLITime("2026-08-10T10:55:02.718012207Z"), mustReplayCLITime("2026-08-10T11:05:02.718012207Z"))
+	setReplayQueryFlags(t, false, time.Minute, false)
+	err := queryCmd.RunE(queryCmd, []string{replayCLIRecordOriginal})
+	if err == nil || !strings.Contains(err.Error(), diagnostic) {
+		t.Fatalf("ordinary backend diagnostic was hidden: %v", err)
+	}
+	detail := errorToDetail(err)
+	if detail.Code != "remote_error" || detail.StatusCode != http.StatusBadRequest || !strings.Contains(detail.Message, diagnostic) {
+		t.Fatalf("agent fields were lost: %+v", detail)
+	}
+	var rendered strings.Builder
+	if err := output.PrintError(&rendered, detail); err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertGolden(t, "replay/error-restricted-ordinary-filter", rendered.String())
+	provenance, err := os.ReadFile(fixture.state.ProvenancePath)
+	if err != nil || !strings.Contains(string(provenance), diagnostic) {
+		t.Fatalf("private backend diagnostic was lost: %s (%v)", provenance, err)
+	}
+}
+
 func TestReplayWaitQueryCLIOmittedMinIntervalUsesReplayDefault(t *testing.T) {
 	api := &replayCLIQueryAPI{
 		t: t, originalQuery: replayCLIRecordOriginal,

@@ -93,6 +93,7 @@ type replayMockAPI struct {
 	remoteErrorMessage       string
 	pollErrorMessage         string
 	parseErrorMessage        string
+	parseErrorBody           json.RawMessage
 
 	mu               sync.Mutex
 	parseRequests    []sdkquery.ParseRequest
@@ -193,6 +194,10 @@ func (a *replayMockAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
+			if len(a.parseErrorBody) != 0 {
+				_, _ = w.Write(a.parseErrorBody)
+				return
+			}
 			if a.parseErrorMessage == "" {
 				_, _ = w.Write([]byte(`{"error":{"message":"query request failed"}}`))
 				return
