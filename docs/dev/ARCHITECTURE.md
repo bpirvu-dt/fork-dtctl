@@ -1004,7 +1004,7 @@ disclosure. Full disclosure routes mapping notifications and details to
 ordinary output. Restricted disclosure routes the mapping notification, clamp
 state, sanitized coverage result, and effective-query facts only to private
 provenance. Its coverage failure returns
-`The query could not be prepared. It was not executed.` Automatic
+`The query could not be run as written.` Automatic
 `dt.davis.events` mapping remains unsupported, and direct snapshot queries do
 not enter this mapping path. Mapped restricted results also route returned
 Grail bucket contributions to private provenance because the contribution

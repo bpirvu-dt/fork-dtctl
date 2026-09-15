@@ -1670,7 +1670,7 @@ Mapped execution uses the same coverage probe, mapping, audit, and main query in
 both disclosure modes. Full disclosure announces every mapped execution and
 shows mapping-specific errors. Restricted disclosure writes the notification
 and all mapping details only to provenance. A restricted coverage failure
-returns exactly `The query could not be prepared. It was not executed.`
+returns exactly `The query could not be run as written.`
 `dt.davis.events` remains rejected in both disclosure modes and makes no mapping
 probe.
 
@@ -1699,27 +1699,42 @@ private provenance because their `table` field can name the snapshot source.
 | Mode | Output | Discovery | Provenance |
 |---|---|---|---|
 | `full` | Default. Keeps replay notices, detailed errors, agent metadata, and replay fields in spill output. | Replay verbs and `--explain-replay` are visible. | No provenance file is required. |
-| `restricted` | Uses normal non-replay schemas and generic messages. Replay warnings are suppressed. Returned records and user DQL are unchanged; mapped Grail contributions go only to provenance. | Replay verbs and `--explain-replay` are hidden. Explicit management verbs still work. Explain behaves like an unknown flag. | Complete replay facts go to a required private JSON Lines file. |
+| `restricted` | Uses normal non-replay schemas and messages that omit replay details. Replay warnings are suppressed. Returned records and user DQL are unchanged; mapped Grail contributions go only to provenance. | Replay verbs and `--explain-replay` are hidden. Explicit management verbs still work. Explain behaves like an unknown flag. | Complete replay facts go to a required private JSON Lines file. |
 
 Restricted `ctx current`, `ctx describe`, and `doctor` output omits replay
 fields. Restricted `verify query` still performs replay compatibility checks,
 but it omits their details from ordinary output.
 
-Restricted ordinary output uses these generic messages. The detailed reason
-and remedy are written to provenance first:
+Restricted output preserves useful query guidance when it passes the disclosure
+checks. The detailed reason and remedy are written to provenance first:
 
 | Category | Message |
 |---|---|
-| Hard non-overlap | `No data is available for the requested timeframe. The query was not executed.` |
-| Temporary realtime-loop non-overlap | `no data yet for the requested timeframe; retrying` |
-| Blocked command or plugin | `this command is not available in this context` |
-| State readiness failure | `this context is not ready for queries` |
-| Parse, compatibility, transform, or audit failure | `The query could not be prepared. It was not executed.` |
-| Result-contract failure | `The returned data could not be validated. No result was returned.` |
-| Terminal finalization failure | `The result could not be finalized. No result was returned.` |
-| Provenance preflight failure | `Required local recording is unavailable. The query was not executed.` |
-| Provenance append failure after execution | `Required local recording failed. No result was returned.` |
-| Remote failure whose normal text would disclose replay state | `The query failed. No result was returned.` |
+| Hard non-overlap | `No data is available for the requested timeframe.` |
+| Temporary realtime-loop non-overlap | `The requested timeframe is not available yet.` |
+| Blocked command or plugin, including failure to record its rejection | `this command is not available in this context` |
+| State readiness failure | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` |
+| Preparation failure without approved guidance, or a masked permanent API failure | `The query could not be run as written.` |
+| Unsupported time expression | `The query's timeframe could not be interpreted. Use an absolute start and end timestamp.` |
+| Time alignment outside UTC | `The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.` |
+| Intersection leaves only one nanosecond | `No data can be returned for the requested timeframe.` |
+| Result-validation failure with an approved reason | `The query result failed a consistency check: {reason}.` |
+| Result-validation failure without approved guidance | `The query result could not be validated and was withheld.` |
+| Terminal finalization failure, provenance I/O failure, or a masked transient API failure | `The query failed and no result was returned.` |
+| Missing provenance configuration | `Query execution is not available in this environment. This is a configuration issue that cannot be resolved by changing or retrying the query.` |
+
+An original-query parse error can retain ordinary metric words such as
+`interval`. Parse errors from a rewritten query stay generic. Ordinary backend
+errors also retain their diagnostic text, error code, and HTTP status when the
+text passes the disclosure checks. Words such as `filter` and `timestamp` are
+treated as possible reconstruction details only when the query was mapped to
+Davis snapshots. Generated timestamps and rewritten DQL remain protected for
+all queries.
+
+Result validation only exposes reasons approved at the point where the error
+is created. Internal contract, source-identity, and provenance failures stay
+generic. A rejected result is always withheld. The one-nanosecond case remains
+a preparation error and does not execute the query or change retry behavior.
 
 Warnings such as the fixed-`24h` notice, Davis warm-up warning, and any Grail
 retention or historical-resolution notification produce no restricted ordinary
