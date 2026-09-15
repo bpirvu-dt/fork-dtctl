@@ -14,6 +14,8 @@ import (
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
+const restrictedReplayGuardMessage = "this command is not available in this context"
+
 // ReplayGuardError is the hard, context-derived command-boundary rejection.
 // It is intentionally distinct from ProfileError: profiles shape discovery;
 // this guard remains authoritative even when DTCTL_PROFILE widens the tree.
@@ -26,7 +28,7 @@ type ReplayGuardError struct {
 
 func (e *ReplayGuardError) Error() string {
 	if e.Restricted {
-		return "this command is not available in this context"
+		return restrictedReplayGuardMessage
 	}
 	target := fmt.Sprintf("command %q", e.Command)
 	if e.Plugin {
@@ -50,7 +52,7 @@ func (e *ReplayGuardError) Suggestions() []string {
 type replayGuardRecordingError struct{ detail error }
 
 func (e *replayGuardRecordingError) Error() string {
-	return "Required local recording is unavailable. The query was not executed."
+	return restrictedReplayGuardMessage
 }
 
 func (e *replayGuardRecordingError) Unwrap() error { return e.detail }

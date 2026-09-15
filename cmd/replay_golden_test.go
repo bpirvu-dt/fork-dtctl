@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +245,12 @@ func TestReplayErrorGoldens(t *testing.T) {
 			name: "restricted-hard-guard",
 			err: &ReplayGuardError{
 				Command: "ctx token", ContextName: "historical-window", Restricted: true,
+			},
+		},
+		{
+			name: "restricted-guard-recording",
+			err: &replayGuardRecordingError{
+				detail: errors.New("append replay provenance record: synthetic write failure"),
 			},
 		},
 	}
