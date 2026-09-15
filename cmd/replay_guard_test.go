@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,6 +247,9 @@ func TestRestrictedReplayGuardPreflightsRecordsAndUsesGenericErrors(t *testing.T
 		if record.Event != "command_guard" || record.Fields["detail"] == "" || record.Fields["command"] == "" {
 			t.Fatalf("record %d incomplete: %#v", index, record)
 		}
+		if !strings.Contains(fmt.Sprint(record.Fields["detail"]), "configured for replay") {
+			t.Fatalf("record %d lost the detailed rejection: %#v", index, record)
+		}
 	}
 }
 
@@ -262,11 +266,11 @@ func TestRestrictedReplayGuardSinkFailureStopsBeforeSideEffects(t *testing.T) {
 		t.Fatalf("restricted sink guard: counters=%+v err=%v", counters, err)
 	}
 	var recordingErr *replayGuardRecordingError
-	if !errors.As(err, &recordingErr) || errors.Unwrap(recordingErr) == nil {
+	if !errors.As(err, &recordingErr) || recordingErr.detail == nil || !errors.Is(err, recordingErr.detail) {
 		t.Fatalf("recording failure lost its private cause: %v", err)
 	}
-	if detail := errorToDetail(err); detail.Message != "this command is not available in this context" {
-		t.Fatalf("agent output exposed a different message: %+v", detail)
+	if detail := errorToDetail(err); detail.Message != "this command is not available in this context" || detail.Code != "command_unavailable" || len(detail.Suggestions) != 3 {
+		t.Fatalf("agent output exposed a different rejection: %+v", detail)
 	}
 
 	counters, err = executeReplayGuardTree(t, "query", "fetch logs")

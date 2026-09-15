@@ -505,6 +505,21 @@ func dqlErrorAdvice(e *sdkquery.QueryError) []string {
 // errorToDetail converts any error into a structured ErrorDetail for agent/plain mode output.
 // It uses errors.As to extract rich context from typed errors when available.
 func errorToDetail(err error) *output.ErrorDetail {
+	// The command boundary takes precedence over private recording causes, which
+	// may themselves have structured error fields that must not reach the agent.
+	var replayGuardErr *ReplayGuardError
+	if errors.As(err, &replayGuardErr) {
+		code := "replay_guard_blocked"
+		if replayGuardErr.Restricted {
+			code = "command_unavailable"
+		}
+		return &output.ErrorDetail{
+			Code:        code,
+			Message:     replayGuardErr.Error(),
+			Suggestions: replayGuardErr.Suggestions(),
+		}
+	}
+
 	// diagnostic.Error — wraps API errors with operation context and suggestions
 	var diagErr *diagnostic.Error
 	if errors.As(err, &diagErr) {
@@ -570,20 +585,6 @@ func errorToDetail(err error) *output.ErrorDetail {
 			Code:        "profile_blocked",
 			Message:     profileErr.Headline(),
 			Suggestions: profileErr.Suggestions(),
-		}
-	}
-
-	// ReplayGuardError — hard context boundary independent of profile shaping.
-	var replayGuardErr *ReplayGuardError
-	if errors.As(err, &replayGuardErr) {
-		code := "replay_guard_blocked"
-		if replayGuardErr.Restricted {
-			code = "command_unavailable"
-		}
-		return &output.ErrorDetail{
-			Code:        code,
-			Message:     replayGuardErr.Error(),
-			Suggestions: replayGuardErr.Suggestions(),
 		}
 	}
 

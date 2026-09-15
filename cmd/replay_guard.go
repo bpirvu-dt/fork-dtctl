@@ -49,13 +49,16 @@ func (e *ReplayGuardError) Suggestions() []string {
 	}
 }
 
-type replayGuardRecordingError struct{ detail error }
+type replayGuardRecordingError struct {
+	guard  *ReplayGuardError
+	detail error
+}
 
 func (e *replayGuardRecordingError) Error() string {
 	return restrictedReplayGuardMessage
 }
 
-func (e *replayGuardRecordingError) Unwrap() error { return e.detail }
+func (e *replayGuardRecordingError) Unwrap() []error { return []error{e.guard, e.detail} }
 
 type replayActivation struct {
 	Active         bool
@@ -193,17 +196,24 @@ func replayConfiguredRoute(raw *config.ReplayConfig, locator session.ReplayLocat
 	return disclosure, path, nil
 }
 
-func routeReplayGuardFailure(activation replayActivation, detail error) error {
+func routeReplayGuardFailure(activation replayActivation, detail *ReplayGuardError) error {
+	return routeReplayGuardFailureWithSink(activation, detail, session.NewFileProvenanceSink(activation.ProvenancePath, replayStateDirectory))
+}
+
+func routeReplayGuardFailureWithSink(activation replayActivation, detail *ReplayGuardError, sink session.ProvenanceSink) error {
 	if activation.Disclosure != session.ReplayDisclosureRestricted {
 		return detail
 	}
+	// Save the full rejection before selecting restricted output. All recording
+	// outcomes must expose the same guard, while provenance keeps this detail.
+	privateDetail := detail.Error()
+	detail.Restricted = true
 	if activation.ProvenancePath == "" {
-		return &replayGuardRecordingError{detail: fmt.Errorf("restricted command guard has no provenance path")}
+		return &replayGuardRecordingError{guard: detail, detail: fmt.Errorf("restricted command guard has no provenance path")}
 	}
-	sink := session.NewFileProvenanceSink(activation.ProvenancePath, replayStateDirectory)
 	ctx := context.Background()
 	if err := sink.Preflight(ctx); err != nil {
-		return &replayGuardRecordingError{detail: err}
+		return &replayGuardRecordingError{guard: detail, detail: err}
 	}
 	record := session.ReplayProvenanceRecord{
 		SchemaVersion: session.ReplayProvenanceSchemaVersion,
@@ -212,15 +222,12 @@ func routeReplayGuardFailure(activation replayActivation, detail error) error {
 		SessionID:     activation.SessionID,
 		Fields: map[string]any{
 			"outcome": "blocked",
-			"detail":  detail.Error(),
+			"detail":  privateDetail,
+			"command": detail.Command,
 		},
 	}
-	if value, ok := detail.(*ReplayGuardError); ok {
-		record.Fields["command"] = value.Command
-		value.Restricted = true
-	}
 	if err := sink.Append(ctx, record); err != nil {
-		return &replayGuardRecordingError{detail: err}
+		return &replayGuardRecordingError{guard: detail, detail: err}
 	}
 	return detail
 }

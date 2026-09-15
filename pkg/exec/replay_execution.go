@@ -369,10 +369,18 @@ func restrictedPreparationMessage(detail error, info ReplayExecutionInfo) string
 	// query is computed, so an empty EffectiveQuery proves the failure predates
 	// any rewrite; later parse errors describe rewritten DQL and stay generic.
 	var queryErr *sdkquery.QueryError
-	if errors.As(detail, &queryErr) && info.EffectiveQuery == "" && !replayTextExposesInternals(detail.Error(), info, true) {
+	if errors.As(detail, &queryErr) && info.EffectiveQuery == "" && restrictedOriginalParseTextMayPass(detail.Error(), info) {
 		return detail.Error()
 	}
 	return restrictedQueryInvalidMessage
+}
+
+// Before rewriting, a parser may quote the user's own snapshot table or DQL
+// fragments. They only indicate reconstruction when a mapping is recorded.
+// Keep the hard-word and generated-content checks on the entire diagnostic.
+func restrictedOriginalParseTextMayPass(text string, info ReplayExecutionInfo) bool {
+	return !containsRestrictedGeneratedWord(text, true) && !containsGeneratedReplayText(text, info) &&
+		!(replayInfoHasDavisProblemsMapping(info) && containsDavisMappingText(text, info))
 }
 
 // preparationHintFromReplayError authors a query hint from a typed compiler

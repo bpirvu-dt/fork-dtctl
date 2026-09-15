@@ -83,8 +83,10 @@ output has fewer distinguishable strings (harder to fingerprint replay).
 3. **Expose the 5s cadence minimum — DECIDED (yes).** Keep the numbers.
 4. **Command-guard recording failures — DECIDED (2026-09-15).** Use the same
    `this command is not available in this context` message whether recording
-   succeeds or fails. Do not distinguish recording-failure causes in the public
-   message. Keep the recording attempt and the detailed internal error.
+   succeeds or fails. Use the same `command_unavailable` agent code and the same
+   suggestions for switching context. Keep the recording attempt and both
+   internal causes. Capture the detailed rejection before selecting restricted
+   output so the private log retains it.
 
 All decisions are now settled; see the implementation plan below.
 
@@ -134,7 +136,7 @@ Two internal concepts drive the richer restricted messages:
 **New `restrictedPreparationMessage(detail, info)`**:
 1. `errors.As(detail, *ReplayCadenceError)` → `fmt.Sprintf("The query is being run too frequently; the minimum time between runs is %s (requested %s).", min, requested)`.
 2. `errors.As(detail, *execreplay.ReplayError)` → `preparationHintFromReplayError`; scan it (metric-terms allowed); return hint if clean, else `restrictedQueryInvalidMessage`.
-3. plain parse error about the user's own query: require `info.EffectiveQuery == ""` and a real `QueryError`; scan with `replayTextExposesInternals(..., true)` before returning `detail.Error()`. Metric words are allowed, but protected content still blocks. Any parse error after rewriting stays generic.
+3. plain parse error about the user's own query: require `info.EffectiveQuery == ""` and a real `QueryError`; check `restrictedOriginalParseTextMayPass` before returning `detail.Error()`. Ordinary metric words, the user's snapshot table, and quoted DQL fragments are allowed without a mapping. Hard guard words and generated content still block. Any parse error after rewriting stays generic.
 4. else `restrictedQueryInvalidMessage`.
 
 **New `preparationHintFromReplayError(re)`** — switch `re.Code`:
@@ -159,10 +161,15 @@ such as `filter`, `sort`, and `timestamp`. The remote check also scans the error
 wrapper and strips original user DQL so that it does not mistake the user's own
 text for generated content.
 
-Authored guidance, validation reasons, and original-query parse diagnostics
-use `replayTextExposesInternals`. They retain the hard guard words, generated
-timestamp checks, and reconstruction checks. `allowMetricTerms=true` permits
-`interval` and ordinary natural-bucket wording in these paths.
+Authored guidance and validation reasons use `replayTextExposesInternals`.
+They retain the hard guard words, generated timestamp checks, and reconstruction
+checks. `allowMetricTerms=true` permits `interval` and ordinary natural-bucket
+wording in these paths.
+
+Original-query parse diagnostics use `restrictedOriginalParseTextMayPass`.
+It scans the whole diagnostic for hard guard words and generated content.
+Reconstruction vocabulary blocks only when metadata records a Davis mapping.
+This exception does not change the checks on authored guidance.
 
 #### 2. Typed errors for detection (keep full-mode `Error()` text identical)
 
@@ -187,6 +194,13 @@ timestamp checks, and reconstruction checks. `allowMetricTerms=true` permits
   through before rewriting and stays generic after rewriting. The three
   timeframe cases retain their preparation-error and retry behavior. These
   tests remain separate from the authored-message inventory.
+- **Parser disclosure regressions**: a direct snapshot query keeps a parser
+  diagnostic naming its table. Original user fragments pass through, while
+  rewritten-query errors, generated content, and authored reconstruction
+  guidance remain protected.
+- **Guard recording regressions**: missing-path, preflight, and append failures
+  produce the same agent fields as successful recording. Tests cover commands,
+  plugins, wrapped errors, private causes, and detailed private log entries.
 
 #### 4. Golden files
 

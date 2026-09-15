@@ -1724,12 +1724,19 @@ checks. The detailed reason and remedy are written to provenance first:
 | Missing provenance configuration | `Query execution is not available in this environment. This is a configuration issue that cannot be resolved by changing or retrying the query.` |
 
 An original-query parse error can retain ordinary metric words such as
-`interval`. Parse errors from a rewritten query stay generic. Ordinary backend
+`interval`, the snapshot table the user named, and quoted DQL fragments.
+Parse errors from a rewritten query stay generic. Ordinary backend
 errors also retain their diagnostic text, error code, and HTTP status when the
 text passes the disclosure checks. Words such as `filter` and `timestamp` are
 treated as possible reconstruction details only when the query was mapped to
 Davis snapshots. Generated timestamps and rewritten DQL remain protected for
 all queries.
+
+Every restricted command-guard rejection uses the same agent error code
+`command_unavailable` and the same suggestions for switching context. Recording
+success, missing configuration, preflight failure, and append failure do not
+change those public fields. The private log retains the detailed rejection
+when it can be written.
 
 Result validation only exposes reasons approved at the point where the error
 is created. Internal contract, source-identity, and provenance failures stay

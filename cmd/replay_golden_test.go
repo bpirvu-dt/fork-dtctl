@@ -250,6 +250,7 @@ func TestReplayErrorGoldens(t *testing.T) {
 		{
 			name: "restricted-guard-recording",
 			err: &replayGuardRecordingError{
+				guard:  &ReplayGuardError{Command: "ctx token", ContextName: "historical-window", Restricted: true},
 				detail: errors.New("append replay provenance record: synthetic write failure"),
 			},
 		},
