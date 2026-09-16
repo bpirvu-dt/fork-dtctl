@@ -161,6 +161,15 @@ The replay interval is `[data_start, data_end)`. The visible replay interval is
 effective ranges. A source request is intersected with the visible replay
 interval, so partial overlap is supported.
 
+Every session requires at least 60 seconds of history at startup:
+`virtual_start - data_start >= 60 seconds`, with `virtual_start <= data_end`.
+The rule applies to every source family, clock mode, and disclosure.
+Omitting `virtual_start` resolves it to `data_start` and fails validation.
+dtctl does not shift the clock or wait for the first minute. Start and restart
+validate before writing state, so an invalid restart preserves the session.
+Stored sessions validate their resolved initial settings. An incompatible
+session cannot execute queries, but status and stop remain available.
+
 Completely non-overlapping sources have three proof classes:
 
 - temporary means the source can be proven to overlap later;
@@ -189,6 +198,61 @@ Supporting evidence established from-inclusive and to-exclusive behavior for eve
 The compiler also accepts the tested nested `append`, `join`, and
 source-bearing `lookup` shapes, but it classifies and bounds each nested source
 independently.
+
+### Topology windows and traversal
+
+`smartscapeNodes` and `smartscapeEdges` use source class `topology` and boundary
+policy `window_only`. Node-type selectors are unrestricted. Edge selectors and
+`traverse` edge patterns must resolve only to `calls`, `runs_on`, or both.
+Other edge types and wildcard edge selectors are rejected until measured.
+
+Topology window precedence is explicit source bounds, then a complete request
+default-timeframe pair, then `[virtual_now - 60s, virtual_now)`. A source
+`from:` alone ends at virtual now; `to:` alone is rejected. Invalid or partial
+timeframes fail rather than selecting the fallback. The selected range is
+intersected with the visible replay interval. Its non-empty effective window
+must be at least 60 seconds. Width failures are hard preparation errors in
+one-shot, wait, and live execution. They are not coverage or data errors.
+Empty intersections retain the general non-overlap rules.
+
+The 60-second minimum prevents an empty `calls` graph caused by missing a
+whole-minute mark. The answer means: **These services exchanged calls during
+approximately this minute.** Approximately one minute of timing imprecision
+is accepted. Wider windows represent the union over the requested interval.
+Replay never silently widens a topology window.
+
+`traverse` is authorized structurally. Its feeder is the nearest preceding
+`smartscapeNodes` or `smartscapeEdges` in the same execution block, reachable
+through allowed pipeline commands that introduce no source. `append`, `join`,
+`lookup`, `data`, another source, and a block boundary break the chain.
+Chained traversals bind to the same feeder. A traversal without a feeder or
+with its own timeframe parameters is rejected before execute. This is not a
+blanket `traverse` allowlist entry.
+
+The compiler records each traversal's feeder AST path and effective window.
+Explain output and provenance carry the binding. Restricted disclosure routes
+it only to provenance. Both modes use identical effective DQL and return
+identical data without a topology-specific announcement.
+
+The physical topology range equals its effective half-open window. There is
+no post-execution source-contract validator for topology. The contract fences
+only the window. Smartscape records carry current field values, so a returned
+`lifetime.end` may exceed virtual now. Later relationship changes can affect
+historical edges and traversal destinations. These accepted limits apply in
+both disclosures. dtctl does not reconstruct, clamp, or suppress them.
+
+Dynatrace documents [35-day Smartscape retention](https://docs.dynatrace.com/docs/platform/grail/smartscape-on-grail#data-retention).
+Nodes and their static edges are deleted when `lifetime.end` is older than
+35 days. Dynamic edges are cleaned up after 35 days. An older window can
+return long-lived nodes while expired nodes and dynamic edges are missing.
+Topology ships without a coverage gate. It participates in retention
+inspection only with the not-verified outcome, for topology-only and mixed
+queries alike. dtctl does not verify or guarantee complete topology history.
+Recording suitability belongs to dataset preparation. There is no runtime
+recording-eligibility gate. Topology evaluations must finish within 35 days
+of their earliest required topology time.
+
+### Metrics and compilation
 
 Metrics support automatic intervals and parser-accepted positive fixed
 durations. The advanced metric allowlist is one plain `avg`,
@@ -332,8 +396,8 @@ problems-view interval `[F,T)`.
 
 RUM, Dynatrace synthetic telemetry, security-event tables, shifts, and
 automatic Davis events-view mapping are unsupported and have no promised
-delivery date. Current topology, entity
-enrichment, mutable lookup state, current schema state, and current or
+delivery date. Current entity enrichment outside the topology contract,
+mutable lookup state, current schema state, and current or
 on-demand analyzer and model state also remain rejected.
 
 Replay controls time semantics. It does not freeze retention, ingestion,

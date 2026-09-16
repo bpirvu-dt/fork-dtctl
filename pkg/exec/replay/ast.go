@@ -134,6 +134,7 @@ var knownTerminalRoles = map[string]struct{}{
 	"PIPE":                    {},
 	"SIMPLE_IDENTIFIER":       {},
 	"SMARTSCAPE_EDGE_PATTERN": {},
+	"SMARTSCAPE_EDGE_TYPE":    {},
 	"SMARTSCAPE_NODE_PATTERN": {},
 	"SMARTSCAPE_NODE_TYPE":    {},
 	"SPACE":                   {},

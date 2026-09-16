@@ -93,7 +93,7 @@ func TestAuditRejectsBoundaryAndUntouchedSemanticChanges(t *testing.T) {
 	assertAuditError(t, err)
 }
 
-func TestAuditRejectsForbiddenValidationConstruct(t *testing.T) {
+func TestAuditRejectsAdditionalTopologySource(t *testing.T) {
 	test := loadAuditCorpus(t)[0]
 	compilation := compileAuditCase(t, test)
 	_, err := Audit(AuditInput{
@@ -101,7 +101,7 @@ func TestAuditRejectsForbiddenValidationConstruct(t *testing.T) {
 		Compilation:   compilation, SourcePolicy: Milestone1SourcePolicy(), Timezone: time.UTC,
 	})
 	var replayErr *ReplayError
-	if !errors.As(err, &replayErr) || replayErr.Code != ErrorCurrentState {
+	if !errors.As(err, &replayErr) || replayErr.Code != ErrorAudit {
 		t.Fatalf("error = %T %v", err, err)
 	}
 }

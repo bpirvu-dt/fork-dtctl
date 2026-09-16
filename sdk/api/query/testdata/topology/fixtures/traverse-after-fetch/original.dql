@@ -1,0 +1,1 @@
+fetch spans | traverse "calls", "SERVICE"

@@ -1,0 +1,1 @@
+smartscapeNodes "SERVICE" | fieldsAdd synthetic=1 | traverse "calls", "SERVICE"

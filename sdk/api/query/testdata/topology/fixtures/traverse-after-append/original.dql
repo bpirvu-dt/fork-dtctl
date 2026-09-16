@@ -1,0 +1,1 @@
+smartscapeNodes "SERVICE" | append [smartscapeNodes "SERVICE"] | traverse "calls", "SERVICE"

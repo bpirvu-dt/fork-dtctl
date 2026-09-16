@@ -1,0 +1,34 @@
+{
+  "http_status": 400,
+  "response_body": {
+    "error": {
+      "code": 400,
+      "details": {
+        "arguments": [
+          "traverse"
+        ],
+        "errorMessage": "There aren't enough parameters for command `traverse`. 1 mandatory parameter is missing: targetTypes. targetTypes: The types of the target nodes.",
+        "errorMessageFormat": "There aren't enough parameters for command `%1$s`. 1 mandatory parameter is missing: targetTypes. targetTypes: The types of the target nodes.",
+        "errorMessageFormatSpecifierTypes": [
+          "COMMAND_NAME"
+        ],
+        "errorType": "TOO_FEW_PARAMETERS_FOR_COMMAND",
+        "exceptionType": "DQL-SYNTAX-ERROR",
+        "queryString": "smartscapeNodes \"SERVICE\" | traverse \"calls\"",
+        "syntaxErrorPosition": {
+          "end": {
+            "column": 44,
+            "index": 43,
+            "line": 1
+          },
+          "start": {
+            "column": 29,
+            "index": 28,
+            "line": 1
+          }
+        }
+      },
+      "message": "TOO_FEW_PARAMETERS_FOR_COMMAND"
+    }
+  }
+}

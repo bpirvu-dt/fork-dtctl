@@ -26,8 +26,8 @@ func TestAdapterAcceptsCompleteRealFixtureCorpus(t *testing.T) {
 		t.Fatalf("walk fixture corpus: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 245 {
-		t.Fatalf("fixture count = %d, want 245", len(paths))
+	if len(paths) != 310 {
+		t.Fatalf("fixture count = %d, want 310", len(paths))
 	}
 
 	adapted, captures := 0, 0
@@ -53,8 +53,8 @@ func TestAdapterAcceptsCompleteRealFixtureCorpus(t *testing.T) {
 		}
 		adapted++
 	}
-	if adapted != 227 || captures != 18 {
-		t.Fatalf("adapted = %d, non-AST captures = %d; want 227 and 18", adapted, captures)
+	if adapted != 290 || captures != 20 {
+		t.Fatalf("adapted = %d, non-AST captures = %d; want 290 and 20", adapted, captures)
 	}
 }
 

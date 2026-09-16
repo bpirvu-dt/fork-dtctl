@@ -41,7 +41,7 @@ not prove that an agent could never infer the environment from its behavior.
 | Category | Sub-case | Retryable | Error message (restricted, committed) | Suggested action (DEFERRED) |
 |---|---|---|---|---|
 | command_guard | blocked command or plugin, including any failure to record the rejection | no | `this command is not available in this context` | The command remains blocked. |
-| readiness | no active session / completed / config drift | no | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` | Stop; operator/setup intervention required. Do not retry. |
+| readiness | no active session / completed / config drift / incompatible initial history | no | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` | Stop; operator/setup intervention required. Do not retry. |
 | non_overlap | data not visible yet (realtime, waiting) | yes | `The requested timeframe is not available yet.` | None needed — auto-retried; safe to wait. |
 | non_overlap | timeframe outside available data | no | `No data is available for the requested timeframe.` | Try a different (e.g. earlier) timeframe. |
 | preparation | cadence too fast | no | `The query is being run too frequently; the minimum time between runs is {min} (requested {actual}).` | Reduce polling frequency to ≥ {min}. |
@@ -49,7 +49,11 @@ not prove that an agent could never infer the environment from its behavior.
 | preparation | bad/dynamic timeframe (`timeframe`) | no | Approved `PublicMessage`, usually `The query's timeframe could not be interpreted. {remedy}`; internal errors stay generic | Follow the stated timeframe guidance. |
 | preparation | unsupported time expression | no | `The query's timeframe could not be interpreted. Use an absolute start and end timestamp.` | Use absolute timestamps. |
 | preparation | calendar alignment outside UTC | no | `The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.` | Use absolute timestamps. |
-| preparation | intersection leaves only one nanosecond | no | `No data can be returned for the requested timeframe.` | Remains a preparation error; no query execution or change to retry behavior. |
+| preparation | non-topology intersection leaves only one nanosecond | no | `No data can be returned for the requested timeframe.` | Remains a preparation error; no query execution or change to retry behavior. |
+| preparation | non-empty topology window shorter than 60 seconds | no | `The query could not be run as written.` | The detailed reason and computed effective window go only to provenance. No execution or widening. |
+| preparation | unsupported topology edge selector | no | `The query uses an unsupported element: {construct}. Use only calls or runs_on edge types.` | Use a verified edge type. Wildcard edge selectors remain unsupported. |
+| preparation | `traverse` without a structural feeder | no | `The query uses an unsupported element: traverse. Place traverse after smartscapeNodes or smartscapeEdges through source-free pipeline commands.` | Keep the feeder in the same execution block without intervening source-bearing commands. |
+| preparation | `traverse` carries its own timeframe bounds | no | `The query uses an unsupported element: traverse. Put from, to, or timeframe on the feeding smartscapeNodes or smartscapeEdges command.` | Put bounds on the feeder. |
 | preparation | unsupported time shift (`shift`) | no | `The query uses an unsupported time shift. Remove the time shift.` | Remove the shift. |
 | preparation | plain DQL syntax error before rewriting (user's own query, real `QueryError`) | no | *(passthrough — verbatim parse error, scanned; ordinary metric terms allowed)* | Fix the reported syntax error. |
 | preparation | internal audit / ast_contract / result_contract / Davis mismatch | no | `The query could not be run as written.` | Not query-fixable; report/retry. |

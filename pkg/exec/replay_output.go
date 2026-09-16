@@ -75,6 +75,12 @@ func replayOutputMetadata(prepared PreparedQuery, validated []execreplay.Validat
 		}
 	}
 	metadata.DavisMappingsAudited = prepared.Audit.DavisMappingsAudited
+	for _, binding := range prepared.Compilation.Traversals {
+		metadata.Traversals = append(metadata.Traversals, output.ReplayTraversalMetadata{
+			Path: binding.Path, FeederPath: binding.FeederPath, FeederOrdinal: binding.FeederOrdinal,
+			EffectiveFrom: replayOutputTime(binding.Effective.Start), EffectiveTo: replayOutputTime(binding.Effective.End),
+		})
+	}
 	for _, notice := range prepared.Compilation.Notices {
 		metadata.Warnings = append(metadata.Warnings, notice.Message)
 	}
@@ -91,6 +97,7 @@ func fullReplayOutput(info *ReplayExecutionInfo) *output.ReplayMetadata {
 		return nil
 	}
 	value := *info.Output
+	value.Traversals = append([]output.ReplayTraversalMetadata(nil), info.Output.Traversals...)
 	value.Sources = append([]output.ReplaySourceMetadata{}, info.Output.Sources...)
 	for index := range value.Sources {
 		if info.Output.Sources[index].DavisProblemsMapping != nil {

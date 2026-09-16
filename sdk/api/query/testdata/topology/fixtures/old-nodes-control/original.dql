@@ -1,0 +1,1 @@
+fetch logs, from:toTimestamp("2026-08-10T09:54:05Z"), to:toTimestamp("2026-08-10T10:54:05Z") | limit 1 | append [ smartscapeNodes "*" | limit 1 ] | summarize count()

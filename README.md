@@ -81,6 +81,11 @@ replay configuration in the context for automation; the commands below assume
 a context named `historical-window` with such a stored replay block (the
 Quick Start shows the full configuration).
 
+Every session needs at least 60 seconds of visible history at startup. Set
+`virtual_start` at least 60 seconds after `data_start`, and no later than
+`data_end`. Omitting `virtual_start` is invalid, including for logs-only or
+metrics-only sessions.
+
 ```bash
 dtctl replay start --context historical-window
 dtctl query 'fetch logs, from:now()-1h' --context historical-window
@@ -88,6 +93,13 @@ dtctl replay advance 10m --context historical-window
 dtctl replay status --context historical-window
 dtctl replay stop --context historical-window
 ```
+
+Replay also supports Smartscape nodes, `calls` and `runs_on` edges, and
+traversal from a windowed topology source. Topology queries need an effective
+window of at least 60 seconds. Their results describe approximately that
+minute or the requested wider interval. Records carry current field values,
+and later relationship changes can affect historical graphs. Dynatrace's
+35-day retention policy does not guarantee a complete graph.
 
 See [Historical replay in the Quick Start](docs/QUICK_START.md#historical-replay)
 for setup, usage, supported data, guardrails, and current limitations.

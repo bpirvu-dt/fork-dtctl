@@ -15,6 +15,7 @@ const (
 	SourceRecord    SourceClass = "record"
 	SourceMetric    SourceClass = "metric"
 	SourceSynthetic SourceClass = "synthetic"
+	SourceTopology  SourceClass = "topology"
 	// SourceDavisProblemsView stays purpose-specific until a second mapping
 	// passes its own evidence gate; generic view-mapping plumbing is deferred.
 	SourceDavisProblemsView SourceClass = "davis_problems_view"
@@ -28,6 +29,7 @@ const (
 	BoundaryExact        BoundaryPolicy = "exact_half_open"
 	BoundaryMetricBucket BoundaryPolicy = "one_natural_bucket_per_side"
 	BoundaryNone         BoundaryPolicy = "none"
+	BoundaryWindowOnly   BoundaryPolicy = "window_only"
 )
 
 // RecordSourcePolicy is one explicitly approved record table contract.
@@ -270,6 +272,11 @@ func analyzeSources(ast *AST, policy SourcePolicy, mapping DavisProblemsMappingP
 			source.Name = "data"
 			source.BoundaryPolicy = BoundaryNone
 			sources = append(sources, source)
+		case "smartscapenodes", "smartscapeedges":
+			source.Class = SourceTopology
+			source.Name = ownCommandName(command.node)
+			source.BoundaryPolicy = BoundaryWindowOnly
+			sources = append(sources, source)
 		}
 	}
 	if len(sources) == 0 {
@@ -319,12 +326,9 @@ func fetchDataObject(command *Node) (*Node, string, error) {
 
 func validateCommandSurface(ast *AST, commands []commandView) error {
 	forbidden := map[string]string{
-		"smartscapenodes": "current Smartscape nodes",
-		"smartscapeedges": "current Smartscape edges",
-		"traverse":        "current topology traversal",
-		"fieldssnapshot":  "current field snapshot state",
-		"load":            "mutable lookup content",
-		"describe":        "current schema state",
+		"fieldssnapshot": "current field snapshot state",
+		"load":           "mutable lookup content",
+		"describe":       "current schema state",
 	}
 	allowed := map[string]struct{}{
 		"fetch": {}, "timeseries": {}, "data": {}, "append": {}, "join": {}, "lookup": {},
@@ -336,6 +340,12 @@ func validateCommandSurface(ast *AST, commands []commandView) error {
 		"expand":       {}, // sdk/api/query/testdata/pipeline/expand/parse.json: expands piped arrays; no tenant-state read.
 	}
 	for _, command := range commands {
+		if isTopologyCommand(command.name) {
+			if err := validateTopologyCommand(ast, command); err != nil {
+				return err
+			}
+			continue
+		}
 		if detail, ok := forbidden[command.name]; ok {
 			return replayError(ErrorCurrentState, command.node, command.name, fmt.Sprintf("%s is current mutable tenant state. dtctl cannot reproduce its value at virtual now.", detail), "Remove the current-state construct.")
 		}

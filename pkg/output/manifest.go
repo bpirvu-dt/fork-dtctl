@@ -100,6 +100,16 @@ type ReplayMetadata struct {
 	Warnings                     []string                       `json:"warnings"`
 	DavisSnapshotCoverage        *DavisSnapshotCoverageMetadata `json:"davis_snapshot_coverage,omitempty"`
 	DavisMappingsAudited         bool                           `json:"davis_mappings_audited,omitempty"`
+	Traversals                   []ReplayTraversalMetadata      `json:"traversals,omitempty"`
+}
+
+// ReplayTraversalMetadata records the bounded source that feeds a traversal.
+type ReplayTraversalMetadata struct {
+	Path          string `json:"path" yaml:"path"`
+	FeederPath    string `json:"feeder_path" yaml:"feeder_path"`
+	FeederOrdinal int    `json:"feeder_ordinal" yaml:"feeder_ordinal"`
+	EffectiveFrom string `json:"effective_from" yaml:"effective_from"`
+	EffectiveTo   string `json:"effective_to" yaml:"effective_to"`
 }
 
 // Stable spill-file error codes (D32). These are part of the versioned envelope

@@ -1,0 +1,1 @@
+smartscapeNodes type:"SERVICE" | traverse edgeTypes:{"calls", "runs_on"}, targetTypes:{"SERVICE", "HOST"}, direction:backward, fieldsKeep:{name, type}, nodeId:id

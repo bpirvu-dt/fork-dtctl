@@ -199,6 +199,7 @@ type ExplainData struct {
 	EffectiveDQL     string
 	CoverageVerified *bool
 	CoverageMessage  string
+	Traversals       []TraversalBinding
 }
 
 // CompileResult is returned even with NonOverlapError so callers can inspect
@@ -213,6 +214,7 @@ type CompileResult struct {
 	AuditPlan       AuditPlan
 	AuditRequired   bool
 	InspectionOnly  bool
+	Traversals      []TraversalBinding
 }
 
 // NonOverlapError is the typed whole-query decision when any telemetry source
@@ -280,6 +282,11 @@ func Compile(input CompileInput) (CompileResult, error) {
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {
 		return result, nonOverlap
 	}
+	result.Traversals, err = bindTraversals(working, sources, result.Sources)
+	if err != nil {
+		return result, err
+	}
+	result.Explain.Traversals = append([]TraversalBinding(nil), result.Traversals...)
 	fingerprint, err := semanticFingerprintWithMappings(working, sources, input.VirtualNow, result.AuditPlan.DavisProblemsMappings, nil)
 	if err != nil {
 		return result, err

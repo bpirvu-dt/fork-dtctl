@@ -6,23 +6,25 @@ import (
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec/replay"
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/suggest"
 )
 
 type replayExplainOutput struct {
-	VirtualNow       string                      `json:"virtual_now" yaml:"virtual_now"`
-	VirtualStart     string                      `json:"virtual_start" yaml:"virtual_start"`
-	DataStart        string                      `json:"data_start" yaml:"data_start"`
-	DataEnd          string                      `json:"data_end" yaml:"data_end"`
-	VisibleStart     string                      `json:"visible_start" yaml:"visible_start"`
-	VisibleEnd       string                      `json:"visible_end" yaml:"visible_end"`
-	Locale           string                      `json:"locale,omitempty" yaml:"locale,omitempty"`
-	Timezone         string                      `json:"timezone" yaml:"timezone"`
-	Sources          []replayExplainSourceOutput `json:"sources" yaml:"sources"`
-	Notices          []string                    `json:"notices,omitempty" yaml:"notices,omitempty"`
-	EffectiveQuery   string                      `json:"effective_query" yaml:"effective_query"`
-	CoverageVerified *bool                       `json:"coverage_verified,omitempty" yaml:"coverage_verified,omitempty"`
-	CoverageMessage  string                      `json:"coverage_message,omitempty" yaml:"coverage_message,omitempty"`
+	VirtualNow       string                           `json:"virtual_now" yaml:"virtual_now"`
+	VirtualStart     string                           `json:"virtual_start" yaml:"virtual_start"`
+	DataStart        string                           `json:"data_start" yaml:"data_start"`
+	DataEnd          string                           `json:"data_end" yaml:"data_end"`
+	VisibleStart     string                           `json:"visible_start" yaml:"visible_start"`
+	VisibleEnd       string                           `json:"visible_end" yaml:"visible_end"`
+	Locale           string                           `json:"locale,omitempty" yaml:"locale,omitempty"`
+	Timezone         string                           `json:"timezone" yaml:"timezone"`
+	Sources          []replayExplainSourceOutput      `json:"sources" yaml:"sources"`
+	Notices          []string                         `json:"notices,omitempty" yaml:"notices,omitempty"`
+	EffectiveQuery   string                           `json:"effective_query" yaml:"effective_query"`
+	CoverageVerified *bool                            `json:"coverage_verified,omitempty" yaml:"coverage_verified,omitempty"`
+	CoverageMessage  string                           `json:"coverage_message,omitempty" yaml:"coverage_message,omitempty"`
+	Traversals       []output.ReplayTraversalMetadata `json:"traversals,omitempty" yaml:"traversals,omitempty"`
 }
 
 type replayExplainSourceOutput struct {
@@ -90,6 +92,12 @@ func printReplayExplanation(value replay.ExplainData) error {
 	for _, notice := range value.Notices {
 		payload.Notices = append(payload.Notices, notice.Message)
 	}
+	for _, binding := range value.Traversals {
+		payload.Traversals = append(payload.Traversals, output.ReplayTraversalMetadata{
+			Path: binding.Path, FeederPath: binding.FeederPath, FeederOrdinal: binding.FeederOrdinal,
+			EffectiveFrom: replayExplainTime(binding.Effective.Start), EffectiveTo: replayExplainTime(binding.Effective.End),
+		})
+	}
 	if (outputFormat != "" && outputFormat != "table" && outputFormat != "wide") || agentMode {
 		printer := NewPrinter()
 		enrichAgent(printer, "query", "dql")
@@ -117,6 +125,9 @@ func printReplayExplanation(value replay.ExplainData) error {
 	}
 	for _, notice := range payload.Notices {
 		fmt.Fprintf(os.Stdout, "Notice: %s\n", notice)
+	}
+	for _, binding := range payload.Traversals {
+		fmt.Fprintf(os.Stdout, "Traverse %s: feeder %s (source %d), window %s – %s\n", binding.Path, binding.FeederPath, binding.FeederOrdinal, binding.EffectiveFrom, binding.EffectiveTo)
 	}
 	if payload.CoverageVerified != nil {
 		fmt.Fprintf(os.Stdout, "Coverage verified: %t\n", *payload.CoverageVerified)

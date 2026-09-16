@@ -1,0 +1,1 @@
+smartscapeNodes "SERVICE" | join [smartscapeNodes "SERVICE"], on:{id} | traverse "calls", "SERVICE"
