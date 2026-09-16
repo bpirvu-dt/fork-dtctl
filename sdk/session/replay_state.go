@@ -263,6 +263,9 @@ func (s *ReplayStateStore) ReadActive(locator ReplayLocator) (ReplaySession, err
 	if state.Status != ReplayStatusActive && state.Status != ReplayStatusTerminalReady {
 		return ReplaySession{}, fmt.Errorf("replay session for context %q is %s", state.ContextName, state.Status)
 	}
+	if err := ValidateReplayStartupHistory(state.DataStart, state.VirtualStart); err != nil {
+		return ReplaySession{}, fmt.Errorf("stored replay session is incompatible: %w; restart with valid settings", err)
+	}
 	return state, nil
 }
 
@@ -435,6 +438,9 @@ func validateResolvedReplayConfig(cfg ResolvedReplayConfig) error {
 	}
 	if !cfg.DataStart.Before(cfg.DataEnd) || cfg.VirtualStart.Before(cfg.DataStart) || cfg.VirtualStart.After(cfg.DataEnd) {
 		return fmt.Errorf("resolved replay configuration has invalid time bounds")
+	}
+	if err := ValidateReplayStartupHistory(cfg.DataStart, cfg.VirtualStart); err != nil {
+		return err
 	}
 	if cfg.ClockMode != ReplayClockRealtime && cfg.ClockMode != ReplayClockManual {
 		return fmt.Errorf("resolved replay configuration has invalid clock mode %q", cfg.ClockMode)

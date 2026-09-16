@@ -12,8 +12,9 @@ func TestResolveReplayConfigDefaultsAndUTC(t *testing.T) {
 	dir := t.TempDir()
 	key := NewReplayContextKey("/config/a", "historical", "https://example.invalid/")
 	cfg, err := ResolveReplayConfig(&ReplayConfig{
-		DataStart: "2026-06-14T10:00:00.123456789+02:00",
-		DataEnd:   "2026-06-14T12:00:00.123456789+02:00",
+		DataStart:    "2026-06-14T10:00:00.123456789+02:00",
+		DataEnd:      "2026-06-14T12:00:00.123456789+02:00",
+		VirtualStart: "2026-06-14T10:01:00.123456789+02:00",
 	}, ReplayConfigOverrides{}, dir, key)
 	if err != nil {
 		t.Fatal(err)
@@ -21,13 +22,13 @@ func TestResolveReplayConfigDefaultsAndUTC(t *testing.T) {
 	if got, want := formatReplayTime(cfg.DataStart), "2026-06-14T08:00:00.123456789Z"; got != want {
 		t.Fatalf("data start = %s, want %s", got, want)
 	}
-	if !cfg.VirtualStart.Equal(cfg.DataStart) {
-		t.Fatalf("virtual start = %s, want data start", cfg.VirtualStart)
+	if !cfg.VirtualStart.Equal(cfg.DataStart.Add(time.Minute)) {
+		t.Fatalf("virtual start = %s, want one minute after data start", cfg.VirtualStart)
 	}
 	if cfg.ClockMode != ReplayClockRealtime || cfg.Disclosure != ReplayDisclosureFull || cfg.ProvenancePath != "" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.ValueSources.VirtualStart != ReplayValueFromDefault || cfg.ValueSources.ClockMode != ReplayValueFromDefault || cfg.ValueSources.Disclosure != ReplayValueFromDefault {
+	if cfg.ValueSources.VirtualStart != ReplayValueFromContext || cfg.ValueSources.ClockMode != ReplayValueFromDefault || cfg.ValueSources.Disclosure != ReplayValueFromDefault {
 		t.Fatalf("unexpected default sources: %+v", cfg.ValueSources)
 	}
 }
@@ -61,8 +62,9 @@ func TestResolveReplayConfigFlagPrecedence(t *testing.T) {
 
 func TestResolveReplayConfigValidation(t *testing.T) {
 	base := ReplayConfig{
-		DataStart: "2026-06-14T08:00:00Z",
-		DataEnd:   "2026-06-14T12:00:00Z",
+		DataStart:    "2026-06-14T08:00:00Z",
+		DataEnd:      "2026-06-14T12:00:00Z",
+		VirtualStart: "2026-06-14T08:01:00Z",
 	}
 	tests := []struct {
 		name string
@@ -96,9 +98,10 @@ func TestResolveReplayConfigDisclosureAndProvenance(t *testing.T) {
 	}
 	key := ContextKey(strings.Repeat("c", 64))
 	raw := &ReplayConfig{
-		DataStart:  "2026-06-14T08:00:00Z",
-		DataEnd:    "2026-06-14T12:00:00Z",
-		Disclosure: ReplayDisclosureRestricted,
+		DataStart:    "2026-06-14T08:00:00Z",
+		DataEnd:      "2026-06-14T12:00:00Z",
+		VirtualStart: "2026-06-14T08:01:00Z",
+		Disclosure:   ReplayDisclosureRestricted,
 	}
 	cfg, err := ResolveReplayConfig(raw, ReplayConfigOverrides{}, dir, key)
 	if err != nil {
@@ -281,5 +284,56 @@ func TestVirtualStartMayEqualDataEnd(t *testing.T) {
 	}
 	if !cfg.VirtualStart.Equal(time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)) {
 		t.Fatalf("unexpected virtual start: %s", cfg.VirtualStart)
+	}
+}
+
+func TestResolveReplayConfigMinimumStartupHistory(t *testing.T) {
+	for _, mode := range []string{ReplayClockManual, ReplayClockRealtime} {
+		for _, disclosure := range []string{ReplayDisclosureFull, ReplayDisclosureRestricted} {
+			for _, test := range []struct {
+				name    string
+				virtual string
+				valid   bool
+			}{
+				{"omitted", "", false},
+				{"empty history", "2026-06-14T08:00:00Z", false},
+				{"one nanosecond below minimum", "2026-06-14T08:00:59.999999999Z", false},
+				{"exact minimum", "2026-06-14T08:01:00Z", true},
+				{"more than minimum", "2026-06-14T08:01:00.000000001Z", true},
+			} {
+				t.Run(mode+"/"+disclosure+"/"+test.name, func(t *testing.T) {
+					raw := &ReplayConfig{
+						DataStart: "2026-06-14T08:00:00Z", DataEnd: "2026-06-14T12:00:00Z",
+						VirtualStart: test.virtual, ClockMode: mode, Disclosure: disclosure,
+					}
+					resolved, err := ResolveReplayConfig(raw, ReplayConfigOverrides{}, t.TempDir(), ContextKey(strings.Repeat("e", 64)))
+					if test.valid {
+						if err != nil || formatReplayTime(resolved.VirtualStart) != test.virtual {
+							t.Fatalf("valid startup changed or rejected: %+v, %v", resolved, err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), "at least 60 seconds") || !strings.Contains(err.Error(), "provide earlier history") {
+						t.Fatalf("missing actionable startup error: %v", err)
+					}
+					if raw.VirtualStart != test.virtual {
+						t.Fatal("resolution rewrote the context")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestReplayStartupHistoryValidatesResolvedOverrides(t *testing.T) {
+	raw := &ReplayConfig{DataStart: "2026-06-14T08:00:00Z", DataEnd: "2026-06-14T12:00:00Z", VirtualStart: "2026-06-14T08:01:00Z"}
+	key := ContextKey(strings.Repeat("f", 64))
+	lateDataStart := "2026-06-14T08:00:00.000000001Z"
+	if _, err := ResolveReplayConfig(raw, ReplayConfigOverrides{DataStart: &lateDataStart}, t.TempDir(), key); err == nil {
+		t.Fatal("flag override reduced history below 60 seconds but passed")
+	}
+	raw.VirtualStart = ""
+	virtualFlag := "2026-06-14T08:01:00Z"
+	resolved, err := ResolveReplayConfig(raw, ReplayConfigOverrides{VirtualStart: &virtualFlag}, t.TempDir(), key)
+	if err != nil || resolved.ValueSources.VirtualStart != ReplayValueFromFlag {
+		t.Fatalf("valid override did not repair omitted virtual_start: %+v, %v", resolved, err)
 	}
 }

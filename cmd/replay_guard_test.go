@@ -578,7 +578,8 @@ func TestReplayFlagsOnlyStoppedSessionDropsActiveStateGuard(t *testing.T) {
 	t.Setenv(config.ProfileEnvVar, "")
 	start := runReplayCLI(t, "table", "start",
 		"--data-start", "2026-06-14T08:00:00Z",
-		"--data-end", "2026-06-14T12:00:00Z")
+		"--data-end", "2026-06-14T12:00:00Z",
+		"--virtual-start", "2026-06-14T08:01:00Z")
 	if start.err != nil {
 		t.Fatal(start.err)
 	}
@@ -631,7 +632,8 @@ func TestReplayHelpDocumentsExitRoutesAndFlagsOnlyLimitation(t *testing.T) {
 		"does not stop the local replay session",
 		"clock_mode manual",
 		"disclosure restricted",
-		"virtual_start equals data_start",
+		"at least 60 seconds of visible history at startup",
+		"Omitting virtual_start resolves to data_start and fails",
 		"terminal-ready",
 		"no network call",
 	} {

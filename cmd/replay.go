@@ -128,10 +128,11 @@ The context must use safety-level readonly and the reserved replay profile.
 Flags override data_start, data_end, virtual_start, and clock_mode. Disclosure
 and provenance_path remain context-only. Realtime and full are the defaults.
 
-If virtual_start equals data_start, the visible replay interval starts empty.
-Realtime reveals stored telemetry as host time advances. Manual mode requires
-'dtctl replay advance'. Use --restart to replace any earlier session and reset
-virtual now to virtual_start.`,
+Every session needs at least 60 seconds of visible history at startup. Provide
+earlier history or set virtual_start at least 60 seconds after data_start.
+Omitting virtual_start resolves to data_start and fails this requirement.
+Use --restart to replace any earlier session and reset virtual now to
+virtual_start. Invalid startup settings leave an earlier session unchanged.`,
 		Example: `  # Automated context: clock_mode: manual; disclosure: restricted
   dtctl replay start --context historical-window
 
@@ -198,19 +199,12 @@ virtual now to virtual_start.`,
 			if err := printReplayStatus(cmd, replayStatusFromSession(state, state.SessionStartedAt, false)); err != nil {
 				return err
 			}
-			if resolved.VirtualStart.Equal(resolved.DataStart) {
-				if resolved.ClockMode == session.ReplayClockRealtime {
-					output.FprintWarning(cmd.ErrOrStderr(), "the visible replay interval starts empty. Realtime mode reveals stored telemetry as the clock advances")
-				} else {
-					output.FprintWarning(cmd.ErrOrStderr(), "the visible replay interval starts empty. Manual mode requires 'dtctl replay advance'")
-				}
-			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&dataStart, "data-start", "", "inclusive start of the stored replay interval (RFC 3339)")
 	cmd.Flags().StringVar(&dataEnd, "data-end", "", "terminal boundary of the stored replay interval (RFC 3339)")
-	cmd.Flags().StringVar(&virtualStart, "virtual-start", "", "initial virtual time (RFC 3339; defaults to data-start)")
+	cmd.Flags().StringVar(&virtualStart, "virtual-start", "", "initial virtual time (RFC 3339; must be at least 60s after data-start)")
 	cmd.Flags().StringVar(&clockMode, "clock-mode", "", "virtual clock mode: realtime or manual")
 	cmd.Flags().BoolVar(&restart, "restart", false, "replace any existing replay session for this context")
 	return cmd
