@@ -159,8 +159,11 @@ func ResolveReplayConfig(raw *ReplayConfig, overrides ReplayConfigOverrides, rep
 	if !dataStart.Before(dataEnd) {
 		return ResolvedReplayConfig{}, fmt.Errorf("replay data_start must be before data_end (resolved data_start=%s, data_end=%s)", formatReplayTime(dataStart), formatReplayTime(dataEnd))
 	}
+	if err := validateReplayInterval(dataStart, dataEnd); err != nil {
+		return ResolvedReplayConfig{}, err
+	}
 
-	virtualText, virtualSource := resolveReplayValue(overrides.VirtualStart, raw.VirtualStart, dataStartText)
+	virtualText, virtualSource := resolveReplayValue(overrides.VirtualStart, raw.VirtualStart, formatReplayTime(dataStart.Add(ReplayMinimumStartupHistory)))
 	virtualStart, err := parseReplayTimestamp("virtual_start", virtualText)
 	if err != nil {
 		return ResolvedReplayConfig{}, err
@@ -217,6 +220,13 @@ func ResolveReplayConfig(raw *ReplayConfig, overrides ReplayConfigOverrides, rep
 			ProvenancePath: provenanceSource,
 		},
 	}, nil
+}
+
+func validateReplayInterval(dataStart, dataEnd time.Time) error {
+	if dataEnd.Sub(dataStart) < ReplayMinimumStartupHistory {
+		return fmt.Errorf("replay interval must be at least 60 seconds long because every session needs 60 seconds of visible history at startup (resolved data_start=%s, data_end=%s)", formatReplayTime(dataStart), formatReplayTime(dataEnd))
+	}
+	return nil
 }
 
 // ValidateReplayStartupHistory checks the resolved initial session settings.

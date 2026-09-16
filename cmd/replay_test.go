@@ -371,12 +371,8 @@ func TestReplayCLIStartupHistoryAndInvalidRestart(t *testing.T) {
 				writeReplayCLIConfig(t, configPath, replayCLIConfig(raw))
 				clock := &replayCLIFakeClock{now: time.Date(2026, 8, 11, 11, 0, 0, 0, time.UTC)}
 				configureReplayCLI(t, configPath, filepath.Join(dir, "state"), clock)
-				for _, virtual := range []string{"", "2026-06-14T08:00:00Z", "2026-06-14T08:00:59.999999999Z"} {
-					args := []string{"start"}
-					if virtual != "" {
-						args = append(args, "--virtual-start", virtual)
-					}
-					result := runReplayCLI(t, "json", args...)
+				for _, virtual := range []string{"2026-06-14T08:00:00Z", "2026-06-14T08:00:59.999999999Z"} {
+					result := runReplayCLI(t, "json", "start", "--virtual-start", virtual)
 					if result.err == nil || !strings.Contains(result.err.Error(), "at least 60 seconds") || !strings.Contains(result.err.Error(), "provide earlier history") {
 						t.Fatalf("invalid lifecycle settings did not retain diagnostic: %+v", result)
 					}
@@ -387,17 +383,32 @@ func TestReplayCLIStartupHistoryAndInvalidRestart(t *testing.T) {
 						t.Fatalf("invalid start created state or provenance: %v", err)
 					}
 				}
-				result := runReplayCLI(t, "json", "start", "--virtual-start", "2026-06-14T08:01:00Z")
+				configBefore, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := runReplayCLI(t, "json", "start")
 				if result.err != nil {
 					t.Fatal(result.err)
 				}
+				if !strings.Contains(result.stdout, `"virtual_start": "2026-06-14T08:01:00Z"`) || result.stderr != "" {
+					t.Fatalf("omitted start did not print resolved default: %+v", result)
+				}
 				locator, _ := replayLocatorForConfig(t, configPath)
 				store := session.NewReplayStateStore(replayStateDirectory, clock)
+				state, err := store.Status(locator)
+				if err != nil || !state.VirtualStart.Equal(state.DataStart.Add(time.Minute)) || state.ValueSources.VirtualStart != session.ReplayValueFromDefault {
+					t.Fatalf("omitted start did not store default: %+v, %v", state, err)
+				}
+				configAfter, err := os.ReadFile(configPath)
+				if err != nil || !bytes.Equal(configBefore, configAfter) {
+					t.Fatalf("omitted start rewrote configuration: %v", err)
+				}
 				before, err := os.ReadFile(store.StatePath(locator.ContextKey))
 				if err != nil {
 					t.Fatal(err)
 				}
-				result = runReplayCLI(t, "json", "start", "--restart")
+				result = runReplayCLI(t, "json", "start", "--restart", "--virtual-start", "2026-06-14T08:00:00Z")
 				if result.err == nil || !strings.Contains(result.err.Error(), "at least 60 seconds") {
 					t.Fatalf("invalid restart = %+v", result)
 				}
@@ -465,8 +476,7 @@ func TestReplayCLIStartFromFlagsOnlyDefaultsToFullRealtime(t *testing.T) {
 
 	result := runReplayCLI(t, "json", "start",
 		"--data-start", "2026-06-14T08:00:00Z",
-		"--data-end", "2026-06-14T12:00:00Z",
-		"--virtual-start", "2026-06-14T08:01:00Z")
+		"--data-end", "2026-06-14T12:00:00Z")
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -480,6 +490,9 @@ func TestReplayCLIStartFromFlagsOnlyDefaultsToFullRealtime(t *testing.T) {
 	}
 	if state.ClockMode != session.ReplayClockRealtime || state.Disclosure != session.ReplayDisclosureFull || state.ProvenancePath != "" {
 		t.Fatalf("flags-only defaults = %+v", state)
+	}
+	if !state.VirtualStart.Equal(state.DataStart.Add(time.Minute)) || state.ValueSources.VirtualStart != session.ReplayValueFromDefault {
+		t.Fatalf("flags-only virtual start default = %+v", state)
 	}
 	if _, err := os.Stat(replayStateDirectory); err != nil {
 		t.Fatal(err)

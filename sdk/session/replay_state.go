@@ -436,7 +436,13 @@ func validateResolvedReplayConfig(cfg ResolvedReplayConfig) error {
 	if cfg.DataStart.IsZero() || cfg.DataEnd.IsZero() || cfg.VirtualStart.IsZero() {
 		return fmt.Errorf("resolved replay configuration has a zero timestamp")
 	}
-	if !cfg.DataStart.Before(cfg.DataEnd) || cfg.VirtualStart.Before(cfg.DataStart) || cfg.VirtualStart.After(cfg.DataEnd) {
+	if !cfg.DataStart.Before(cfg.DataEnd) {
+		return fmt.Errorf("resolved replay configuration has invalid time bounds")
+	}
+	if err := validateReplayInterval(cfg.DataStart, cfg.DataEnd); err != nil {
+		return err
+	}
+	if cfg.VirtualStart.Before(cfg.DataStart) || cfg.VirtualStart.After(cfg.DataEnd) {
 		return fmt.Errorf("resolved replay configuration has invalid time bounds")
 	}
 	if err := ValidateReplayStartupHistory(cfg.DataStart, cfg.VirtualStart); err != nil {

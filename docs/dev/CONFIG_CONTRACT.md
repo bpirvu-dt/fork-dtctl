@@ -121,15 +121,18 @@ contexts:
 ```
 
 The example is for automation. Automated examples use explicit `manual` clock
-mode and `restricted` disclosure. An omitted `virtual_start` resolves to
-`data_start`, which is invalid because it supplies no initial history.
+mode and `restricted` disclosure. An omitted `virtual_start` defaults to
+60 seconds after `data_start`. The session records the default value source;
+the configuration is not rewritten.
 `clock_mode` defaults to `realtime`. `disclosure` defaults to `full`.
 `data_start`, `data_end`, and `virtual_start` are absolute RFC 3339 timestamps.
 They are normalized to UTC in runtime state. `data_start` must be earlier than
 `data_end`. Every replay session requires
 `virtual_start - data_start >= 60 seconds` and `virtual_start <= data_end`.
+A configured `virtual_start` must be at least 60 seconds after `data_start`;
+dtctl never shifts it. The replay interval must be at least 60 seconds long.
 This applies to every source family, both clock modes, and both disclosures.
-There is no initial-minute wait or automatic clock adjustment.
+There is no initial-minute wait.
 
 `replay start` may override the three timestamp fields and `clock_mode`. A flag
 wins over a context field. Disclosure and provenance path have no start-command

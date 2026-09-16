@@ -81,10 +81,12 @@ replay configuration in the context for automation; the commands below assume
 a context named `historical-window` with such a stored replay block (the
 Quick Start shows the full configuration).
 
-Every session needs at least 60 seconds of visible history at startup. Set
-`virtual_start` at least 60 seconds after `data_start`, and no later than
-`data_end`. Omitting `virtual_start` is invalid, including for logs-only or
-metrics-only sessions.
+Every session needs at least 60 seconds of visible history at startup.
+An omitted `virtual_start` defaults to 60 seconds after `data_start`.
+A configured value must be at least 60 seconds after `data_start`, and no
+later than `data_end`. The replay interval must be at least 60 seconds long.
+There is no initial-minute wait, and dtctl never shifts a configured value.
+These rules also apply to logs-only and metrics-only sessions.
 
 ```bash
 dtctl replay start --context historical-window

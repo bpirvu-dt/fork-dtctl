@@ -633,7 +633,7 @@ func TestReplayHelpDocumentsExitRoutesAndFlagsOnlyLimitation(t *testing.T) {
 		"clock_mode manual",
 		"disclosure restricted",
 		"at least 60 seconds of visible history at startup",
-		"Omitting virtual_start resolves to data_start and fails",
+		"Omitting virtual_start defaults\nto 60 seconds after data_start",
 		"terminal-ready",
 		"no network call",
 	} {

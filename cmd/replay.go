@@ -128,9 +128,11 @@ The context must use safety-level readonly and the reserved replay profile.
 Flags override data_start, data_end, virtual_start, and clock_mode. Disclosure
 and provenance_path remain context-only. Realtime and full are the defaults.
 
-Every session needs at least 60 seconds of visible history at startup. Provide
-earlier history or set virtual_start at least 60 seconds after data_start.
-Omitting virtual_start resolves to data_start and fails this requirement.
+Every session needs at least 60 seconds of visible history at startup. The
+replay interval must be at least 60 seconds long. Omitting virtual_start defaults
+to 60 seconds after data_start. A configured virtual_start must be at least
+60 seconds after data_start; provide earlier history if needed. A configured
+value is never shifted, and there is no initial-minute wait.
 Use --restart to replace any earlier session and reset virtual now to
 virtual_start. Invalid startup settings leave an earlier session unchanged.`,
 		Example: `  # Automated context: clock_mode: manual; disclosure: restricted
@@ -204,7 +206,7 @@ virtual_start. Invalid startup settings leave an earlier session unchanged.`,
 	}
 	cmd.Flags().StringVar(&dataStart, "data-start", "", "inclusive start of the stored replay interval (RFC 3339)")
 	cmd.Flags().StringVar(&dataEnd, "data-end", "", "terminal boundary of the stored replay interval (RFC 3339)")
-	cmd.Flags().StringVar(&virtualStart, "virtual-start", "", "initial virtual time (RFC 3339; must be at least 60s after data-start)")
+	cmd.Flags().StringVar(&virtualStart, "virtual-start", "", "initial virtual time (RFC 3339; defaults to 60s after data-start; a configured value must be at least 60s after data-start)")
 	cmd.Flags().StringVar(&clockMode, "clock-mode", "", "virtual clock mode: realtime or manual")
 	cmd.Flags().BoolVar(&restart, "restart", false, "replace any existing replay session for this context")
 	return cmd
