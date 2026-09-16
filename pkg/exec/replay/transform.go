@@ -293,6 +293,15 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 	effective, proof := ClassifyOverlap(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
 	compiled.Overlap = proof
 	if proof.Classification != OverlapPresent {
+		if source.Class == SourceTopology && proof.Classification == OverlapTemporary {
+			// v11 section 4.4: an empty topology intersection is temporary only
+			// if the window can reach 60 seconds at a later virtual time.
+			width := ClassifyTopologyWidth(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
+			if width.Classification != OverlapTemporary {
+				width.Reason = "the topology intersection is empty now; " + width.Reason
+				compiled.Overlap = width
+			}
+		}
 		return compiled, nil
 	}
 	if source.Class == SourceTopology {
@@ -306,10 +315,7 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 				fmt.Sprintf("Topology requires an effective window of at least 60 seconds; computed [%s, %s).", effective.Start.Format(time.RFC3339Nano), effective.End.Format(time.RFC3339Nano)),
 				"Request a window whose intersection with the visible replay interval is at least 60 seconds.").
 				withPublicMessage("The query could not be run as written.")
-			return compiled, &NonOverlapError{
-				Classification: compiled.Overlap.Classification,
-				Sources:        []SourceExplain{explainSource(compiled)}, NarrowWindow: cause,
-			}
+			return compiled, &NonOverlapError{NarrowWindow: cause}
 		}
 		return compiled, nil
 	}

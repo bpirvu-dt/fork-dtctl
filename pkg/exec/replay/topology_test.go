@@ -187,6 +187,8 @@ func TestTopologyNonOverlapKeepsExistingClassification(t *testing.T) {
 		class      OverlapClassification
 	}{
 		{"2026-08-01T12:30:00Z", "2026-08-01T13:00:00Z", OverlapTemporary},
+		{"2026-08-01T12:30:00Z", "2026-08-01T12:30:30Z", OverlapPermanent},
+		{"2026-08-01T12:30:00Z", "2026-08-01T12:40:00Z", OverlapTemporary},
 		{"2026-08-01T09:00:00Z", "2026-08-01T10:00:00Z", OverlapPermanent},
 		{"2026-08-01T14:00:00Z", "2026-08-01T15:00:00Z", OverlapPermanent},
 	} {
@@ -195,8 +197,14 @@ func TestTopologyNonOverlapKeepsExistingClassification(t *testing.T) {
 		input.GlobalDefault = &window
 		result, err := Compile(input)
 		var nonOverlap *NonOverlapError
-		if !errors.As(err, &nonOverlap) || nonOverlap.Classification != test.class || result.Sources[0].Effective != nil {
+		if !errors.As(err, &nonOverlap) || nonOverlap.Classification != test.class || nonOverlap.NarrowWindow != nil || result.Sources[0].Effective != nil || result.AuditRequired || result.EffectiveDQL != "" {
 			t.Fatalf("window=%v result=%#v err=%v", window, result, err)
+		}
+		if err.Error() != "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed." {
+			t.Fatalf("empty intersection must keep ordinary non-overlap text: %v", err)
+		}
+		if test.end == "2026-08-01T12:30:30Z" && (!strings.Contains(nonOverlap.Sources[0].Proof.Reason, "empty") || !strings.Contains(nonOverlap.Sources[0].Proof.Reason, "stay under 60 seconds")) {
+			t.Fatalf("empty future window lost width proof: %#v", nonOverlap.Sources[0].Proof)
 		}
 	}
 }

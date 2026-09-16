@@ -1625,7 +1625,17 @@ reach 60 seconds later, at or before `data_end`. Each attempt recomputes the
 window and executes only once it is at least 60 seconds wide. Permanent,
 unknown, and terminal sub-minute windows are hard errors. Replay never
 widens the requested window. An empty intersection keeps the ordinary
-non-overlap rules below.
+non-overlap rules below. One refinement: a topology window that lies
+entirely in the future and can never reach 60 seconds is rejected at once
+rather than awaited. In a mixed retryable query, the topology notice applies
+only when every rejected source is a narrow topology window. Otherwise the
+ordinary no-visible-overlap notice applies. In a mixed hard query, the
+topology width text and preparation category apply only when every permanent
+or unknown source is a narrow topology window. Otherwise the ordinary
+non-overlap text and category apply, with the approved no-data text in
+restricted disclosure. These rules use source classifications. An
+all-temporary query uses the every-rejected-source rule even in one-shot or
+manual mode, where it cannot retry.
 
 The 60-second minimum matters because observed `calls` edges are recorded at
 whole-minute marks. A shorter window can miss a mark and return an empty
@@ -1678,6 +1688,11 @@ does not execute if any source has a hard non-overlap.
 | Temporary | The range can be proven to overlap later, no later than `data_end`. | Only a realtime `wait query` or `query --live` loop retries. |
 | Permanent | The range can never overlap. | Hard error. No execution. |
 | Unknown | dtctl cannot prove either outcome. | Fail-closed hard error. No execution. |
+
+Topology adds one refinement to these classes: an empty intersection that
+would otherwise be temporary is permanent if its window can never reach
+60 seconds. Unknown endpoints stay unknown. This only turns temporary into
+permanent, never the reverse.
 
 A one-shot query rejects every non-overlap. Manual mode also rejects every
 non-overlap because its clock does not move by itself. At `data_end`, every
@@ -1808,7 +1823,7 @@ checks. The detailed reason and remedy are written to provenance first:
 
 | Category | Message |
 |---|---|
-| Hard non-overlap | `No data is available for the requested timeframe.` |
+| Hard non-overlap; includes a mixed hard failure with any permanently or unknown non-overlapping source, even when a narrow topology window is also present; includes an empty topology intersection that can never reach 60 seconds | `No data is available for the requested timeframe.` |
 | Temporary realtime-loop non-overlap | `The requested timeframe is not available yet.` |
 | Blocked command or plugin, including failure to record its rejection | `this command is not available in this context` |
 | State readiness failure | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` |
@@ -1816,8 +1831,8 @@ checks. The detailed reason and remedy are written to provenance first:
 | Unsupported time expression | `The query's timeframe could not be interpreted. Use an absolute start and end timestamp.` |
 | Time alignment outside UTC | `The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.` |
 | Non-topology intersection leaves only one nanosecond | `No data can be returned for the requested timeframe.` |
-| Non-empty topology window shorter than 60 seconds: one-shot, manual, or a permanent, unknown, or terminal case | `The query could not be run as written.` |
-| Provably widening sub-minute topology window in realtime wait/live | `The requested timeframe is not available yet.` |
+| Non-empty topology window shorter than 60 seconds: one-shot, manual, or a permanent, unknown, or terminal case; in a mixed query only when every permanent or unknown source is a narrow topology window; for an all-temporary decision in one-shot/manual mode, only when every rejected source is a narrow topology window | `The query could not be run as written.` |
+| Provably widening sub-minute topology window in realtime wait/live; only when every rejected source is a narrow topology window | `The requested timeframe is not available yet.` |
 | Unsupported topology edge selector | `The query uses an unsupported element: {construct}. Use only calls or runs_on edge types.` |
 | Traversal without a structural feeder | `The query uses an unsupported element: traverse. Place traverse after smartscapeNodes or smartscapeEdges through source-free pipeline commands.` |
 | Result-validation failure with an approved reason | `The query result failed a consistency check: {reason}.` |

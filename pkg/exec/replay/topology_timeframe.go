@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// ClassifyTopologyWidth proves whether a currently sub-minute topology window
-// can reach the minimum width before replay ends. Empty intersections continue
-// to use ClassifyOverlap instead.
+// ClassifyTopologyWidth proves whether a currently sub-minute or empty topology
+// window can reach the minimum width before replay ends. For empty intersections,
+// callers may refine only a temporary ClassifyOverlap decision with this proof.
 func ClassifyTopologyWidth(requested RequestedRange, visible, replay Interval, virtualNow time.Time) OverlapProof {
 	proof := OverlapProof{
 		RequestedNow: requested.Range, VisibleNow: visible, ReplayInterval: replay,

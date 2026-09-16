@@ -178,6 +178,11 @@ Completely non-overlapping sources have three proof classes:
 - permanent means it can never overlap; and
 - unknown means dtctl cannot prove either case.
 
+Topology adds one refinement to these classes: an empty intersection that
+would otherwise be temporary is permanent if its window can never reach
+60 seconds. Unknown endpoints stay unknown. This only turns temporary into
+permanent, never the reverse.
+
 One-shot and manual execution reject all three classes. A realtime `wait query`
 or `query --live` loop retries only temporary non-overlap. Permanent, unknown,
 and terminal non-overlap fail closed. dtctl never substitutes an empty source,
@@ -216,14 +221,27 @@ intersected with the visible replay interval. Its non-empty effective window
 must be at least 60 seconds to execute. One-shot queries and manual mode
 reject sub-minute windows. Realtime wait/live loops keep waiting only for a
 window that is provably able to reach 60 seconds at or before `data_end`.
-They recompute every source range on each attempt. Permanent, unknown, and
-terminal sub-minute windows are hard preparation errors. These are not
-coverage or data errors. No attempt widens the requested window or executes
-with an effective window under 60 seconds. Empty intersections retain the
-general non-overlap rules. Every width failure retains the classification,
-proof, and computed window in its typed error. Restricted disclosure records
-these details in the provenance file on each attempt. Full disclosure keeps
-its existing error route and does not create a provenance file.
+They recompute every source range on each attempt. For non-empty windows,
+permanent, unknown, and terminal sub-minute windows are hard preparation
+errors when narrow topology windows decide, per the precedence rule below.
+These topology width rejections are not coverage or data errors.
+No attempt widens the requested window or executes with an effective window
+under 60 seconds. Empty intersections retain the general non-overlap rules.
+One refinement: a topology window that lies entirely in the future and can
+never reach 60 seconds is rejected at once rather than awaited. In a mixed
+retryable query, the topology notice applies
+only when every rejected source is a narrow topology window. Otherwise the
+ordinary no-visible-overlap notice applies. In a mixed hard query, the
+topology width text and preparation category apply only when every permanent
+or unknown source is a narrow topology window. Otherwise the ordinary
+non-overlap text and category apply, with the approved no-data text in
+restricted disclosure. These rules use source classifications. An
+all-temporary query uses the every-rejected-source rule even in one-shot or
+manual mode, where it cannot retry. Every width failure retains the
+classification, proof, and computed window in its typed error. Restricted
+disclosure records these details in the provenance file on each attempt.
+Full disclosure keeps its existing error route and does not create a
+provenance file.
 
 The 60-second minimum prevents an empty `calls` graph caused by missing a
 whole-minute mark. The answer means: **These services exchanged calls during

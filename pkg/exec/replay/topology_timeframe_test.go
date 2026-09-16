@@ -21,6 +21,9 @@ func TestClassifyTopologyWidthEndpointProofs(t *testing.T) {
 		now, end time.Duration
 		want     OverlapClassification
 	}{
+		{"empty intersection future thirty seconds", abs(120 * time.Second), abs(150 * time.Second), 90 * time.Second, 600 * time.Second, OverlapPermanent},
+		{"empty intersection future wide window", abs(120 * time.Second), abs(300 * time.Second), 90 * time.Second, 600 * time.Second, OverlapTemporary},
+		{"empty intersection unknown start", endpointModel{EndpointUnknown, 120 * time.Second}, abs(300 * time.Second), 90 * time.Second, 600 * time.Second, OverlapUnknown},
 		{"absolute absolute widens", abs(70 * time.Second), abs(700 * time.Second), 90 * time.Second, 600 * time.Second, OverlapTemporary},
 		{"absolute fixed subminute span", abs(70 * time.Second), abs(110 * time.Second), 90 * time.Second, 600 * time.Second, OverlapPermanent},
 		{"absolute exact minimum", abs(70 * time.Second), abs(130 * time.Second), 90 * time.Second, 600 * time.Second, OverlapTemporary},
@@ -64,7 +67,11 @@ func TestClassifyTopologyWidthEndpointProofs(t *testing.T) {
 			replay := Interval{Start: base, End: base.Add(tt.end)}
 			visible := Interval{Start: base, End: now}
 			effective, ok := requested.Range.Intersect(visible)
-			if !ok || effective.End.Sub(effective.Start) >= time.Minute {
+			if strings.HasPrefix(tt.name, "empty intersection ") {
+				if ok {
+					t.Fatalf("test must start with an empty intersection: %+v", effective)
+				}
+			} else if !ok || effective.End.Sub(effective.Start) >= time.Minute {
 				t.Fatalf("test must start with a non-empty sub-minute window: %+v", effective)
 			}
 			proof := ClassifyTopologyWidth(requested, visible, replay, now)
@@ -135,7 +142,7 @@ func TestClassifyTopologyWidthMatchesEnumeratedFutureWindows(t *testing.T) {
 	replay := Interval{Start: base, End: base.Add(240 * time.Second)}
 	visible := Interval{Start: base, End: now}
 	offsets := []time.Duration{-120, -61, -60, -59, -20, 0, 20, 59, 60, 61, 120, 240}
-	checked := 0
+	checked, emptyChecked := 0, 0
 	for _, fromKind := range []EndpointDependency{EndpointAbsolute, EndpointRelative} {
 		for _, toKind := range []EndpointDependency{EndpointAbsolute, EndpointRelative} {
 			for _, fromSeconds := range offsets {
@@ -149,11 +156,17 @@ func TestClassifyTopologyWidthMatchesEnumeratedFutureWindows(t *testing.T) {
 						to.Value = now.Add(to.Offset)
 					}
 					requested := RequestedRange{Range: Interval{Start: from.Value, End: to.Value}, From: from, To: to}
+					if !requested.Range.Valid() {
+						continue
+					}
 					effective, ok := requested.Range.Intersect(visible)
-					if !ok || effective.End.Sub(effective.Start) >= time.Minute {
+					if ok && effective.End.Sub(effective.Start) >= time.Minute {
 						continue
 					}
 					checked++
+					if !ok {
+						emptyChecked++
+					}
 					// Every model changes slope at whole seconds. Enumerating
 					// all seconds therefore includes every possible maximum,
 					// independently of the classifier's breakpoint selection.
@@ -177,7 +190,7 @@ func TestClassifyTopologyWidthMatchesEnumeratedFutureWindows(t *testing.T) {
 							break
 						}
 					}
-					t.Run(fmt.Sprintf("%s_%s/from=%s/to=%s", fromKind, toKind, from.Offset, to.Offset), func(t *testing.T) {
+					t.Run(fmt.Sprintf("%s_%s/from=%s/to=%s/empty=%t", fromKind, toKind, from.Offset, to.Offset, !ok), func(t *testing.T) {
 						if proof := ClassifyTopologyWidth(requested, visible, replay, now); proof.Classification != want {
 							t.Fatalf("proof = %+v, enumerated future windows prove %s", proof, want)
 						}
@@ -186,8 +199,8 @@ func TestClassifyTopologyWidthMatchesEnumeratedFutureWindows(t *testing.T) {
 			}
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no sub-minute models were checked")
+	if checked == 0 || emptyChecked == 0 || checked == emptyChecked {
+		t.Fatalf("need empty and non-empty sub-minute models: checked=%d empty=%d", checked, emptyChecked)
 	}
 }
 

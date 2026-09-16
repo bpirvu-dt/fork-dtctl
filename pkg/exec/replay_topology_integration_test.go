@@ -239,6 +239,206 @@ func assertTopologyWidthProof(t *testing.T, classified *execreplay.NonOverlapErr
 	}
 }
 
+func TestDQLExecutorTopologyMixedNonOverlapUsesDecidingSources(t *testing.T) {
+	const fullNonOverlap = "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
+	for _, test := range []struct {
+		name, start, now, end, from, to  string
+		clockMode                        string
+		mode                             ReplayExecutionMode
+		recordClass, topologyClass       execreplay.OverlapClassification
+		retryable, narrow, emptyTopology bool
+	}{
+		{
+			name: "permanent logs and temporary topology", start: "2026-08-10T11:00:00Z", now: "2026-08-10T11:01:20Z", end: "2026-08-10T14:00:00Z",
+			from: "2026-08-10T11:01:00Z", to: "2026-08-10T11:10:00Z", recordClass: execreplay.OverlapPermanent, topologyClass: execreplay.OverlapTemporary,
+		},
+		{
+			name: "temporary logs and temporary topology", start: "2026-08-10T09:00:00Z", now: "2026-08-10T09:01:20Z", end: "2026-08-10T12:00:00Z",
+			from: "2026-08-10T09:01:00Z", to: "2026-08-10T09:10:00Z", recordClass: execreplay.OverlapTemporary, topologyClass: execreplay.OverlapTemporary, retryable: true,
+		},
+		{
+			name: "temporary logs and permanent topology", start: "2026-08-10T09:00:00Z", now: "2026-08-10T09:01:20Z", end: "2026-08-10T12:00:00Z",
+			from: "2026-08-10T09:01:00Z", to: "2026-08-10T09:01:30Z", recordClass: execreplay.OverlapTemporary, topologyClass: execreplay.OverlapPermanent, narrow: true,
+		},
+		{
+			name: "one-shot temporary logs and topology", start: "2026-08-10T09:00:00Z", now: "2026-08-10T09:01:20Z", end: "2026-08-10T12:00:00Z",
+			from: "2026-08-10T09:01:00Z", to: "2026-08-10T09:10:00Z", recordClass: execreplay.OverlapTemporary, topologyClass: execreplay.OverlapTemporary,
+			mode: ReplayExecutionOneShot,
+		},
+		{
+			name: "manual temporary logs and topology", start: "2026-08-10T09:00:00Z", now: "2026-08-10T09:01:20Z", end: "2026-08-10T12:00:00Z",
+			from: "2026-08-10T09:01:00Z", to: "2026-08-10T09:10:00Z", recordClass: execreplay.OverlapTemporary, topologyClass: execreplay.OverlapTemporary,
+			clockMode: session.ReplayClockManual,
+		},
+		{
+			name: "permanent logs and empty future subminute topology", start: "2026-08-10T11:00:00Z", now: "2026-08-10T12:00:00Z", end: "2026-08-10T14:00:00Z",
+			from: "2026-08-10T12:30:00Z", to: "2026-08-10T12:30:30Z", recordClass: execreplay.OverlapPermanent, topologyClass: execreplay.OverlapPermanent, emptyTopology: true,
+		},
+	} {
+		if test.clockMode == "" {
+			test.clockMode = session.ReplayClockRealtime
+		}
+		if test.mode == "" {
+			test.mode = ReplayExecutionWait
+		}
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			t.Run(test.name+"/"+disclosure, func(t *testing.T) {
+				api, original, _ := newTopologyMockAPI(t, "old-nodes-control", false)
+				sink := &replayTestSink{}
+				fixture := newReplayExecutorFixture(t, api, test.clockMode, disclosure,
+					mustReplayTestTime(test.start), mustReplayTestTime(test.now), mustReplayTestTime(test.end),
+					func(string) session.ProvenanceSink { return sink })
+				result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{
+					AgentMode: true, ReplayMode: test.mode, DefaultTimeframeStart: test.from, DefaultTimeframeEnd: test.to,
+				})
+				var classified *execreplay.NonOverlapError
+				if result != nil || !errors.As(err, &classified) || ReplayTemporaryNonOverlap(err) != test.retryable ||
+					ReplayLoopHardFailure(err) == test.retryable || ReplayRetryAfter(err) != 0 {
+					t.Fatalf("result=%#v error=%v classification=%#v", result, err, classified)
+				}
+				wantClass := execreplay.OverlapPermanent
+				if test.recordClass == execreplay.OverlapTemporary && test.topologyClass == execreplay.OverlapTemporary {
+					wantClass = execreplay.OverlapTemporary
+				}
+				if classified.Classification != wantClass || (classified.NarrowWindow != nil) != test.narrow || len(classified.Sources) != 2 {
+					t.Fatalf("mixed classification=%#v", classified)
+				}
+				record, topology := classified.Sources[0], classified.Sources[1]
+				topologyWindowOK := topology.Effective == nil
+				if !test.emptyTopology {
+					topologyWindowOK = topology.Effective != nil && topology.Effective.Start.Format(time.RFC3339Nano) == test.from &&
+						topology.Effective.End.Format(time.RFC3339Nano) == test.now
+				}
+				if record.Class != execreplay.SourceRecord || record.Classification != test.recordClass || record.Effective != nil ||
+					topology.Class != execreplay.SourceTopology || topology.Classification != test.topologyClass || !topologyWindowOK {
+					t.Fatalf("record=%#v topology=%#v", record, topology)
+				}
+				if test.emptyTopology && (!strings.Contains(topology.Proof.Reason, "empty") || !strings.Contains(topology.Proof.Reason, "60 seconds")) {
+					t.Fatalf("empty topology lost its width proof: %#v", topology.Proof)
+				}
+				assertTopologyRejectedBeforeEffectiveParse(t, api, original)
+				if disclosure == session.ReplayDisclosureFull {
+					switch {
+					case test.narrow:
+						if !strings.Contains(err.Error(), "60 seconds") || strings.Contains(err.Error(), "does not overlap") {
+							t.Fatalf("full topology error=%v", err)
+						}
+					case test.retryable:
+						if err.Error() != "no visible overlap yet" {
+							t.Fatalf("full retry=%v", err)
+						}
+					default:
+						if err.Error() != fullNonOverlap {
+							t.Fatalf("full non-overlap=%v", err)
+						}
+					}
+					return
+				}
+				wantMessage, wantOutcome := "No data is available for the requested timeframe.", "non_overlap"
+				if test.narrow {
+					wantMessage, wantOutcome = "The query could not be run as written.", "preparation"
+				} else if test.retryable {
+					wantMessage = "The requested timeframe is not available yet."
+				}
+				if err.Error() != wantMessage {
+					t.Fatalf("restricted error=%v, want %q", err, wantMessage)
+				}
+				assertTopologyRejectionProvenance(t, sink, classified, wantOutcome)
+			})
+		}
+	}
+}
+
+func TestDQLExecutorTopologyEmptyFutureSubminuteFailsWithoutWaiting(t *testing.T) {
+	const fullNonOverlap = "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
+	for _, clockMode := range []string{session.ReplayClockManual, session.ReplayClockRealtime} {
+		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+			for _, mode := range []ReplayExecutionMode{ReplayExecutionOneShot, ReplayExecutionWait, ReplayExecutionLive} {
+				t.Run(fmt.Sprintf("%s/%s/%s", clockMode, disclosure, mode), func(t *testing.T) {
+					api, original, _ := newTopologyMockAPI(t, "nodes-bare", false)
+					sink := &replayTestSink{}
+					fixture := newReplayExecutorFixture(t, api, clockMode, disclosure, replayTopologyStart, replayTopologyNow, replayTopologyEnd,
+						func(string) session.ProvenanceSink { return sink })
+					waits := 0
+					fixture.executor.preparer.(*ReplayQueryPreparer).config.WaitFunc = func(context.Context, time.Duration) error {
+						waits++
+						return nil
+					}
+					result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{
+						AgentMode: true, ReplayMode: mode,
+						DefaultTimeframeStart: "2026-08-01T12:30:00Z", DefaultTimeframeEnd: "2026-08-01T12:30:30Z",
+					})
+					var classified *execreplay.NonOverlapError
+					if result != nil || !errors.As(err, &classified) || !ReplayLoopHardFailure(err) || ReplayTemporaryNonOverlap(err) ||
+						ReplayRetryAfter(err) != 0 || waits != 0 {
+						t.Fatalf("result=%#v error=%v waits=%d", result, err, waits)
+					}
+					if classified.Classification != execreplay.OverlapPermanent || classified.NarrowWindow != nil || len(classified.Sources) != 1 {
+						t.Fatalf("empty intersection classification=%#v", classified)
+					}
+					source := classified.Sources[0]
+					if source.Effective != nil || source.Class != execreplay.SourceTopology || source.Classification != execreplay.OverlapPermanent ||
+						source.Proof.Classification != execreplay.OverlapPermanent || !strings.Contains(source.Proof.Reason, "empty") || !strings.Contains(source.Proof.Reason, "60 seconds") {
+						t.Fatalf("empty intersection proof=%#v", source)
+					}
+					assertTopologyRejectedBeforeEffectiveParse(t, api, original)
+					if disclosure == session.ReplayDisclosureFull {
+						if err.Error() != fullNonOverlap {
+							t.Fatalf("full non-overlap=%v", err)
+						}
+						return
+					}
+					if err.Error() != "No data is available for the requested timeframe." {
+						t.Fatalf("restricted non-overlap=%v", err)
+					}
+					assertTopologyRejectionProvenance(t, sink, classified, "non_overlap")
+				})
+			}
+		}
+	}
+}
+
+func assertTopologyRejectedBeforeEffectiveParse(t *testing.T, api *replayMockAPI, original string) {
+	t.Helper()
+	parses, executions := api.queries()
+	coverage, order := api.coverage()
+	if len(parses) != 1 || parses[0].Query != original || len(executions) != 0 || len(coverage) != 0 ||
+		!reflect.DeepEqual(order, []string{"original_parse"}) {
+		t.Fatalf("parse=%#v execute=%#v coverage=%#v order=%v", parses, executions, coverage, order)
+	}
+}
+
+func assertTopologyRejectionProvenance(t *testing.T, sink *replayTestSink, classified *execreplay.NonOverlapError, outcome string) {
+	t.Helper()
+	_, _, records := sink.snapshot()
+	if len(records) != 1 || records[0].Fields["outcome"] != outcome || records[0].Fields["effective_dql"] != "" {
+		t.Fatalf("rejection provenance=%#v, want outcome %s without effective DQL", records, outcome)
+	}
+	sources, ok := records[0].Fields["sources"].([]map[string]any)
+	if !ok || len(sources) != len(classified.Sources) {
+		t.Fatalf("rejection sources=%#v", records[0].Fields["sources"])
+	}
+	for index, source := range classified.Sources {
+		fields := sources[index]
+		proof, ok := fields["overlap"].(map[string]any)
+		if !ok || fields["ordinal"] != source.Ordinal || fields["class"] != source.Class || proof["classification"] != source.Classification ||
+			proof["reason"] != source.Proof.Reason || proof["reason"] == "" || proof["requested_now"] == nil || proof["visible_now"] == nil ||
+			proof["replay_interval"] == nil || proof["terminal_requested"] == nil || fields["requested_range"] == nil {
+			t.Fatalf("source %d lost classification or proof: %#v", index, fields)
+		}
+		if source.Effective == nil {
+			if _, exists := fields["logical_effective_range"]; exists {
+				t.Fatalf("source %d invented an effective range: %#v", index, fields)
+			}
+			continue
+		}
+		want := map[string]string{"start": source.Effective.Start.Format(time.RFC3339Nano), "end": source.Effective.End.Format(time.RFC3339Nano)}
+		if !reflect.DeepEqual(fields["logical_effective_range"], want) || !reflect.DeepEqual(fields["physical_range"], want) {
+			t.Fatalf("source %d lost or widened its effective range: %#v", index, fields)
+		}
+	}
+}
+
 func TestDQLExecutorTopologyTemporaryWidthRecomputesAndThenExecutes(t *testing.T) {
 	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
 		for _, mode := range []ReplayExecutionMode{ReplayExecutionWait, ReplayExecutionLive} {

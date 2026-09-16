@@ -203,7 +203,7 @@ This document tracks the current implementation status of dtctl. For future plan
 
 - [x] Windowed `smartscapeNodes` and `smartscapeEdges` with source class `topology` and boundary policy `window_only`
 - [x] Source bounds, complete request defaults, then bare `[virtual_now - 60s, virtual_now)` timeframe precedence
-- [x] Non-empty effective topology windows under 60 seconds never execute. One-shot and manual mode reject them; realtime wait/live keeps waiting only for a provably widening window. Permanent, unknown, and terminal cases remain hard errors. Requested windows are never widened; existing empty-intersection rules are preserved
+- [x] Non-empty effective topology windows under 60 seconds never execute. One-shot and manual mode reject them; realtime wait/live keeps waiting only for a provably widening window. Permanent, unknown, and terminal cases remain hard errors. Requested windows are never widened; existing empty-intersection rules are preserved with the topology refinement: an empty topology intersection that can never reach 60 seconds is permanent on the first attempt; mixed-query messages follow the deciding sources
 - [x] Unrestricted node types; edge selectors limited to `calls` and `runs_on`
 - [x] Structural `traverse` feeder checks within each execution block, including chain breakers and chained traversals
 - [x] Feeder path and window in compile results, explain output, and provenance; identical effective DQL and data across disclosures
