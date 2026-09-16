@@ -107,8 +107,10 @@ func TestTopologyTimeframePrecedenceAndWidth(t *testing.T) {
 			result, err := Compile(input)
 			if width < time.Minute {
 				var rejection *ReplayError
+				var classified *NonOverlapError
 				if !errors.As(err, &rejection) || rejection.Code != ErrorTimeframe || !strings.Contains(err.Error(), "60 seconds") ||
-					!strings.Contains(err.Error(), requested.Start.Format(time.RFC3339Nano)) || rejection.PublicMessage != "The query could not be run as written." {
+					!strings.Contains(err.Error(), requested.Start.Format(time.RFC3339Nano)) || rejection.PublicMessage != "The query could not be run as written." ||
+					!errors.As(err, &classified) || classified.Classification != OverlapPermanent || classified.NarrowWindow == nil {
 					t.Fatalf("width rejection=%v", err)
 				}
 				if result.AuditRequired || result.EffectiveDQL != "" {
@@ -128,9 +130,47 @@ func TestTopologyTimeframePrecedenceAndWidth(t *testing.T) {
 	input.VirtualStart = input.VirtualNow
 	input.VisibleInterval.End = input.VirtualNow
 	result, err := Compile(input)
-	if err == nil || result.Sources[0].Effective == nil || result.Sources[0].Effective.End.Sub(result.Sources[0].Effective.Start) != 20*time.Second {
+	var classified *NonOverlapError
+	if !errors.As(err, &classified) || classified.Classification != OverlapTemporary || classified.NarrowWindow == nil || result.Sources[0].Effective == nil || result.Sources[0].Effective.End.Sub(result.Sources[0].Effective.Start) != 20*time.Second {
 		t.Fatalf("wide request intersection result=%#v err=%v", result, err)
 	}
+	input.VirtualNow = mustTime(t, "2026-08-01T11:01:00Z")
+	input.VisibleInterval.End = input.VirtualNow
+	result, err = Compile(input)
+	if err != nil || !result.AuditRequired || result.Sources[0].Effective == nil ||
+		*result.Sources[0].Effective != mustInterval(t, "2026-08-01T11:00:00Z", "2026-08-01T11:01:00Z") {
+		t.Fatalf("first sufficient window result=%#v err=%v", result, err)
+	}
+	for _, name := range []string{"nodes-subminute", "nodes-defaults"} {
+		t.Run("permanent/"+name, func(t *testing.T) {
+			input := topologyFixtureInput(t, name)
+			if name == "nodes-defaults" {
+				window := mustInterval(t, "2026-08-01T11:59:40Z", "2026-08-01T12:00:20Z")
+				input.GlobalDefault = &window
+			}
+			result, err := Compile(input)
+			var classified *NonOverlapError
+			if !errors.As(err, &classified) || classified.Classification != OverlapPermanent || classified.NarrowWindow == nil ||
+				result.Sources[0].Overlap.Reason == "" || result.Sources[0].Effective == nil || result.AuditRequired || result.EffectiveDQL != "" {
+				t.Fatalf("permanent width result=%#v err=%v", result, err)
+			}
+		})
+	}
+	t.Run("unknown/aligned endpoint", func(t *testing.T) {
+		input := topologyFixtureInput(t, "nodes-aligned-start")
+		input.ReplayInterval.Start = mustTime(t, "2026-07-31T23:59:00Z")
+		input.VirtualNow = mustTime(t, "2026-08-01T00:00:20Z")
+		input.VirtualStart = input.VirtualNow
+		input.VisibleInterval = Interval{Start: input.ReplayInterval.Start, End: input.VirtualNow}
+		result, err := Compile(input)
+		var classified *NonOverlapError
+		want := mustInterval(t, "2026-08-01T00:00:00Z", "2026-08-01T00:00:20Z")
+		if !errors.As(err, &classified) || classified.Classification != OverlapUnknown || classified.NarrowWindow == nil ||
+			len(result.Sources) != 1 || result.Sources[0].Effective == nil || *result.Sources[0].Effective != want ||
+			result.Sources[0].Requested.From.Dependency != EndpointUnknown || result.Sources[0].Overlap.Reason == "" || result.AuditRequired || result.EffectiveDQL != "" {
+			t.Fatalf("aligned width result=%#v err=%v", result, err)
+		}
+	})
 	input = topologyFixtureInput(t, "nodes-bare")
 	input.VirtualNow = input.ReplayInterval.Start.Add(time.Minute)
 	input.VirtualStart = input.VirtualNow
@@ -188,11 +228,7 @@ func TestTopologyInvalidTimeframesDoNotUseFallback(t *testing.T) {
 			input.GlobalDefault = &Interval{Start: input.VirtualNow, End: input.VirtualNow}
 		}},
 		{"to without from", func(input *CompileInput) {
-			for _, token := range topologyTokens(input.AST, "PARAMETER_KEY") {
-				if token.Canonical == "from" {
-					token.Canonical = "to"
-				}
-			}
+			*input = topologyFixtureInput(t, "nodes-to-only")
 		}},
 		{"malformed timestamp", func(input *CompileInput) {
 			for _, token := range topologyTokens(input.AST, "TIME_UNIT") {

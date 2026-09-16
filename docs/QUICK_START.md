@@ -1440,10 +1440,12 @@ contexts:
 `data_start` and `data_end` define the half-open replay interval
 `[data_start, data_end)`. The visible replay interval is
 `[data_start, min(virtual_now, data_end))`. Every session needs at least
-60 seconds of visible history at startup. Set `virtual_start` at least
-60 seconds after `data_start`, and no later than `data_end`. This applies to
-logs-only and metrics-only sessions too, in both clock modes and disclosures.
-Omitting `virtual_start` resolves it to `data_start` and fails validation.
+60 seconds of visible history at startup. An omitted `virtual_start`
+defaults to 60 seconds after `data_start`. A configured value must be at
+least 60 seconds after `data_start`, and no later than `data_end`. The replay
+interval must be at least 60 seconds long. There is no initial-minute wait,
+and dtctl never shifts a configured value. These rules apply to logs-only
+and metrics-only sessions too, in both clock modes and disclosures.
 
 Replay contexts require `safety-level: readonly` and the reserved built-in
 `replay` profile. Replay changes DQL reads. It does not virtualize mutations.
@@ -1507,9 +1509,12 @@ dtctl replay start \
 ```
 
 For example, `data_start=12:00` and `virtual_start=12:00:59` are invalid.
-Changing `virtual_start` to `12:01` supplies the minimum history immediately.
-There is no initial-minute wait. For a longer lookback on the first execution,
-leave at least that much history before `virtual_start`.
+A configured value must be at least 60 seconds after `data_start`; dtctl
+never shifts it. Omitting `virtual_start` defaults it to `12:01` in this
+example, which supplies the minimum history immediately. The replay interval
+must be at least 60 seconds long. There is no initial-minute wait. For a
+longer lookback on the first execution, leave at least that much history
+before `virtual_start`.
 
 When a source has no `from:`, `to:`, or `timeframe:` and the command does not
 supply both `--default-timeframe-start` and `--default-timeframe-end`, dtctl uses
@@ -1613,10 +1618,14 @@ Each topology source selects its requested window in this order:
 
 Invalid, conflicting, or incomplete bounds fail. They never select the
 fallback. Replay intersects the requested range with the visible replay
-interval. A non-empty effective window shorter than 60 seconds is rejected
-before execution, including in wait and live commands. Replay never widens
-the window silently. An empty intersection keeps the ordinary non-overlap
-rules below.
+interval. A non-empty effective window shorter than 60 seconds never
+executes. One-shot queries and manual mode reject it. Realtime `wait query`
+and `query --live` keep waiting only when dtctl can prove the window will
+reach 60 seconds later, at or before `data_end`. Each attempt recomputes the
+window and executes only once it is at least 60 seconds wide. Permanent,
+unknown, and terminal sub-minute windows are hard errors. Replay never
+widens the requested window. An empty intersection keeps the ordinary
+non-overlap rules below.
 
 The 60-second minimum matters because observed `calls` edges are recorded at
 whole-minute marks. A shorter window can miss a mark and return an empty
@@ -1807,7 +1816,8 @@ checks. The detailed reason and remedy are written to provenance first:
 | Unsupported time expression | `The query's timeframe could not be interpreted. Use an absolute start and end timestamp.` |
 | Time alignment outside UTC | `The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.` |
 | Non-topology intersection leaves only one nanosecond | `No data can be returned for the requested timeframe.` |
-| Non-empty topology window shorter than 60 seconds | `The query could not be run as written.` |
+| Non-empty topology window shorter than 60 seconds: one-shot, manual, or a permanent, unknown, or terminal case | `The query could not be run as written.` |
+| Provably widening sub-minute topology window in realtime wait/live | `The requested timeframe is not available yet.` |
 | Unsupported topology edge selector | `The query uses an unsupported element: {construct}. Use only calls or runs_on edge types.` |
 | Traversal without a structural feeder | `The query uses an unsupported element: traverse. Place traverse after smartscapeNodes or smartscapeEdges through source-free pipeline commands.` |
 | Result-validation failure with an approved reason | `The query result failed a consistency check: {reason}.` |

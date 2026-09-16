@@ -1248,6 +1248,13 @@ func TestDQLExecutorReplayNonOverlapHardCasesNeverExecute(t *testing.T) {
 			wantClass: execreplay.OverlapPermanent,
 		},
 		{
+			name: "unknown aligned range before replay history", query: topologyFixtureQuery(t, "nodes-aligned-past", "original.dql"),
+			fixture:   "topology/fixtures/nodes-aligned-past/parse.json",
+			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionLive,
+			start: mustReplayTestTime("2026-08-03T10:00:00Z"), virtual: mustReplayTestTime("2026-08-03T12:00:00Z"), end: mustReplayTestTime("2026-08-03T14:00:00Z"),
+			wantClass: execreplay.OverlapUnknown,
+		},
+		{
 			name: "host rollback before valid initial time", query: replayUnknownQuery,
 			fixture:   "phase0/fixtures/03-fetch-aligned-duration/parse.json",
 			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionLive,
@@ -1280,7 +1287,13 @@ func TestDQLExecutorReplayNonOverlapHardCasesNeverExecute(t *testing.T) {
 			} else if err == nil || !errors.As(err, &nonOverlap) || nonOverlap.Classification != test.wantClass {
 				t.Fatalf("error = %T %v, classification=%v; want %s", err, err, nonOverlap, test.wantClass)
 			}
-			if ReplayTemporaryNonOverlap(err) {
+			if test.wantClass == execreplay.OverlapUnknown {
+				if nonOverlap.NarrowWindow != nil || len(nonOverlap.Sources) != 1 || nonOverlap.Sources[0].Effective != nil ||
+					nonOverlap.Sources[0].Proof.Reason == "" || nonOverlap.Sources[0].Proof.Classification != execreplay.OverlapUnknown {
+					t.Fatalf("unknown empty-intersection proof=%#v", nonOverlap)
+				}
+			}
+			if ReplayTemporaryNonOverlap(err) || !ReplayLoopHardFailure(err) {
 				t.Fatal("hard non-overlap was marked retryable")
 			}
 			parseCalls, executeCalls, _ := api.counts()

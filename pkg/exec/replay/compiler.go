@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -217,15 +218,40 @@ type CompileResult struct {
 	Traversals      []TraversalBinding
 }
 
-// NonOverlapError is the typed whole-query decision when any telemetry source
-// has no visible intersection.
+// NonOverlapError is the typed whole-query decision when a source has no
+// visible intersection or a topology intersection is too narrow to execute.
 type NonOverlapError struct {
 	Classification OverlapClassification
 	Sources        []SourceExplain
+	NarrowWindow   *ReplayError
 }
 
 func (e *NonOverlapError) Error() string {
+	if e.NarrowWindow != nil {
+		return e.NarrowWindow.Error()
+	}
 	return "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
+}
+
+// Unwrap preserves the existing hard topology timeframe error.
+func (e *NonOverlapError) Unwrap() error {
+	if e.NarrowWindow == nil {
+		return nil
+	}
+	return e.NarrowWindow
+}
+
+// RetryMessage names the first narrow window when this whole query can retry.
+// Empty intersections keep their existing progress text in the caller.
+func (e *NonOverlapError) RetryMessage() string {
+	for _, source := range e.Sources {
+		if source.Class == SourceTopology && source.Effective != nil && source.Classification != OverlapPresent {
+			return replayError(ErrorTimeframe, nil, "topology timeframe",
+				fmt.Sprintf("The visible part of the topology window is still under 60 seconds; computed [%s, %s). Waiting for an effective window of at least 60 seconds.", source.Effective.Start.Format(time.RFC3339Nano), source.Effective.End.Format(time.RFC3339Nano)), "").
+				withPublicMessage("The requested timeframe is not available yet.").Message
+		}
+	}
+	return ""
 }
 
 // Compile transforms one fresh internal AST view into effective DQL. It reads
@@ -247,13 +273,22 @@ func Compile(input CompileInput) (CompileResult, error) {
 		GlobalDefault: cloneInterval(input.GlobalDefault), DefaultLookback: policy.DefaultLookback,
 	}
 	analysesByOrdinal := make(map[int]*sourceAnalysis, len(sources))
+	var narrowWindow *ReplayError
 	for _, source := range sources {
 		analysesByOrdinal[source.Ordinal] = source
 		compiled, compileErr := compileSource(source, context, input)
 		result.Sources = append(result.Sources, compiled)
 		result.Explain.Sources = append(result.Explain.Sources, explainSource(compiled))
 		if compileErr != nil {
-			return result, compileErr
+			var windowErr *NonOverlapError
+			if !errors.As(compileErr, &windowErr) || windowErr.NarrowWindow == nil {
+				return result, compileErr
+			}
+			// Inspect the remaining sources before allowing a retry. A temporary
+			// topology window must not hide another source's hard failure.
+			if narrowWindow == nil {
+				narrowWindow = windowErr.NarrowWindow
+			}
 		}
 		if compiled.DavisMapping != nil {
 			mapping := compiled.DavisMapping
@@ -280,6 +315,7 @@ func Compile(input CompileInput) (CompileResult, error) {
 	}
 	result.Explain.Notices = append([]Notice(nil), result.Notices...)
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {
+		nonOverlap.NarrowWindow = narrowWindow
 		return result, nonOverlap
 	}
 	result.Traversals, err = bindTraversals(working, sources, result.Sources)

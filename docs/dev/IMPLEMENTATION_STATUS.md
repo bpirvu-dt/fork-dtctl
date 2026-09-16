@@ -166,7 +166,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Normal DQL uses a shared local historical clock; semantic `now()` becomes virtual now
 - [x] Half-open replay interval and visible replay interval with partial-overlap support
 - [x] Lifecycle commands: `replay start`, `advance`, `status`, `stop`, and `start --restart`
-- [x] At least 60 seconds of visible history at startup for every session; invalid starts/restarts preserve state, and incompatible stored sessions remain inspectable/stoppable
+- [x] At least 60 seconds of visible history at startup for every session. An omitted `virtual_start` defaults to 60 seconds after `data_start`; a configured value must be at least 60 seconds after `data_start` and is never shifted. The replay interval must be at least 60 seconds long. There is no initial-minute wait. Invalid starts/restarts preserve state, and incompatible stored sessions remain inspectable/stoppable
 - [x] Realtime default and explicit manual clock mode
 - [x] Terminal execution at `data_end`, guarded idempotent completion, and clean wait/live exit
 - [x] Exact record allowlist: `logs`, `spans`, `events`, `bizevents`, `dt.system.events`, `dt.davis.events.snapshots`, and `dt.davis.problems.snapshots`
@@ -203,7 +203,7 @@ This document tracks the current implementation status of dtctl. For future plan
 
 - [x] Windowed `smartscapeNodes` and `smartscapeEdges` with source class `topology` and boundary policy `window_only`
 - [x] Source bounds, complete request defaults, then bare `[virtual_now - 60s, virtual_now)` timeframe precedence
-- [x] Hard rejection of non-empty effective windows shorter than 60 seconds without silent widening; existing empty-intersection rules preserved
+- [x] Non-empty effective topology windows under 60 seconds never execute. One-shot and manual mode reject them; realtime wait/live keeps waiting only for a provably widening window. Permanent, unknown, and terminal cases remain hard errors. Requested windows are never widened; existing empty-intersection rules are preserved
 - [x] Unrestricted node types; edge selectors limited to `calls` and `runs_on`
 - [x] Structural `traverse` feeder checks within each execution block, including chain breakers and chained traversals
 - [x] Feeder path and window in compile results, explain output, and provenance; identical effective DQL and data across disclosures
@@ -212,9 +212,8 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Required live traversal check: same endpoints visible in both windows, direct `calls` edge in only one window, and matching traversal reachability on a post-fix recording older than two hours; both disclosures passed without a request-timeframe fallback
 
 The [verification record](replay-topology-verification.md) links the captured
-evidence and acceptance checks. Three-platform CI execution and the normal
-review/merge cycle remain outstanding. Recording suitability is handled
-during dataset preparation, without a runtime gate.
+evidence and acceptance checks. Recording suitability is handled during
+dataset preparation, without a runtime gate.
 
 Not supported: RUM tables, Dynatrace synthetic telemetry tables,
 security-event tables, any `timeseries shift:` form, automatic Davis events-

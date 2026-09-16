@@ -163,10 +163,12 @@ interval, so partial overlap is supported.
 
 Every session requires at least 60 seconds of history at startup:
 `virtual_start - data_start >= 60 seconds`, with `virtual_start <= data_end`.
-The rule applies to every source family, clock mode, and disclosure.
-Omitting `virtual_start` resolves it to `data_start` and fails validation.
-dtctl does not shift the clock or wait for the first minute. Start and restart
-validate before writing state, so an invalid restart preserves the session.
+The replay interval must be at least 60 seconds long. An omitted
+`virtual_start` defaults to 60 seconds after `data_start`. A configured value
+must be at least 60 seconds after `data_start`; dtctl never shifts it.
+There is no initial-minute wait. These rules apply to every source family,
+clock mode, and disclosure. Start and restart validate before writing state,
+so an invalid restart preserves the session.
 Stored sessions validate their resolved initial settings. An incompatible
 session cannot execute queries, but status and stop remain available.
 
@@ -211,9 +213,17 @@ default-timeframe pair, then `[virtual_now - 60s, virtual_now)`. A source
 `from:` alone ends at virtual now; `to:` alone is rejected. Invalid or partial
 timeframes fail rather than selecting the fallback. The selected range is
 intersected with the visible replay interval. Its non-empty effective window
-must be at least 60 seconds. Width failures are hard preparation errors in
-one-shot, wait, and live execution. They are not coverage or data errors.
-Empty intersections retain the general non-overlap rules.
+must be at least 60 seconds to execute. One-shot queries and manual mode
+reject sub-minute windows. Realtime wait/live loops keep waiting only for a
+window that is provably able to reach 60 seconds at or before `data_end`.
+They recompute every source range on each attempt. Permanent, unknown, and
+terminal sub-minute windows are hard preparation errors. These are not
+coverage or data errors. No attempt widens the requested window or executes
+with an effective window under 60 seconds. Empty intersections retain the
+general non-overlap rules. Every width failure retains the classification,
+proof, and computed window in its typed error. Restricted disclosure records
+these details in the provenance file on each attempt. Full disclosure keeps
+its existing error route and does not create a provenance file.
 
 The 60-second minimum prevents an empty `calls` graph caused by missing a
 whole-minute mark. The answer means: **These services exchanged calls during

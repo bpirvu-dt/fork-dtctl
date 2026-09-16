@@ -166,24 +166,36 @@ func replayTraversalBindingsFromOutput(info *ReplayExecutionInfo) []map[string]a
 func TestDQLExecutorTopologyWidthFailuresAreHardAndRecorded(t *testing.T) {
 	for _, test := range []struct {
 		name, fixture, from, to string
-		virtual                 time.Time
+		start, virtual          time.Time
 	}{
-		{"five seconds", "nodes-subminute", "2026-08-01T11:59:55Z", "2026-08-01T12:00:00Z", replayTopologyNow},
-		{"intersection leaves twenty seconds", "nodes-window", "2026-08-01T11:00:00Z", "2026-08-01T11:00:20Z", mustReplayTestTime("2026-08-01T11:00:20Z")},
+		{"five seconds", "nodes-subminute", "2026-08-01T11:59:55Z", "2026-08-01T12:00:00Z", replayTopologyStart, replayTopologyNow},
+		{"intersection leaves twenty seconds", "nodes-window", "2026-08-01T11:00:00Z", "2026-08-01T11:00:20Z", replayTopologyStart, mustReplayTestTime("2026-08-01T11:00:20Z")},
+		{"aligned endpoint", "nodes-aligned-start", "2026-08-01T00:00:00Z", "2026-08-01T00:00:20Z", mustReplayTestTime("2026-07-31T23:59:00Z"), mustReplayTestTime("2026-08-01T00:00:20Z")},
 	} {
 		for _, clockMode := range []string{session.ReplayClockManual, session.ReplayClockRealtime} {
 			for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
 				for _, mode := range []ReplayExecutionMode{ReplayExecutionOneShot, ReplayExecutionWait, ReplayExecutionLive} {
+					if test.fixture == "nodes-window" && clockMode == session.ReplayClockRealtime && mode != ReplayExecutionOneShot {
+						continue // These widening windows have their own retry test below.
+					}
 					t.Run(fmt.Sprintf("%s/%s/%s/%s", test.name, clockMode, disclosure, mode), func(t *testing.T) {
 						api, original, _ := newTopologyMockAPI(t, test.fixture, false)
 						sink := &replayTestSink{}
-						fixture := newReplayExecutorFixture(t, api, clockMode, disclosure, replayTopologyStart, test.virtual, replayTopologyEnd,
+						fixture := newReplayExecutorFixture(t, api, clockMode, disclosure, test.start, test.virtual, replayTopologyEnd,
 							func(string) session.ProvenanceSink { return sink })
 						result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{AgentMode: true, ReplayMode: mode})
 						var detail *execreplay.ReplayError
-						if result != nil || !errors.As(err, &detail) || detail.Code != execreplay.ErrorTimeframe || ReplayTemporaryNonOverlap(err) || ReplayRetryAfter(err) != 0 {
+						var classified *execreplay.NonOverlapError
+						if result != nil || !errors.As(err, &detail) || detail.Code != execreplay.ErrorTimeframe || ReplayTemporaryNonOverlap(err) || ReplayRetryAfter(err) != 0 || !ReplayLoopHardFailure(err) || !errors.As(err, &classified) {
 							t.Fatalf("result=%#v error=%v detail=%#v", result, err, detail)
 						}
+						wantClass := execreplay.OverlapPermanent
+						if test.fixture == "nodes-window" {
+							wantClass = execreplay.OverlapTemporary
+						} else if test.fixture == "nodes-aligned-start" {
+							wantClass = execreplay.OverlapUnknown
+						}
+						assertTopologyWidthProof(t, classified, wantClass, test.from, test.to)
 						if parses, executions, _ := api.counts(); parses != 1 || executions != 0 {
 							t.Fatalf("parse=%d execute=%d", parses, executions)
 						}
@@ -204,9 +216,116 @@ func TestDQLExecutorTopologyWidthFailuresAreHardAndRecorded(t *testing.T) {
 						if got := fields["logical_effective_range"]; !reflect.DeepEqual(got, map[string]string{"start": test.from, "end": test.to}) {
 							t.Fatalf("failed effective window=%#v", got)
 						}
+						proof := fields["overlap"].(map[string]any)
+						if proof["classification"] != wantClass || proof["reason"] == "" {
+							t.Fatalf("width proof=%#v", proof)
+						}
 					})
 				}
 			}
+		}
+	}
+}
+
+func assertTopologyWidthProof(t *testing.T, classified *execreplay.NonOverlapError, want execreplay.OverlapClassification, from, to string) {
+	t.Helper()
+	if classified == nil || classified.NarrowWindow == nil || classified.Classification != want || len(classified.Sources) != 1 {
+		t.Fatalf("width classification=%#v", classified)
+	}
+	source := classified.Sources[0]
+	if source.Effective == nil || source.Effective.Start.Format(time.RFC3339Nano) != from || source.Effective.End.Format(time.RFC3339Nano) != to ||
+		source.Classification != want || source.Proof.Classification != want || source.Proof.Reason == "" {
+		t.Fatalf("width source proof=%#v", source)
+	}
+}
+
+func TestDQLExecutorTopologyTemporaryWidthRecomputesAndThenExecutes(t *testing.T) {
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		for _, mode := range []ReplayExecutionMode{ReplayExecutionWait, ReplayExecutionLive} {
+			t.Run(disclosure+"/"+string(mode), func(t *testing.T) {
+				api, original, _ := newTopologyMockAPI(t, "nodes-window", false)
+				effective := topologyFixtureQuery(t, "nodes-window", "effective-first-minute.dql")
+				api.validationBody = replayFixtureBody(t, "topology/fixtures/nodes-window/validation-first-minute-parse.json")
+				sink := &replayTestSink{}
+				virtual := mustReplayTestTime("2026-08-01T11:00:20Z")
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, disclosure, replayTopologyStart, virtual, replayTopologyEnd,
+					func(string) session.ProvenanceSink { return sink })
+				var waits []time.Duration
+				fixture.executor.preparer.(*ReplayQueryPreparer).config.WaitFunc = func(_ context.Context, delay time.Duration) error {
+					waits = append(waits, delay)
+					fixture.clock.Add(delay)
+					return nil
+				}
+				opts := DQLExecuteOptions{AgentMode: true, ReplayMode: mode}
+				first, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, opts)
+				var classified *execreplay.NonOverlapError
+				if first != nil || !ReplayTemporaryNonOverlap(err) || ReplayLoopHardFailure(err) || !errors.As(err, &classified) {
+					t.Fatalf("first result=%#v error=%v", first, err)
+				}
+				assertTopologyWidthProof(t, classified, execreplay.OverlapTemporary, "2026-08-01T11:00:00Z", "2026-08-01T11:00:20Z")
+				if parses, executes, _ := api.counts(); parses != 1 || executes != 0 {
+					t.Fatalf("temporary parse=%d execute=%d", parses, executes)
+				}
+				if disclosure == session.ReplayDisclosureRestricted {
+					if err.Error() != restrictedTemporaryNoDataMessage {
+						t.Fatalf("restricted retry=%v", err)
+					}
+					_, _, records := sink.snapshot()
+					if len(records) != 1 {
+						t.Fatalf("retry provenance=%#v", records)
+					}
+					fields := records[0].Fields["sources"].([]map[string]any)[0]
+					proof := fields["overlap"].(map[string]any)
+					if !reflect.DeepEqual(fields["logical_effective_range"], map[string]string{"start": "2026-08-01T11:00:00Z", "end": "2026-08-01T11:00:20Z"}) ||
+						proof["classification"] != execreplay.OverlapTemporary || proof["reason"] == "" {
+						t.Fatalf("retry window and proof=%#v", fields)
+					}
+				} else if !strings.Contains(err.Error(), "60 seconds") || !strings.Contains(err.Error(), "2026-08-01T11:00:00Z") || !strings.Contains(err.Error(), "2026-08-01T11:00:20Z") {
+					t.Fatalf("full retry=%v", err)
+				}
+				info, ok := ReplayErrorInfo(err)
+				if !ok || !info.VirtualNow.Equal(virtual) {
+					t.Fatalf("retry info=%#v", info)
+				}
+				cadence := 40 * time.Second
+				if err := fixture.executor.WaitForNextAttempt(context.Background(), cadence, &info, err); err != nil {
+					t.Fatal(err)
+				}
+				second, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, opts)
+				if err != nil || second == nil || second.Response == nil {
+					t.Fatalf("second result=%#v error=%v", second, err)
+				}
+				if parses, executes, _ := api.counts(); parses != 2 || executes != 1 {
+					t.Fatalf("after widening parse=%d execute=%d", parses, executes)
+				}
+				source := second.Replay.Output.Sources[0]
+				_, requests := api.queries()
+				if len(waits) != 1 || waits[0] != cadence || source.EffectiveFrom != "2026-08-01T11:00:00Z" || source.EffectiveTo != "2026-08-01T11:01:00Z" || len(requests) != 1 || requests[0].Query != effective {
+					t.Fatalf("waits=%v source=%#v requests=%#v", waits, source, requests)
+				}
+			})
+		}
+	}
+}
+
+func TestDQLExecutorTopologyTerminalWidthNeverRetries(t *testing.T) {
+	for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
+		for _, mode := range []ReplayExecutionMode{ReplayExecutionOneShot, ReplayExecutionWait, ReplayExecutionLive} {
+			t.Run(disclosure+"/"+string(mode), func(t *testing.T) {
+				terminal := mustReplayTestTime("2026-08-01T11:00:20Z")
+				api, original, _ := newTopologyMockAPI(t, "nodes-window", false)
+				fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, disclosure, replayTopologyStart, terminal, terminal,
+					func(string) session.ProvenanceSink { return &replayTestSink{} })
+				result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{ReplayMode: mode})
+				var classified *execreplay.NonOverlapError
+				if result != nil || !errors.As(err, &classified) || ReplayTemporaryNonOverlap(err) || !ReplayLoopHardFailure(err) {
+					t.Fatalf("terminal result=%#v error=%v", result, err)
+				}
+				assertTopologyWidthProof(t, classified, execreplay.OverlapPermanent, "2026-08-01T11:00:00Z", "2026-08-01T11:00:20Z")
+				if parses, executes, _ := api.counts(); parses != 1 || executes != 0 {
+					t.Fatalf("terminal parse=%d execute=%d", parses, executes)
+				}
+			})
 		}
 	}
 }

@@ -237,7 +237,11 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 				(input.Mode == ReplayExecutionWait || input.Mode == ReplayExecutionLive)
 			prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 			prov.Compilation = &compilation
-			return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorNonOverlap, err, info, &prov, retryable)
+			category := replayErrorNonOverlap
+			if nonOverlap.NarrowWindow != nil && !retryable {
+				category = replayErrorPrepare
+			}
+			return PreparedQuery{}, p.failBeforeExecute(ctx, sink, category, err, info, &prov, retryable)
 		}
 		if coverageProvenance != nil {
 			coverageProvenance.Verified = false

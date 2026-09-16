@@ -301,10 +301,15 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 		compiled.Effective = cloneInterval(&effective)
 		compiled.PhysicalRange = cloneInterval(&effective)
 		if effective.End.Sub(effective.Start) < topologyMinimumWindow {
-			return compiled, replayError(ErrorTimeframe, source.node, "topology timeframe",
+			compiled.Overlap = ClassifyTopologyWidth(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
+			cause := replayError(ErrorTimeframe, source.node, "topology timeframe",
 				fmt.Sprintf("Topology requires an effective window of at least 60 seconds; computed [%s, %s).", effective.Start.Format(time.RFC3339Nano), effective.End.Format(time.RFC3339Nano)),
 				"Request a window whose intersection with the visible replay interval is at least 60 seconds.").
 				withPublicMessage("The query could not be run as written.")
+			return compiled, &NonOverlapError{
+				Classification: compiled.Overlap.Classification,
+				Sources:        []SourceExplain{explainSource(compiled)}, NarrowWindow: cause,
+			}
 		}
 		return compiled, nil
 	}

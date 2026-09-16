@@ -88,6 +88,7 @@ execution above. The test names below are in the implementation tree.
 | 11: timeframe precedence | `TestDQLExecutorTopologyTimeframePrecedence`; `TestTopologyInvalidTimeframesDoNotUseFallback` |
 | 12: verified edge selectors only | `TestTopologyRejectedCapturedShapes`; `TestDQLExecutorTopologyAuthorizationRejectsBeforeExecute` |
 | 13: feeder/window explain and provenance | `TestReplayTopologyExplainShowsStructuralFeederAndWindow`; `TestDQLExecutorTopologyDisclosuresUseIdenticalDQLAndRecords`; captured live explain/provenance |
+| 14: realtime wait/live retries a provably widening sub-minute window and executes at 60 seconds | `TestDQLExecutorTopologyTemporaryWidthRecomputesAndThenExecutes`; `TestDQLExecutorTopologyWidthFailuresAreHardAndRecorded` covers one-shot/manual and permanent rejection; `TestDQLExecutorTopologyTerminalWidthNeverRetries` covers the replay endpoint |
 
 The parser corpus also passes the complete replay AST adapter and SDK
 round-trip checks. Audit mutation tests cover changed bounds, command keys,
