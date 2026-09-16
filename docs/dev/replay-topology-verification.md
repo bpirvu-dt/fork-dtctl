@@ -17,13 +17,21 @@ edge only in the first window.
 | Selected direct calls edge present | Yes | No |
 | Traversal reaches selected destination | Yes | No |
 | Traversal result count | 6 | 3 |
-| All traversal results belong to the selected leg | Yes | Yes |
+| Every traversal result is in the window's bare SERVICE node set | Yes | Yes |
 | Full and restricted result files match byte-for-byte | Yes | Yes |
 
 Both windows were on 2026-09-14. The recording's fault was
 `service_dns_resolution_failure_social_network`. Neither selected endpoint
 disappeared. Other services in the recording did disappear, but they were
 not the endpoints used to establish edge-window isolation.
+
+The check called "belongs to the selected leg" tested membership in each
+window's bare `SERVICE` node set. Those sets contained 12 nodes in the first
+window and 10 in the second. Every traversal result belonged to the
+corresponding set. This did not independently prove membership in the
+selected leg or equality with the application's full service set.
+The leg-identification capture contains a one-service sample. It identifies
+that service's leg; it is not a membership proof for all returned services.
 
 Replay used a manual clock, with virtual now at each window's end. The query
 selected one source service from bare `smartscapeNodes "SERVICE"`, followed
