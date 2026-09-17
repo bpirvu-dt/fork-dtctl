@@ -248,6 +248,9 @@ func (e *NonOverlapError) RetryMessage() string {
 		return ""
 	}
 	for _, source := range e.Sources {
+		if e.Classification != OverlapTemporary && source.Classification == OverlapTemporary {
+			continue // match decidingNarrowWindow for a hard query
+		}
 		if source.Class == SourceTopology && source.Effective != nil && source.Classification != OverlapPresent {
 			return fmt.Sprintf("The visible part of the topology window is still under 60 seconds; computed [%s, %s). Waiting for an effective window of at least 60 seconds.", source.Effective.Start.Format(time.RFC3339Nano), source.Effective.End.Format(time.RFC3339Nano))
 		}

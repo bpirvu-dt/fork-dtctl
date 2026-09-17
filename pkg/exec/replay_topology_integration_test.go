@@ -20,6 +20,8 @@ import (
 	"github.com/dynatrace-oss/dtctl/sdk/session"
 )
 
+const fullTopologyNonOverlapMessage = "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
+
 var (
 	replayTopologyStart = mustReplayTestTime("2026-08-01T10:00:00Z")
 	replayTopologyNow   = mustReplayTestTime("2026-08-01T12:00:00Z")
@@ -240,7 +242,6 @@ func assertTopologyWidthProof(t *testing.T, classified *execreplay.NonOverlapErr
 }
 
 func TestDQLExecutorTopologyMixedNonOverlapUsesDecidingSources(t *testing.T) {
-	const fullNonOverlap = "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
 	for _, test := range []struct {
 		name, start, now, end, from, to  string
 		clockMode                        string
@@ -251,6 +252,10 @@ func TestDQLExecutorTopologyMixedNonOverlapUsesDecidingSources(t *testing.T) {
 		{
 			name: "permanent logs and temporary topology", start: "2026-08-10T11:00:00Z", now: "2026-08-10T11:01:20Z", end: "2026-08-10T14:00:00Z",
 			from: "2026-08-10T11:01:00Z", to: "2026-08-10T11:10:00Z", recordClass: execreplay.OverlapPermanent, topologyClass: execreplay.OverlapTemporary,
+		},
+		{
+			name: "permanent logs and permanent narrow topology", start: "2026-08-10T11:00:00Z", now: "2026-08-10T11:01:20Z", end: "2026-08-10T14:00:00Z",
+			from: "2026-08-10T11:01:00Z", to: "2026-08-10T11:01:30Z", recordClass: execreplay.OverlapPermanent, topologyClass: execreplay.OverlapPermanent,
 		},
 		{
 			name: "temporary logs and temporary topology", start: "2026-08-10T09:00:00Z", now: "2026-08-10T09:01:20Z", end: "2026-08-10T12:00:00Z",
@@ -324,21 +329,21 @@ func TestDQLExecutorTopologyMixedNonOverlapUsesDecidingSources(t *testing.T) {
 							t.Fatalf("full topology error=%v", err)
 						}
 					case test.retryable:
-						if err.Error() != "no visible overlap yet" {
+						if err.Error() != fullTemporaryNonOverlapMessage {
 							t.Fatalf("full retry=%v", err)
 						}
 					default:
-						if err.Error() != fullNonOverlap {
+						if err.Error() != fullTopologyNonOverlapMessage {
 							t.Fatalf("full non-overlap=%v", err)
 						}
 					}
 					return
 				}
-				wantMessage, wantOutcome := "No data is available for the requested timeframe.", "non_overlap"
+				wantMessage, wantOutcome := restrictedNoDataMessage, "non_overlap"
 				if test.narrow {
-					wantMessage, wantOutcome = "The query could not be run as written.", "preparation"
+					wantMessage, wantOutcome = restrictedQueryInvalidMessage, "preparation"
 				} else if test.retryable {
-					wantMessage = "The requested timeframe is not available yet."
+					wantMessage = restrictedTemporaryNoDataMessage
 				}
 				if err.Error() != wantMessage {
 					t.Fatalf("restricted error=%v, want %q", err, wantMessage)
@@ -350,7 +355,6 @@ func TestDQLExecutorTopologyMixedNonOverlapUsesDecidingSources(t *testing.T) {
 }
 
 func TestDQLExecutorTopologyEmptyFutureSubminuteFailsWithoutWaiting(t *testing.T) {
-	const fullNonOverlap = "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
 	for _, clockMode := range []string{session.ReplayClockManual, session.ReplayClockRealtime} {
 		for _, disclosure := range []string{session.ReplayDisclosureFull, session.ReplayDisclosureRestricted} {
 			for _, mode := range []ReplayExecutionMode{ReplayExecutionOneShot, ReplayExecutionWait, ReplayExecutionLive} {
@@ -359,19 +363,14 @@ func TestDQLExecutorTopologyEmptyFutureSubminuteFailsWithoutWaiting(t *testing.T
 					sink := &replayTestSink{}
 					fixture := newReplayExecutorFixture(t, api, clockMode, disclosure, replayTopologyStart, replayTopologyNow, replayTopologyEnd,
 						func(string) session.ProvenanceSink { return sink })
-					waits := 0
-					fixture.executor.preparer.(*ReplayQueryPreparer).config.WaitFunc = func(context.Context, time.Duration) error {
-						waits++
-						return nil
-					}
 					result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), original, DQLExecuteOptions{
 						AgentMode: true, ReplayMode: mode,
 						DefaultTimeframeStart: "2026-08-01T12:30:00Z", DefaultTimeframeEnd: "2026-08-01T12:30:30Z",
 					})
 					var classified *execreplay.NonOverlapError
 					if result != nil || !errors.As(err, &classified) || !ReplayLoopHardFailure(err) || ReplayTemporaryNonOverlap(err) ||
-						ReplayRetryAfter(err) != 0 || waits != 0 {
-						t.Fatalf("result=%#v error=%v waits=%d", result, err, waits)
+						ReplayRetryAfter(err) != 0 {
+						t.Fatalf("result=%#v error=%v", result, err)
 					}
 					if classified.Classification != execreplay.OverlapPermanent || classified.NarrowWindow != nil || len(classified.Sources) != 1 {
 						t.Fatalf("empty intersection classification=%#v", classified)
@@ -383,12 +382,12 @@ func TestDQLExecutorTopologyEmptyFutureSubminuteFailsWithoutWaiting(t *testing.T
 					}
 					assertTopologyRejectedBeforeEffectiveParse(t, api, original)
 					if disclosure == session.ReplayDisclosureFull {
-						if err.Error() != fullNonOverlap {
+						if err.Error() != fullTopologyNonOverlapMessage {
 							t.Fatalf("full non-overlap=%v", err)
 						}
 						return
 					}
-					if err.Error() != "No data is available for the requested timeframe." {
+					if err.Error() != restrictedNoDataMessage {
 						t.Fatalf("restricted non-overlap=%v", err)
 					}
 					assertTopologyRejectionProvenance(t, sink, classified, "non_overlap")

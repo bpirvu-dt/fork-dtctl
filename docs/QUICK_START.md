@@ -1823,7 +1823,7 @@ checks. The detailed reason and remedy are written to provenance first:
 
 | Category | Message |
 |---|---|
-| Hard non-overlap; includes a mixed hard failure with any permanently or unknown non-overlapping source, even when a narrow topology window is also present; includes an empty topology intersection that can never reach 60 seconds | `No data is available for the requested timeframe.` |
+| Hard non-overlap; includes a mixed hard failure with any permanently or unknown non-overlapping source, even when a narrow topology window is also present; includes an empty topology intersection that can never reach 60 seconds; includes an all-temporary mixed query rejected in one-shot or manual mode when not every rejected source is a narrow topology window | `No data is available for the requested timeframe.` |
 | Temporary realtime-loop non-overlap | `The requested timeframe is not available yet.` |
 | Blocked command or plugin, including failure to record its rejection | `this command is not available in this context` |
 | State readiness failure | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` |

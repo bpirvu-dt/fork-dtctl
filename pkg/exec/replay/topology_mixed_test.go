@@ -138,3 +138,29 @@ func TestDecidingNarrowWindowUsesFirstDecidingSource(t *testing.T) {
 		})
 	}
 }
+
+func TestNonOverlapRetryMessageNamesDecidingTopologyWindow(t *testing.T) {
+	for _, hardClass := range []OverlapClassification{OverlapPermanent, OverlapUnknown} {
+		t.Run(string(hardClass), func(t *testing.T) {
+			temporaryWindow := mustInterval(t, "2026-08-10T11:02:10Z", "2026-08-10T11:02:30Z")
+			hardWindow := mustInterval(t, "2026-08-10T11:02:00Z", "2026-08-10T11:02:30Z")
+			sources := []SourceExplain{
+				{Ordinal: 0, Class: SourceTopology, Classification: OverlapTemporary, Effective: &temporaryWindow},
+				{Ordinal: 1, Class: SourceTopology, Classification: hardClass, Effective: &hardWindow},
+			}
+			hardCause := &ReplayError{Code: ErrorTimeframe}
+			decision := classifyWholeQueryNonOverlap(sources)
+			decision.NarrowWindow = decidingNarrowWindow(decision, map[int]*ReplayError{
+				0: {Code: ErrorTimeframe}, 1: hardCause,
+			})
+			if decision.NarrowWindow != hardCause {
+				t.Fatal("hard topology source must supply the deciding cause")
+			}
+			message := decision.RetryMessage()
+			wantWindow := fmt.Sprintf("[%s, %s)", hardWindow.Start.Format(time.RFC3339Nano), hardWindow.End.Format(time.RFC3339Nano))
+			if !strings.Contains(message, wantWindow) || strings.Contains(message, temporaryWindow.Start.Format(time.RFC3339Nano)) {
+				t.Fatalf("retry message=%q, want deciding window %s", message, wantWindow)
+			}
+		})
+	}
+}
