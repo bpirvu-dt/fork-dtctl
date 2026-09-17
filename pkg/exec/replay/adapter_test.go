@@ -17,7 +17,7 @@ func TestAdapterAcceptsCompleteRealFixtureCorpus(t *testing.T) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !entry.IsDir() && (entry.Name() == "parse.json" || entry.Name() == "validation-parse.json") {
+		if !entry.IsDir() && (entry.Name() == "parse.json" || entry.Name() == "validation-parse.json" || entry.Name() == "validation-first-minute-parse.json") {
 			paths = append(paths, path)
 		}
 		return nil
@@ -26,8 +26,8 @@ func TestAdapterAcceptsCompleteRealFixtureCorpus(t *testing.T) {
 		t.Fatalf("walk fixture corpus: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 245 {
-		t.Fatalf("fixture count = %d, want 245", len(paths))
+	if len(paths) != 313 {
+		t.Fatalf("fixture count = %d, want 313", len(paths))
 	}
 
 	adapted, captures := 0, 0
@@ -53,8 +53,8 @@ func TestAdapterAcceptsCompleteRealFixtureCorpus(t *testing.T) {
 		}
 		adapted++
 	}
-	if adapted != 227 || captures != 18 {
-		t.Fatalf("adapted = %d, non-AST captures = %d; want 227 and 18", adapted, captures)
+	if adapted != 293 || captures != 20 {
+		t.Fatalf("adapted = %d, non-AST captures = %d; want 293 and 20", adapted, captures)
 	}
 }
 

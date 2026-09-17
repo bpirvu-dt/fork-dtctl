@@ -913,7 +913,7 @@ func TestReplayQueryCLIOneShotNonOverlapIsHardError(t *testing.T) {
 	server := httptest.NewServer(api)
 	defer server.Close()
 	newReplayCLIQueryFixture(t, server.URL, session.ReplayDisclosureFull, session.ReplayClockRealtime,
-		mustReplayCLITime("2026-08-09T10:55:03Z"), mustReplayCLITime("2026-08-09T10:55:03Z"), mustReplayCLITime("2026-08-10T10:55:03Z"))
+		mustReplayCLITime("2026-08-09T09:54:03Z"), mustReplayCLITime("2026-08-09T09:55:03Z"), mustReplayCLITime("2026-08-10T10:55:03Z"))
 	setReplayQueryFlags(t, false, time.Minute, false)
 	err := queryCmd.RunE(queryCmd, []string{replayCLILoopOriginal})
 	if err == nil || !strings.Contains(err.Error(), "does not overlap") {
@@ -944,9 +944,9 @@ func TestReplayQueryCLIRealtimeWaitAndLiveRetryTemporaryNonOverlap(t *testing.T)
 			}
 			server := httptest.NewServer(api)
 			defer server.Close()
-			dataStart := mustReplayCLITime("2026-08-09T10:55:03Z")
+			virtualStart := mustReplayCLITime("2026-08-09T09:55:03Z")
 			fixture := newReplayCLIQueryFixture(t, server.URL, test.disclosure, session.ReplayClockRealtime,
-				dataStart, dataStart, dataStart.Add(5*time.Minute))
+				virtualStart.Add(-time.Minute), virtualStart, virtualStart.Add(5*time.Minute))
 			replayQueryWaitFunc = func(_ context.Context, delay time.Duration) error {
 				fixture.clock.Add(delay)
 				return nil

@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -199,6 +200,7 @@ type ExplainData struct {
 	EffectiveDQL     string
 	CoverageVerified *bool
 	CoverageMessage  string
+	Traversals       []TraversalBinding
 }
 
 // CompileResult is returned even with NonOverlapError so callers can inspect
@@ -213,17 +215,47 @@ type CompileResult struct {
 	AuditPlan       AuditPlan
 	AuditRequired   bool
 	InspectionOnly  bool
+	Traversals      []TraversalBinding
 }
 
-// NonOverlapError is the typed whole-query decision when any telemetry source
-// has no visible intersection.
+// NonOverlapError is the typed whole-query decision when a source has no
+// visible intersection or a topology intersection is too narrow to execute.
 type NonOverlapError struct {
 	Classification OverlapClassification
 	Sources        []SourceExplain
+	NarrowWindow   *ReplayError
 }
 
 func (e *NonOverlapError) Error() string {
+	if e.NarrowWindow != nil {
+		return e.NarrowWindow.Error()
+	}
 	return "The requested source timeframe does not overlap the currently visible replay interval.\nThe query was not executed."
+}
+
+// Unwrap preserves the existing hard topology timeframe error.
+func (e *NonOverlapError) Unwrap() error {
+	if e.NarrowWindow == nil {
+		return nil
+	}
+	return e.NarrowWindow
+}
+
+// RetryMessage names the first narrow window when this whole query can retry.
+// Empty intersections keep their existing progress text in the caller.
+func (e *NonOverlapError) RetryMessage() string {
+	if e.NarrowWindow == nil {
+		return ""
+	}
+	for _, source := range e.Sources {
+		if e.Classification != OverlapTemporary && source.Classification == OverlapTemporary {
+			continue // match decidingNarrowWindow for a hard query
+		}
+		if source.Class == SourceTopology && source.Effective != nil && source.Classification != OverlapPresent {
+			return fmt.Sprintf("The visible part of the topology window is still under 60 seconds; computed [%s, %s). Waiting for an effective window of at least 60 seconds.", source.Effective.Start.Format(time.RFC3339Nano), source.Effective.End.Format(time.RFC3339Nano))
+		}
+	}
+	return ""
 }
 
 // Compile transforms one fresh internal AST view into effective DQL. It reads
@@ -245,13 +277,20 @@ func Compile(input CompileInput) (CompileResult, error) {
 		GlobalDefault: cloneInterval(input.GlobalDefault), DefaultLookback: policy.DefaultLookback,
 	}
 	analysesByOrdinal := make(map[int]*sourceAnalysis, len(sources))
+	narrowWindows := map[int]*ReplayError{}
 	for _, source := range sources {
 		analysesByOrdinal[source.Ordinal] = source
 		compiled, compileErr := compileSource(source, context, input)
 		result.Sources = append(result.Sources, compiled)
 		result.Explain.Sources = append(result.Explain.Sources, explainSource(compiled))
 		if compileErr != nil {
-			return result, compileErr
+			var windowErr *NonOverlapError
+			if !errors.As(compileErr, &windowErr) || windowErr.NarrowWindow == nil {
+				return result, compileErr
+			}
+			// Inspect the remaining sources before allowing a retry. A temporary
+			// topology window must not hide another source's hard failure.
+			narrowWindows[source.Ordinal] = windowErr.NarrowWindow
 		}
 		if compiled.DavisMapping != nil {
 			mapping := compiled.DavisMapping
@@ -278,8 +317,14 @@ func Compile(input CompileInput) (CompileResult, error) {
 	}
 	result.Explain.Notices = append([]Notice(nil), result.Notices...)
 	if nonOverlap := classifyWholeQueryNonOverlap(result.Explain.Sources); nonOverlap != nil {
+		nonOverlap.NarrowWindow = decidingNarrowWindow(nonOverlap, narrowWindows)
 		return result, nonOverlap
 	}
+	result.Traversals, err = bindTraversals(working, sources, result.Sources)
+	if err != nil {
+		return result, err
+	}
+	result.Explain.Traversals = append([]TraversalBinding(nil), result.Traversals...)
 	fingerprint, err := semanticFingerprintWithMappings(working, sources, input.VirtualNow, result.AuditPlan.DavisProblemsMappings, nil)
 	if err != nil {
 		return result, err
@@ -297,6 +342,28 @@ func Compile(input CompileInput) (CompileResult, error) {
 	result.Explain.EffectiveDQL = effective
 	result.AuditRequired = true
 	return result, nil
+}
+
+// decidingNarrowWindow returns the narrow topology cause only when narrow
+// topology windows alone explain the whole-query decision (v11 section 4.4):
+// for a temporary query every rejected source must be a narrow topology
+// window; for a hard query every permanent or unknown source must be one.
+// It returns the cause of the first such source in AST order.
+func decidingNarrowWindow(e *NonOverlapError, causes map[int]*ReplayError) *ReplayError {
+	var first *ReplayError
+	for _, source := range e.Sources {
+		if e.Classification != OverlapTemporary && source.Classification == OverlapTemporary {
+			continue // a temporary source does not decide a hard query
+		}
+		cause, narrow := causes[source.Ordinal]
+		if !narrow {
+			return nil
+		}
+		if first == nil {
+			first = cause
+		}
+	}
+	return first
 }
 
 func validateCompileInput(input CompileInput) (CompileInput, error) {

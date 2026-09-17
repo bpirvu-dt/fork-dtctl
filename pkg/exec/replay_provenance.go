@@ -27,6 +27,9 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 	if provenance.Compilation != nil {
 		fields["sources"] = replaySources(provenance.Compilation.Sources, provenance.Validated)
 		fields["notices"] = replayNotices(provenance.Compilation.Notices)
+		if len(provenance.Compilation.Traversals) > 0 {
+			fields["traversals"] = replayTraversalBindings(provenance.Compilation.Traversals)
+		}
 	}
 	if provenance.DavisCoverage != nil {
 		fields["davis_snapshot_coverage"] = replayDavisCoverage(*provenance.DavisCoverage)
@@ -67,6 +70,17 @@ func provenanceRecord(event string, provenance ReplayExecutionProvenance, additi
 		SessionID:     provenance.Session.SessionID,
 		Fields:        fields,
 	}
+}
+
+func replayTraversalBindings(values []execreplay.TraversalBinding) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]any{
+			"path": value.Path, "feeder_path": value.FeederPath, "feeder_ordinal": value.FeederOrdinal,
+			"effective_range": replayInterval(value.Effective),
+		})
+	}
+	return result
 }
 
 func replayGrailContributions(value Contributions) map[string]any {

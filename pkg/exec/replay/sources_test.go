@@ -110,9 +110,8 @@ func TestSourcePolicyRejectsCurrentStateAndUnknownSources(t *testing.T) {
 		fixture  string
 		wantCode ErrorCode
 	}{
-		{"Smartscape nodes", "current-state-rejection/01-smartscape-nodes/historical-context/parse.json", ErrorCurrentState},
-		{"Smartscape edges", "current-state-rejection/02-smartscape-edges/historical-context/parse.json", ErrorCurrentState},
-		{"traverse", "current-state-rejection/03-traverse/historical-context/parse.json", ErrorCurrentState},
+		{"Smartscape wildcard edges", "current-state-rejection/02-smartscape-edges/historical-context/parse.json", ErrorUnsupportedForm},
+		{"wildcard traverse", "current-state-rejection/03-traverse/historical-context/parse.json", ErrorUnsupportedForm},
 		{"entity source", "current-state-rejection/04-fetch-dt-entity/historical-context/parse.json", ErrorCurrentState},
 		{"entityName", "current-state-rejection/05-entity-name/historical-context/parse.json", ErrorCurrentState},
 		{"entityAttr", "current-state-rejection/06-entity-attr/historical-context/parse.json", ErrorCurrentState},
@@ -131,6 +130,13 @@ func TestSourcePolicyRejectsCurrentStateAndUnknownSources(t *testing.T) {
 				t.Fatalf("error = %T %v, want ReplayError code %s", err, err, tt.wantCode)
 			}
 		})
+	}
+}
+
+func TestPreviouslyRejectedSmartscapeNodesNowClassified(t *testing.T) {
+	sources, err := ClassifySources(loadPhase0BFixture(t, "current-state-rejection/01-smartscape-nodes/historical-context/parse.json"), Milestone1SourcePolicy())
+	if err != nil || len(sources) != 2 || sources[1].Class != SourceTopology || sources[1].BoundaryPolicy != BoundaryWindowOnly {
+		t.Fatalf("sources=%#v err=%v", sources, err)
 	}
 }
 

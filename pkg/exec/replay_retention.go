@@ -214,7 +214,7 @@ func (p *ReplayQueryPreparer) addRetentionNotices(ctx context.Context, mode Repl
 
 func hasStoredTelemetrySource(sources []execreplay.SourceCompilation) bool {
 	for _, source := range sources {
-		if source.Source.Class == execreplay.SourceRecord || source.Source.Class == execreplay.SourceMetric {
+		if source.Source.Class == execreplay.SourceRecord || source.Source.Class == execreplay.SourceMetric || source.Source.Class == execreplay.SourceTopology {
 			return true
 		}
 	}

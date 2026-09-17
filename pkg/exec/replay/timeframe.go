@@ -154,9 +154,11 @@ type timeframeContext struct {
 	Timezone        *time.Location
 	GlobalDefault   *Interval
 	DefaultLookback time.Duration
+	Topology        bool
 }
 
 func resolveRequestedRange(source *sourceAnalysis, context timeframeContext) (RequestedRange, error) {
+	context.Topology = source.Class == SourceTopology
 	params := source.parametersByKey()
 	if len(params["timeframe"]) > 0 && (len(params["from"]) > 0 || len(params["to"]) > 0) {
 		return RequestedRange{}, queryTimeframeError(source.node, "timeframe", "The source combines mutually exclusive timeframe forms.", "Use either timeframe or from and to.")
@@ -180,6 +182,9 @@ func resolveRequestedRange(source *sourceAnalysis, context timeframeContext) (Re
 			return absoluteRequested(*context.GlobalDefault, "global default timeframe"), nil
 		}
 		lookback := context.DefaultLookback
+		if source.Class == SourceTopology {
+			return requestedFromEndpoints(relativeEndpoint(context.VirtualNow, -topologyMinimumWindow), relativeEndpoint(context.VirtualNow, 0), "60-second topology fallback")
+		}
 		if lookback == 0 {
 			lookback = verifiedDefaultLookback
 		}
@@ -203,7 +208,7 @@ func resolveRequestedRange(source *sourceAnalysis, context timeframeContext) (Re
 		}
 		basis = "explicit from and to"
 	}
-	return requestedFromEndpoints(from, to, basis)
+	return requestedRangeForContext(from, to, basis, context)
 }
 
 func absoluteRequested(value Interval, basis string) RequestedRange {
@@ -216,11 +221,15 @@ func absoluteRequested(value Interval, basis string) RequestedRange {
 }
 
 func requestedFromEndpoints(from, to TimeEndpoint, basis string) (RequestedRange, error) {
+	return requestedRangeForContext(from, to, basis, timeframeContext{})
+}
+
+func requestedRangeForContext(from, to TimeEndpoint, basis string, context timeframeContext) (RequestedRange, error) {
 	value := Interval{Start: from.Value.UTC(), End: to.Value.UTC()}
 	if !value.Valid() {
 		return RequestedRange{}, queryTimeframeError(nil, basis, "The requested source timeframe is empty or reversed.", "Use a start that is earlier than the end.")
 	}
-	if value.End.Sub(value.Start) <= time.Nanosecond {
+	if !context.Topology && value.End.Sub(value.Start) <= time.Nanosecond {
 		return RequestedRange{}, queryTimeframeError(nil, basis, "A one-nanosecond source timeframe is not a valid replay window.", "Use a wider non-empty timeframe.")
 	}
 	from.Value, to.Value = value.Start, value.End
@@ -247,10 +256,10 @@ func parseTimeframeParameter(parameter parameterView, context timeframeContext) 
 		if startErr != nil || endErr != nil {
 			return RequestedRange{}, queryTimeframeError(value, "timeframe", "The quoted timeframe contains an invalid timestamp.", "Use absolute RFC 3339 timestamps with a timezone.")
 		}
-		return requestedFromEndpoints(
+		return requestedRangeForContext(
 			TimeEndpoint{Value: start.UTC(), Dependency: EndpointAbsolute},
 			TimeEndpoint{Value: end.UTC(), Dependency: EndpointAbsolute},
-			"quoted absolute timeframe",
+			"quoted absolute timeframe", context,
 		)
 	}
 	if value.Role != "FUNCTION" || !strings.EqualFold(ownFunctionName(value), "timeframe") {
@@ -272,7 +281,7 @@ func parseTimeframeParameter(parameter parameterView, context timeframeContext) 
 	if err != nil {
 		return RequestedRange{}, err
 	}
-	return requestedFromEndpoints(from, to, "structured timeframe")
+	return requestedRangeForContext(from, to, "structured timeframe", context)
 }
 
 func evaluateTimeParameter(parameter parameterView, context timeframeContext) (TimeEndpoint, error) {

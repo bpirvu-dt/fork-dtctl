@@ -1,0 +1,1 @@
+smartscapeNodes "SERVICE" | lookup [smartscapeNodes "SERVICE"], sourceField:id, lookupField:id | traverse "calls", "SERVICE"

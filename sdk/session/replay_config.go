@@ -14,6 +14,9 @@ import (
 )
 
 const (
+	// ReplayMinimumStartupHistory is the history every session must expose at start.
+	ReplayMinimumStartupHistory = time.Minute
+
 	// ReplayClockRealtime advances virtual time at the host-clock rate.
 	ReplayClockRealtime = "realtime"
 	// ReplayClockManual holds virtual time fixed until an explicit advance.
@@ -156,14 +159,20 @@ func ResolveReplayConfig(raw *ReplayConfig, overrides ReplayConfigOverrides, rep
 	if !dataStart.Before(dataEnd) {
 		return ResolvedReplayConfig{}, fmt.Errorf("replay data_start must be before data_end (resolved data_start=%s, data_end=%s)", formatReplayTime(dataStart), formatReplayTime(dataEnd))
 	}
+	if err := validateReplayInterval(dataStart, dataEnd); err != nil {
+		return ResolvedReplayConfig{}, err
+	}
 
-	virtualText, virtualSource := resolveReplayValue(overrides.VirtualStart, raw.VirtualStart, dataStartText)
+	virtualText, virtualSource := resolveReplayValue(overrides.VirtualStart, raw.VirtualStart, formatReplayTime(dataStart.Add(ReplayMinimumStartupHistory)))
 	virtualStart, err := parseReplayTimestamp("virtual_start", virtualText)
 	if err != nil {
 		return ResolvedReplayConfig{}, err
 	}
 	if virtualStart.Before(dataStart) || virtualStart.After(dataEnd) {
 		return ResolvedReplayConfig{}, fmt.Errorf("replay virtual_start must be within the replay interval (resolved data_start=%s, virtual_start=%s, data_end=%s)", formatReplayTime(dataStart), formatReplayTime(virtualStart), formatReplayTime(dataEnd))
+	}
+	if err := ValidateReplayStartupHistory(dataStart, virtualStart); err != nil {
+		return ResolvedReplayConfig{}, err
 	}
 
 	clockMode, clockSource := resolveReplayValue(overrides.ClockMode, raw.ClockMode, ReplayClockRealtime)
@@ -211,6 +220,24 @@ func ResolveReplayConfig(raw *ReplayConfig, overrides ReplayConfigOverrides, rep
 			ProvenancePath: provenanceSource,
 		},
 	}, nil
+}
+
+func validateReplayInterval(dataStart, dataEnd time.Time) error {
+	if dataEnd.Sub(dataStart) < ReplayMinimumStartupHistory {
+		return fmt.Errorf("replay interval must be at least 60 seconds long because every session needs 60 seconds of visible history at startup (resolved data_start=%s, data_end=%s)", formatReplayTime(dataStart), formatReplayTime(dataEnd))
+	}
+	return nil
+}
+
+// ValidateReplayStartupHistory checks the resolved initial session settings.
+// Callers must not substitute the advancing clock or edited context settings.
+// Stored snapshots remain readable for status, stop, and disclosure routing;
+// execution readiness applies this compatibility check separately.
+func ValidateReplayStartupHistory(dataStart, virtualStart time.Time) error {
+	if virtualStart.Sub(dataStart) < ReplayMinimumStartupHistory {
+		return fmt.Errorf("replay requires at least 60 seconds of visible history at startup; provide earlier history by moving data_start earlier, or set virtual_start at least 60 seconds after data_start (resolved data_start=%s, virtual_start=%s)", formatReplayTime(dataStart), formatReplayTime(virtualStart))
+	}
+	return nil
 }
 
 func resolveReplayValue(override *string, contextValue, defaultValue string) (string, ReplayValueSource) {

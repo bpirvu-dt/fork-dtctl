@@ -1,0 +1,1 @@
+smartscapeNodes "SERVICE" | traverse "calls", "SERVICE", from:now()-5m

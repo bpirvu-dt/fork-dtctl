@@ -1,0 +1,33 @@
+{
+  "virtual_now": "2026-08-01T12:00:00Z",
+  "virtual_start": "2026-08-01T12:00:00Z",
+  "data_start": "2026-08-01T10:00:00Z",
+  "data_end": "2026-08-01T14:00:00Z",
+  "visible_start": "2026-08-01T10:00:00Z",
+  "visible_end": "2026-08-01T12:00:00Z",
+  "timezone": "UTC",
+  "sources": [
+    {
+      "ordinal": 0,
+      "class": "topology",
+      "name": "smartscapeNodes",
+      "boundary_policy": "window_only",
+      "requested_from": "2026-08-01T11:59:00Z",
+      "requested_to": "2026-08-01T12:00:00Z",
+      "effective_from": "2026-08-01T11:59:00Z",
+      "effective_to": "2026-08-01T12:00:00Z",
+      "classification": "overlap",
+      "proof": "the requested source range intersects the visible replay interval"
+    }
+  ],
+  "effective_query": "smartscapeNodes \"SERVICE\", from:toTimestamp(\"2026-08-01T11:59:00.000000000Z\"), to:toTimestamp(\"2026-08-01T12:00:00.000000000Z\") | limit 1 | traverse \"calls\", \"SERVICE\"",
+  "traversals": [
+    {
+      "path": "root.children[4]",
+      "feeder_path": "root.children[0]",
+      "feeder_ordinal": 0,
+      "effective_from": "2026-08-01T11:59:00Z",
+      "effective_to": "2026-08-01T12:00:00Z"
+    }
+  ]
+}

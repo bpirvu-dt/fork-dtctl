@@ -128,6 +128,10 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 		}
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorReadiness, detail, info, &candidateProvenance, false)
 	}
+	if err := session.ValidateReplayStartupHistory(state.DataStart, state.VirtualStart); err != nil {
+		detail := fmt.Errorf("stored replay session is incompatible: %w; restart with valid settings", err)
+		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorReadiness, detail, info, &candidateProvenance, false)
+	}
 	if state.ContextInputHash != p.config.ExpectedContextInputHash || state.EnvironmentHash != p.config.ExpectedEnvironmentHash {
 		detail := fmt.Errorf("the replay context changed after this session started; restart the replay session to use the new configuration")
 		return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorReadiness, detail, info, &candidateProvenance, false)
@@ -233,7 +237,11 @@ func (p *ReplayQueryPreparer) Prepare(ctx context.Context, input PrepareInput) (
 				(input.Mode == ReplayExecutionWait || input.Mode == ReplayExecutionLive)
 			prov := p.baseProvenance(state, input.OriginalQuery, hostNow, virtualNow, coverageProvenance)
 			prov.Compilation = &compilation
-			return PreparedQuery{}, p.failBeforeExecute(ctx, sink, replayErrorNonOverlap, err, info, &prov, retryable)
+			category := replayErrorNonOverlap
+			if nonOverlap.NarrowWindow != nil && !retryable {
+				category = replayErrorPrepare
+			}
+			return PreparedQuery{}, p.failBeforeExecute(ctx, sink, category, err, info, &prov, retryable)
 		}
 		if coverageProvenance != nil {
 			coverageProvenance.Verified = false

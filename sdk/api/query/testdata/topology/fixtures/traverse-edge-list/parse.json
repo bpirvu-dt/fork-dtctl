@@ -1,0 +1,860 @@
+{
+  "http_status": 200,
+  "response_body": {
+    "children": [
+      {
+        "children": [
+          {
+            "canonicalString": "smartscapeNodes",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "tokenPosition": {
+              "end": {
+                "column": 15,
+                "index": 14,
+                "line": 1
+              },
+              "start": {
+                "column": 1,
+                "index": 0,
+                "line": 1
+              }
+            },
+            "type": "COMMAND_NAME"
+          },
+          {
+            "canonicalString": " ",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "type": "SPACE"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "alternatives": {
+                                          "INFO": {
+                                            "children": [
+                                              {
+                                                "canonicalString": "type",
+                                                "isMandatoryOnUserOrder": false,
+                                                "isOptional": false,
+                                                "nodeType": "TERMINAL",
+                                                "type": "PARAMETER_KEY"
+                                              },
+                                              {
+                                                "canonicalString": ":",
+                                                "isMandatoryOnUserOrder": false,
+                                                "isOptional": false,
+                                                "nodeType": "TERMINAL",
+                                                "type": "COLON"
+                                              }
+                                            ],
+                                            "isOptional": true,
+                                            "nodeType": "CONTAINER",
+                                            "type": "PARAMETER_NAMING"
+                                          }
+                                        },
+                                        "isOptional": false,
+                                        "nodeType": "ALTERNATIVE"
+                                      },
+                                      {
+                                        "canonicalString": "\"SERVICE\"",
+                                        "isMandatoryOnUserOrder": false,
+                                        "isOptional": false,
+                                        "nodeType": "TERMINAL",
+                                        "tokenPosition": {
+                                          "end": {
+                                            "column": 25,
+                                            "index": 24,
+                                            "line": 1
+                                          },
+                                          "start": {
+                                            "column": 17,
+                                            "index": 16,
+                                            "line": 1
+                                          }
+                                        },
+                                        "type": "SMARTSCAPE_NODE_PATTERN"
+                                      }
+                                    ],
+                                    "isOptional": false,
+                                    "nodeType": "CONTAINER",
+                                    "tokenPosition": {
+                                      "end": {
+                                        "column": 25,
+                                        "index": 24,
+                                        "line": 1
+                                      },
+                                      "start": {
+                                        "column": 17,
+                                        "index": 16,
+                                        "line": 1
+                                      }
+                                    },
+                                    "type": "PARAMETER_WITH_KEY"
+                                  }
+                                ],
+                                "isOptional": false,
+                                "nodeType": "CONTAINER",
+                                "type": "PARAMETERS"
+                              }
+                            ],
+                            "isOptional": false,
+                            "nodeType": "CONTAINER",
+                            "tokenPosition": {
+                              "end": {
+                                "column": 25,
+                                "index": 24,
+                                "line": 1
+                              },
+                              "start": {
+                                "column": 17,
+                                "index": 16,
+                                "line": 1
+                              }
+                            },
+                            "type": "GROUP"
+                          }
+                        ],
+                        "isOptional": false,
+                        "nodeType": "CONTAINER",
+                        "type": "PARAMETERS"
+                      }
+                    ],
+                    "isOptional": false,
+                    "nodeType": "CONTAINER",
+                    "tokenPosition": {
+                      "end": {
+                        "column": 25,
+                        "index": 24,
+                        "line": 1
+                      },
+                      "start": {
+                        "column": 17,
+                        "index": 16,
+                        "line": 1
+                      }
+                    },
+                    "type": "GROUP"
+                  }
+                ],
+                "isOptional": false,
+                "nodeType": "CONTAINER",
+                "type": "PARAMETERS"
+              }
+            ],
+            "isOptional": false,
+            "nodeType": "CONTAINER",
+            "tokenPosition": {
+              "end": {
+                "column": 25,
+                "index": 24,
+                "line": 1
+              },
+              "start": {
+                "column": 17,
+                "index": 16,
+                "line": 1
+              }
+            },
+            "type": "GROUP"
+          }
+        ],
+        "isOptional": false,
+        "nodeType": "CONTAINER",
+        "tokenPosition": {
+          "end": {
+            "column": 25,
+            "index": 24,
+            "line": 1
+          },
+          "start": {
+            "column": 1,
+            "index": 0,
+            "line": 1
+          }
+        },
+        "type": "COMMAND"
+      },
+      {
+        "children": [
+          {
+            "canonicalString": "\n",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "type": "LINEBREAK"
+          },
+          {
+            "canonicalString": "|",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "type": "PIPE"
+          },
+          {
+            "canonicalString": " ",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "type": "SPACE"
+          }
+        ],
+        "isOptional": false,
+        "nodeType": "CONTAINER",
+        "tokenPosition": {
+          "end": {
+            "column": 28,
+            "index": 27,
+            "line": 1
+          },
+          "start": {
+            "column": 26,
+            "index": 25,
+            "line": 1
+          }
+        },
+        "type": "COMMAND_SEPARATOR"
+      },
+      {
+        "children": [
+          {
+            "canonicalString": "traverse",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "tokenPosition": {
+              "end": {
+                "column": 36,
+                "index": 35,
+                "line": 1
+              },
+              "start": {
+                "column": 29,
+                "index": 28,
+                "line": 1
+              }
+            },
+            "type": "COMMAND_NAME"
+          },
+          {
+            "canonicalString": " ",
+            "isMandatoryOnUserOrder": false,
+            "isOptional": false,
+            "nodeType": "TERMINAL",
+            "type": "SPACE"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "alternatives": {
+                          "INFO": {
+                            "children": [
+                              {
+                                "canonicalString": "edgeTypes",
+                                "isMandatoryOnUserOrder": false,
+                                "isOptional": false,
+                                "nodeType": "TERMINAL",
+                                "type": "PARAMETER_KEY"
+                              },
+                              {
+                                "canonicalString": ":",
+                                "isMandatoryOnUserOrder": false,
+                                "isOptional": false,
+                                "nodeType": "TERMINAL",
+                                "type": "COLON"
+                              }
+                            ],
+                            "isOptional": true,
+                            "nodeType": "CONTAINER",
+                            "type": "PARAMETER_NAMING"
+                          }
+                        },
+                        "isOptional": false,
+                        "nodeType": "ALTERNATIVE"
+                      },
+                      {
+                        "children": [
+                          {
+                            "canonicalString": "{",
+                            "isMandatoryOnUserOrder": false,
+                            "isOptional": false,
+                            "nodeType": "TERMINAL",
+                            "type": "BRACE_OPEN"
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "children": [
+                                                  {
+                                                    "alternatives": {
+                                                      "INFO": {
+                                                        "children": [
+                                                          {
+                                                            "canonicalString": "edgeType",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "PARAMETER_KEY"
+                                                          },
+                                                          {
+                                                            "canonicalString": ":",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "COLON"
+                                                          }
+                                                        ],
+                                                        "isOptional": true,
+                                                        "nodeType": "CONTAINER",
+                                                        "type": "PARAMETER_NAMING"
+                                                      }
+                                                    },
+                                                    "isOptional": false,
+                                                    "nodeType": "ALTERNATIVE"
+                                                  },
+                                                  {
+                                                    "canonicalString": "\"calls\"",
+                                                    "isMandatoryOnUserOrder": false,
+                                                    "isOptional": false,
+                                                    "nodeType": "TERMINAL",
+                                                    "tokenPosition": {
+                                                      "end": {
+                                                        "column": 45,
+                                                        "index": 44,
+                                                        "line": 1
+                                                      },
+                                                      "start": {
+                                                        "column": 39,
+                                                        "index": 38,
+                                                        "line": 1
+                                                      }
+                                                    },
+                                                    "type": "SMARTSCAPE_EDGE_PATTERN"
+                                                  }
+                                                ],
+                                                "isOptional": false,
+                                                "nodeType": "CONTAINER",
+                                                "tokenPosition": {
+                                                  "end": {
+                                                    "column": 45,
+                                                    "index": 44,
+                                                    "line": 1
+                                                  },
+                                                  "start": {
+                                                    "column": 39,
+                                                    "index": 38,
+                                                    "line": 1
+                                                  }
+                                                },
+                                                "type": "PARAMETER_WITH_KEY"
+                                              }
+                                            ],
+                                            "isOptional": false,
+                                            "nodeType": "CONTAINER",
+                                            "type": "PARAMETERS"
+                                          }
+                                        ],
+                                        "isOptional": false,
+                                        "nodeType": "CONTAINER",
+                                        "tokenPosition": {
+                                          "end": {
+                                            "column": 45,
+                                            "index": 44,
+                                            "line": 1
+                                          },
+                                          "start": {
+                                            "column": 39,
+                                            "index": 38,
+                                            "line": 1
+                                          }
+                                        },
+                                        "type": "GROUP"
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "canonicalString": ",",
+                                            "isMandatoryOnUserOrder": false,
+                                            "isOptional": false,
+                                            "nodeType": "TERMINAL",
+                                            "type": "COMMA"
+                                          },
+                                          {
+                                            "canonicalString": " ",
+                                            "isMandatoryOnUserOrder": false,
+                                            "isOptional": false,
+                                            "nodeType": "TERMINAL",
+                                            "type": "SPACE"
+                                          }
+                                        ],
+                                        "isOptional": false,
+                                        "nodeType": "CONTAINER",
+                                        "type": "PARAMETER_SEPARATOR"
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "children": [
+                                                  {
+                                                    "alternatives": {
+                                                      "INFO": {
+                                                        "children": [
+                                                          {
+                                                            "canonicalString": "edgeType",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "PARAMETER_KEY"
+                                                          },
+                                                          {
+                                                            "canonicalString": ":",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "COLON"
+                                                          }
+                                                        ],
+                                                        "isOptional": true,
+                                                        "nodeType": "CONTAINER",
+                                                        "type": "PARAMETER_NAMING"
+                                                      }
+                                                    },
+                                                    "isOptional": false,
+                                                    "nodeType": "ALTERNATIVE"
+                                                  },
+                                                  {
+                                                    "canonicalString": "\"runs_on\"",
+                                                    "isMandatoryOnUserOrder": false,
+                                                    "isOptional": false,
+                                                    "nodeType": "TERMINAL",
+                                                    "tokenPosition": {
+                                                      "end": {
+                                                        "column": 56,
+                                                        "index": 55,
+                                                        "line": 1
+                                                      },
+                                                      "start": {
+                                                        "column": 48,
+                                                        "index": 47,
+                                                        "line": 1
+                                                      }
+                                                    },
+                                                    "type": "SMARTSCAPE_EDGE_PATTERN"
+                                                  }
+                                                ],
+                                                "isOptional": false,
+                                                "nodeType": "CONTAINER",
+                                                "tokenPosition": {
+                                                  "end": {
+                                                    "column": 56,
+                                                    "index": 55,
+                                                    "line": 1
+                                                  },
+                                                  "start": {
+                                                    "column": 48,
+                                                    "index": 47,
+                                                    "line": 1
+                                                  }
+                                                },
+                                                "type": "PARAMETER_WITH_KEY"
+                                              }
+                                            ],
+                                            "isOptional": false,
+                                            "nodeType": "CONTAINER",
+                                            "type": "PARAMETERS"
+                                          }
+                                        ],
+                                        "isOptional": false,
+                                        "nodeType": "CONTAINER",
+                                        "tokenPosition": {
+                                          "end": {
+                                            "column": 56,
+                                            "index": 55,
+                                            "line": 1
+                                          },
+                                          "start": {
+                                            "column": 48,
+                                            "index": 47,
+                                            "line": 1
+                                          }
+                                        },
+                                        "type": "GROUP"
+                                      }
+                                    ],
+                                    "isOptional": false,
+                                    "nodeType": "CONTAINER",
+                                    "type": "PARAMETERS"
+                                  }
+                                ],
+                                "isOptional": false,
+                                "nodeType": "CONTAINER",
+                                "tokenPosition": {
+                                  "end": {
+                                    "column": 56,
+                                    "index": 55,
+                                    "line": 1
+                                  },
+                                  "start": {
+                                    "column": 39,
+                                    "index": 38,
+                                    "line": 1
+                                  }
+                                },
+                                "type": "GROUP"
+                              }
+                            ],
+                            "isOptional": false,
+                            "nodeType": "CONTAINER",
+                            "type": "PARAMETERS"
+                          },
+                          {
+                            "canonicalString": "}",
+                            "isMandatoryOnUserOrder": false,
+                            "isOptional": false,
+                            "nodeType": "TERMINAL",
+                            "type": "BRACE_CLOSE"
+                          }
+                        ],
+                        "isOptional": false,
+                        "nodeType": "CONTAINER",
+                        "tokenPosition": {
+                          "end": {
+                            "column": 56,
+                            "index": 55,
+                            "line": 1
+                          },
+                          "start": {
+                            "column": 39,
+                            "index": 38,
+                            "line": 1
+                          }
+                        },
+                        "type": "GROUP"
+                      }
+                    ],
+                    "isOptional": false,
+                    "nodeType": "CONTAINER",
+                    "tokenPosition": {
+                      "end": {
+                        "column": 56,
+                        "index": 55,
+                        "line": 1
+                      },
+                      "start": {
+                        "column": 39,
+                        "index": 38,
+                        "line": 1
+                      }
+                    },
+                    "type": "PARAMETER_WITH_KEY"
+                  },
+                  {
+                    "children": [
+                      {
+                        "canonicalString": ",",
+                        "isMandatoryOnUserOrder": false,
+                        "isOptional": false,
+                        "nodeType": "TERMINAL",
+                        "type": "COMMA"
+                      },
+                      {
+                        "canonicalString": " ",
+                        "isMandatoryOnUserOrder": false,
+                        "isOptional": false,
+                        "nodeType": "TERMINAL",
+                        "type": "SPACE"
+                      }
+                    ],
+                    "isOptional": false,
+                    "nodeType": "CONTAINER",
+                    "type": "PARAMETER_SEPARATOR"
+                  },
+                  {
+                    "children": [
+                      {
+                        "alternatives": {
+                          "INFO": {
+                            "children": [
+                              {
+                                "canonicalString": "targetTypes",
+                                "isMandatoryOnUserOrder": false,
+                                "isOptional": false,
+                                "nodeType": "TERMINAL",
+                                "type": "PARAMETER_KEY"
+                              },
+                              {
+                                "canonicalString": ":",
+                                "isMandatoryOnUserOrder": false,
+                                "isOptional": false,
+                                "nodeType": "TERMINAL",
+                                "type": "COLON"
+                              }
+                            ],
+                            "isOptional": true,
+                            "nodeType": "CONTAINER",
+                            "type": "PARAMETER_NAMING"
+                          }
+                        },
+                        "isOptional": false,
+                        "nodeType": "ALTERNATIVE"
+                      },
+                      {
+                        "children": [
+                          {
+                            "canonicalString": "{",
+                            "isMandatoryOnUserOrder": false,
+                            "isOptional": false,
+                            "nodeType": "TERMINAL",
+                            "type": "BRACE_OPEN"
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "children": [
+                                                  {
+                                                    "alternatives": {
+                                                      "INFO": {
+                                                        "children": [
+                                                          {
+                                                            "canonicalString": "targetType",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "PARAMETER_KEY"
+                                                          },
+                                                          {
+                                                            "canonicalString": ":",
+                                                            "isMandatoryOnUserOrder": false,
+                                                            "isOptional": false,
+                                                            "nodeType": "TERMINAL",
+                                                            "type": "COLON"
+                                                          }
+                                                        ],
+                                                        "isOptional": true,
+                                                        "nodeType": "CONTAINER",
+                                                        "type": "PARAMETER_NAMING"
+                                                      }
+                                                    },
+                                                    "isOptional": false,
+                                                    "nodeType": "ALTERNATIVE"
+                                                  },
+                                                  {
+                                                    "canonicalString": "\"*\"",
+                                                    "isMandatoryOnUserOrder": false,
+                                                    "isOptional": false,
+                                                    "nodeType": "TERMINAL",
+                                                    "tokenPosition": {
+                                                      "end": {
+                                                        "column": 62,
+                                                        "index": 61,
+                                                        "line": 1
+                                                      },
+                                                      "start": {
+                                                        "column": 60,
+                                                        "index": 59,
+                                                        "line": 1
+                                                      }
+                                                    },
+                                                    "type": "SMARTSCAPE_NODE_PATTERN"
+                                                  }
+                                                ],
+                                                "isOptional": false,
+                                                "nodeType": "CONTAINER",
+                                                "tokenPosition": {
+                                                  "end": {
+                                                    "column": 62,
+                                                    "index": 61,
+                                                    "line": 1
+                                                  },
+                                                  "start": {
+                                                    "column": 60,
+                                                    "index": 59,
+                                                    "line": 1
+                                                  }
+                                                },
+                                                "type": "PARAMETER_WITH_KEY"
+                                              }
+                                            ],
+                                            "isOptional": false,
+                                            "nodeType": "CONTAINER",
+                                            "type": "PARAMETERS"
+                                          }
+                                        ],
+                                        "isOptional": false,
+                                        "nodeType": "CONTAINER",
+                                        "tokenPosition": {
+                                          "end": {
+                                            "column": 62,
+                                            "index": 61,
+                                            "line": 1
+                                          },
+                                          "start": {
+                                            "column": 60,
+                                            "index": 59,
+                                            "line": 1
+                                          }
+                                        },
+                                        "type": "GROUP"
+                                      }
+                                    ],
+                                    "isOptional": false,
+                                    "nodeType": "CONTAINER",
+                                    "type": "PARAMETERS"
+                                  }
+                                ],
+                                "isOptional": false,
+                                "nodeType": "CONTAINER",
+                                "tokenPosition": {
+                                  "end": {
+                                    "column": 62,
+                                    "index": 61,
+                                    "line": 1
+                                  },
+                                  "start": {
+                                    "column": 60,
+                                    "index": 59,
+                                    "line": 1
+                                  }
+                                },
+                                "type": "GROUP"
+                              }
+                            ],
+                            "isOptional": false,
+                            "nodeType": "CONTAINER",
+                            "type": "PARAMETERS"
+                          },
+                          {
+                            "canonicalString": "}",
+                            "isMandatoryOnUserOrder": false,
+                            "isOptional": false,
+                            "nodeType": "TERMINAL",
+                            "type": "BRACE_CLOSE"
+                          }
+                        ],
+                        "isOptional": false,
+                        "nodeType": "CONTAINER",
+                        "tokenPosition": {
+                          "end": {
+                            "column": 62,
+                            "index": 61,
+                            "line": 1
+                          },
+                          "start": {
+                            "column": 60,
+                            "index": 59,
+                            "line": 1
+                          }
+                        },
+                        "type": "GROUP"
+                      }
+                    ],
+                    "isOptional": false,
+                    "nodeType": "CONTAINER",
+                    "tokenPosition": {
+                      "end": {
+                        "column": 62,
+                        "index": 61,
+                        "line": 1
+                      },
+                      "start": {
+                        "column": 60,
+                        "index": 59,
+                        "line": 1
+                      }
+                    },
+                    "type": "PARAMETER_WITH_KEY"
+                  }
+                ],
+                "isOptional": false,
+                "nodeType": "CONTAINER",
+                "type": "PARAMETERS"
+              }
+            ],
+            "isOptional": false,
+            "nodeType": "CONTAINER",
+            "tokenPosition": {
+              "end": {
+                "column": 62,
+                "index": 61,
+                "line": 1
+              },
+              "start": {
+                "column": 38,
+                "index": 37,
+                "line": 1
+              }
+            },
+            "type": "GROUP"
+          }
+        ],
+        "isOptional": false,
+        "nodeType": "CONTAINER",
+        "tokenPosition": {
+          "end": {
+            "column": 62,
+            "index": 61,
+            "line": 1
+          },
+          "start": {
+            "column": 29,
+            "index": 28,
+            "line": 1
+          }
+        },
+        "type": "COMMAND"
+      }
+    ],
+    "isOptional": false,
+    "nodeType": "CONTAINER",
+    "tokenPosition": {
+      "end": {
+        "column": 62,
+        "index": 61,
+        "line": 1
+      },
+      "start": {
+        "column": 1,
+        "index": 0,
+        "line": 1
+      }
+    },
+    "type": "QUERY"
+  }
+}

@@ -1,0 +1,12 @@
+Virtual now: 2026-08-01T12:00:00Z
+Virtual start: 2026-08-01T12:00:00Z
+Replay interval: 2026-08-01T10:00:00Z – 2026-08-01T14:00:00Z
+Visible interval: 2026-08-01T10:00:00Z – 2026-08-01T12:00:00Z
+Timezone: UTC
+Source 0: topology smartscapeNodes (window_only; overlap)
+  Requested: 2026-08-01T11:59:00Z – 2026-08-01T12:00:00Z
+  Effective: 2026-08-01T11:59:00Z – 2026-08-01T12:00:00Z
+  Proof: the requested source range intersects the visible replay interval
+Traverse root.children[4]: feeder root.children[0] (source 0), window 2026-08-01T11:59:00Z – 2026-08-01T12:00:00Z
+Effective DQL:
+smartscapeNodes "SERVICE", from:toTimestamp("2026-08-01T11:59:00.000000000Z"), to:toTimestamp("2026-08-01T12:00:00.000000000Z") | limit 1 | traverse "calls", "SERVICE"

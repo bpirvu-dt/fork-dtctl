@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"strings"
@@ -8,6 +9,112 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReplayStoreRejectsInsufficientStartupHistoryBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	clock := newReplayFakeClock(time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC))
+	store := NewReplayStateStore(dir, clock)
+	req := replayTestRequest(t, dir, ReplayClockManual)
+	valid := req.Config
+	req.Config.VirtualStart = req.Config.DataStart.Add(time.Minute - time.Nanosecond)
+	if _, err := store.Start(req); err == nil || !strings.Contains(err.Error(), "at least 60 seconds") {
+		t.Fatalf("invalid start error = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("invalid start wrote files: %v, %v", entries, err)
+	}
+	req.Config = valid
+	if _, err := store.Start(req); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.StatePath(req.Locator.ContextKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Restart = true
+	req.Config.VirtualStart = req.Config.DataStart
+	if _, err := store.Start(req); err == nil || !strings.Contains(err.Error(), "at least 60 seconds") {
+		t.Fatalf("invalid restart error = %v", err)
+	}
+	after, err := os.ReadFile(store.StatePath(req.Locator.ContextKey))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("invalid restart changed persisted state: %v", err)
+	}
+}
+
+func TestReplayStoreRejectsShortIntervalBeforeWriting(t *testing.T) {
+	for _, virtualOffset := range []time.Duration{30 * time.Second, time.Minute} {
+		t.Run(virtualOffset.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			clock := newReplayFakeClock(time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC))
+			store := NewReplayStateStore(dir, clock)
+			req := replayTestRequest(t, dir, ReplayClockManual)
+			valid := req.Config
+			req.Config.DataEnd = req.Config.DataStart.Add(time.Minute - time.Nanosecond)
+			req.Config.VirtualStart = req.Config.DataStart.Add(virtualOffset)
+			invalid := req.Config
+			if _, err := store.Start(req); err == nil || !strings.Contains(err.Error(), "replay interval must be at least 60 seconds long") {
+				t.Fatalf("invalid start error = %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("invalid start wrote files: %v, %v", entries, err)
+			}
+			req.Config = valid
+			if _, err := store.Start(req); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(store.StatePath(req.Locator.ContextKey))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Restart, req.Config = true, invalid
+			if _, err := store.Start(req); err == nil || !strings.Contains(err.Error(), "replay interval must be at least 60 seconds long") {
+				t.Fatalf("invalid restart error = %v", err)
+			}
+			after, err := os.ReadFile(store.StatePath(req.Locator.ContextKey))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("invalid restart changed persisted state: %v", err)
+			}
+		})
+	}
+}
+
+func TestLegacyReplayStartupHistoryBlocksActiveReadButAllowsStatusAndStop(t *testing.T) {
+	for _, mode := range []string{ReplayClockManual, ReplayClockRealtime} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			clock := newReplayFakeClock(time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC))
+			store := NewReplayStateStore(dir, clock)
+			req := replayTestRequest(t, dir, mode)
+			legacy, err := store.Start(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Model an older writer's valid state with insufficient initial
+			// history and an already advanced clock. The initial values decide.
+			legacy.VirtualStart = legacy.DataStart.Add(30 * time.Second)
+			req.Config.VirtualStart = legacy.VirtualStart
+			legacy.ReplayConfigHash = ReplayConfigHash(req.Config)
+			if err := store.write(legacy); err != nil {
+				t.Fatal(err)
+			}
+			clock.Set(clock.Now().Add(time.Hour))
+			if _, err := store.ReadActive(req.Locator); err == nil || !strings.Contains(err.Error(), "restart with valid settings") {
+				t.Fatalf("legacy session was query-ready: %v", err)
+			}
+			status, err := store.Status(req.Locator)
+			if err != nil || status.SessionID != legacy.SessionID {
+				t.Fatalf("legacy status failed: %+v, %v", status, err)
+			}
+			stopped, err := store.Stop(req.Locator)
+			if err != nil || stopped.Status != ReplayStatusStopped {
+				t.Fatalf("legacy stop failed: %+v, %v", stopped, err)
+			}
+		})
+	}
+}
 
 type replayFakeClock struct {
 	mu  sync.RWMutex

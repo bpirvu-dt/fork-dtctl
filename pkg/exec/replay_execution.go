@@ -700,6 +700,10 @@ func newReplayAttemptError(category replayErrorCategory, detail error, info Repl
 		public = restrictedMessageForInfo(category, detail, info, retryable)
 	case category == replayErrorNonOverlap && retryable:
 		public = fullTemporaryNonOverlapMessage
+		var windowErr *execreplay.NonOverlapError
+		if errors.As(detail, &windowErr) && windowErr.NarrowWindow != nil {
+			public = windowErr.RetryMessage()
+		}
 	case detail != nil:
 		public = detail.Error()
 	}

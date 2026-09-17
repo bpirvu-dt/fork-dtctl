@@ -71,6 +71,19 @@ func Audit(input AuditInput) (AuditResult, error) {
 		return result, err
 	}
 	result.AllSourcesBounded = true
+	bindings, err := bindTraversals(validation, sources, input.Compilation.Sources)
+	if err != nil {
+		return result, err
+	}
+	if len(bindings) != len(input.Compilation.Traversals) {
+		return result, auditError(validation.Root, "the traversal binding count changed")
+	}
+	for index, binding := range bindings {
+		expected := input.Compilation.Traversals[index]
+		if binding.FeederOrdinal != expected.FeederOrdinal || binding.Effective != expected.Effective {
+			return result, auditError(validation.Root, "a traversal changed its topology feeder or window")
+		}
+	}
 	result.DavisMappingsAudited = len(input.Compilation.AuditPlan.DavisProblemsMappings) > 0
 	fingerprint, err := semanticFingerprintWithMappings(validation, sources, clock.VirtualNow, input.Compilation.AuditPlan.DavisProblemsMappings, generatedCommands)
 	if err != nil {
@@ -168,6 +181,11 @@ func auditSources(ast *AST, actual []*sourceAnalysis, compilation CompileResult,
 			return nil, auditError(source.node, fmt.Sprintf("source %d is empty or outside the visible replay interval", index))
 		}
 		switch source.Class {
+		case SourceTopology:
+			if source.BoundaryPolicy != BoundaryWindowOnly || expected.PhysicalRange == nil || *expected.PhysicalRange != requested.Range ||
+				requested.Range.End.Sub(requested.Range.Start) < topologyMinimumWindow || expected.ResultContract != nil || expected.PhysicalPending {
+				return nil, auditError(source.node, fmt.Sprintf("topology source %d does not have a valid window-only boundary", index))
+			}
 		case SourceRecord:
 			if source.BoundaryPolicy != BoundaryExact || expected.PhysicalRange == nil || *expected.PhysicalRange != requested.Range {
 				return nil, auditError(source.node, fmt.Sprintf("record source %d does not have exact physical boundaries", index))

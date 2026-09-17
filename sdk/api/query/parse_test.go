@@ -332,7 +332,7 @@ func TestDQLNode_RoundTripsPhase0AndPhase0BFixtures(t *testing.T) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !entry.IsDir() && (entry.Name() == "parse.json" || entry.Name() == "validation-parse.json") {
+		if !entry.IsDir() && (entry.Name() == "parse.json" || entry.Name() == "validation-parse.json" || entry.Name() == "validation-first-minute-parse.json") {
 			paths = append(paths, path)
 		}
 		return nil
@@ -341,8 +341,8 @@ func TestDQLNode_RoundTripsPhase0AndPhase0BFixtures(t *testing.T) {
 		t.Fatalf("walk fixtures: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 245 {
-		t.Fatalf("fixture count = %d, want 245", len(paths))
+	if len(paths) != 313 {
+		t.Fatalf("fixture count = %d, want 313", len(paths))
 	}
 
 	typeCounts := make(map[DQLNodeType]int)
@@ -374,8 +374,8 @@ func TestDQLNode_RoundTripsPhase0AndPhase0BFixtures(t *testing.T) {
 		astFixtures++
 	}
 
-	if astFixtures != 227 || nonASTCaptures != 18 {
-		t.Fatalf("AST fixtures = %d, non-AST captures = %d; want 227 and 18", astFixtures, nonASTCaptures)
+	if astFixtures != 293 || nonASTCaptures != 20 {
+		t.Fatalf("AST fixtures = %d, non-AST captures = %d; want 293 and 20", astFixtures, nonASTCaptures)
 	}
 	for _, nodeType := range []DQLNodeType{DQLNodeTypeTerminal, DQLNodeTypeContainer, DQLNodeTypeAlternative} {
 		if typeCounts[nodeType] == 0 {

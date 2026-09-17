@@ -1438,8 +1438,14 @@ contexts:
 ```
 
 `data_start` and `data_end` define the half-open replay interval
-`[data_start, data_end)`. `virtual_start` defaults to `data_start`. The visible
-replay interval is `[data_start, min(virtual_now, data_end))`.
+`[data_start, data_end)`. The visible replay interval is
+`[data_start, min(virtual_now, data_end))`. Every session needs at least
+60 seconds of visible history at startup. An omitted `virtual_start`
+defaults to 60 seconds after `data_start`. A configured value must be at
+least 60 seconds after `data_start`, and no later than `data_end`. The replay
+interval must be at least 60 seconds long. There is no initial-minute wait,
+and dtctl never shifts a configured value. These rules apply to logs-only
+and metrics-only sessions too, in both clock modes and disclosures.
 
 Replay contexts require `safety-level: readonly` and the reserved built-in
 `replay` profile. Replay changes DQL reads. It does not virtualize mutations.
@@ -1477,6 +1483,12 @@ dtctl replay stop --context historical-window
 `clock_mode`. A flag wins over the context field. It cannot override
 `disclosure` or `provenance_path`.
 
+Start and restart validate settings before writing state. An invalid restart
+preserves the existing session. An older stored session with less than
+60 seconds of initial history cannot execute queries. Use `replay status` to
+inspect it, then restart with valid settings or stop it with `replay stop`.
+The advancing clock does not make invalid initial settings valid.
+
 `replay advance` moves a manual clock and leaves it fixed. In realtime mode, it
 jumps the clock forward and then continues at the host-clock rate. An advance
 may reach `data_end` exactly. An overshoot fails without changing state.
@@ -1496,18 +1508,21 @@ dtctl replay start \
   --clock-mode realtime
 ```
 
-If `virtual_start` equals `data_start`, the visible replay interval starts
-empty. `replay start` warns about this. Realtime mode reveals stored telemetry
-as the clock advances. Manual mode needs `replay advance`. To give a query its
-complete lookback on the first execution, set `virtual_start` after
-`data_start` by at least the largest required lookback.
+For example, `data_start=12:00` and `virtual_start=12:00:59` are invalid.
+A configured value must be at least 60 seconds after `data_start`; dtctl
+never shifts it. Omitting `virtual_start` defaults it to `12:01` in this
+example, which supplies the minimum history immediately. The replay interval
+must be at least 60 seconds long. There is no initial-minute wait. For a
+longer lookback on the first execution, leave at least that much history
+before `virtual_start`.
 
 When a source has no `from:`, `to:`, or `timeframe:` and the command does not
 supply both `--default-timeframe-start` and `--default-timeframe-end`, dtctl uses
-the half-open two-hour default window
+the half-open two-hour default window for record and metric sources:
 `[virtual_now - 2h, virtual_now)`. It then intersects that requested window with
-the visible replay interval. Explicit source bounds or a complete command
-default timeframe replace this implicit window.
+the visible replay interval. Source bounds take precedence over a complete
+command default timeframe. Either replaces this implicit window. Topology
+sources use the 60-second fallback described below.
 
 Virtual time never passes `data_end`. A query at exactly `data_end` is the
 terminal execution. Success completes the same terminal-ready session. Failure
@@ -1559,7 +1574,9 @@ evidence that a new construct is safe.
 The supported command names are `fetch`, `timeseries`, `data`, `append`, `join`,
 `lookup`, `filter`, `fields`, `fieldsAdd`, `limit`, `sort`, `summarize`, `dedup`,
 `parse`, `filterOut`, `fieldsRemove`, `fieldsRename`, and `expand`. The supported
-scalar function names are `now`, `toTimestamp`, `timeframe`, `record`, `count`,
+topology commands are `smartscapeNodes`, `smartscapeEdges`, and `traverse`,
+subject to the source and feeder rules below. The supported scalar function
+names are `now`, `toTimestamp`, `timeframe`, `record`, `count`,
 `countIf`, `countDistinctExact`, `min`, `max`, `array`, `isNotNull`, `in`,
 `contains`, `startsWith`, `endsWith`, `matchesPhrase`, `matchesValue`, `lower`,
 `upper`, `bin`, `if`, `coalesce`, `toString`, `toLong`, and `toDuration`. A name
@@ -1568,6 +1585,97 @@ rules described here.
 
 The DQL `data` command is supported because it creates records and reads no
 tenant telemetry. Semantic `now()` inside it still becomes virtual now.
+
+#### Smartscape topology
+
+Replay supports `smartscapeNodes`, `smartscapeEdges`, and traversal from a
+topology source. Node types are unrestricted, including wildcard node types.
+Edge selectors in `smartscapeEdges` and edge patterns in `traverse` may name
+only `calls`, `runs_on`, or both. Other edge types, wildcard edge selectors,
+and selectors that cannot be resolved to those types are rejected. Other
+edge types need a measured window-width check before they can be supported.
+
+```bash
+# The approximate minute ending at virtual now
+dtctl query 'smartscapeNodes "SERVICE"' --context historical-window
+dtctl query 'smartscapeEdges "calls"' --context historical-window
+
+# An explicit wider window
+dtctl query 'smartscapeNodes "SERVICE", from:now()-2h, to:now()' \
+  --context historical-window
+
+# Traverse calls from one service; the target node type is required
+dtctl query 'smartscapeNodes "SERVICE" | filter name == "checkout" | traverse "calls", "SERVICE"' \
+  --context historical-window
+```
+
+Each topology source selects its requested window in this order:
+
+1. Explicit source `timeframe:` or `from:`/`to:` bounds. A `from:` without
+   `to:` ends at virtual now. A `to:` without `from:` is rejected.
+2. A complete `--default-timeframe-start`/`--default-timeframe-end` pair.
+3. The bare-source fallback `[virtual_now - 60s, virtual_now)`.
+
+Invalid, conflicting, or incomplete bounds fail. They never select the
+fallback. Replay intersects the requested range with the visible replay
+interval. A non-empty effective window shorter than 60 seconds never
+executes. One-shot queries and manual mode reject it. Realtime `wait query`
+and `query --live` keep waiting only when dtctl can prove the window will
+reach 60 seconds later, at or before `data_end`. Each attempt recomputes the
+window and executes only once it is at least 60 seconds wide. Permanent,
+unknown, and terminal sub-minute windows are hard errors. Replay never
+widens the requested window. An empty intersection keeps the ordinary
+non-overlap rules below. One refinement: a topology window that lies
+entirely in the future and can never reach 60 seconds is rejected at once
+rather than awaited. In a mixed retryable query, the topology notice applies
+only when every rejected source is a narrow topology window. Otherwise the
+ordinary no-visible-overlap notice applies. In a mixed hard query, the
+topology width text and preparation category apply only when every permanent
+or unknown source is a narrow topology window. Otherwise the ordinary
+non-overlap text and category apply, with the approved no-data text in
+restricted disclosure. These rules use source classifications. An
+all-temporary query uses the every-rejected-source rule even in one-shot or
+manual mode, where it cannot retry.
+
+The 60-second minimum matters because observed `calls` edges are recorded at
+whole-minute marks. A shorter window can miss a mark and return an empty
+graph even when calls occurred. Read a 60-second result as: **These services
+exchanged calls during approximately this minute.** Approximately one minute
+of timing imprecision is accepted. A wider window returns the union over
+that interval.
+
+`traverse` must have a feeder in the same execution block. The feeder is the
+nearest preceding `smartscapeNodes` or `smartscapeEdges` reached through
+allowed pipeline commands that introduce no source. For example, `filter`,
+`fields`, `limit`, and `summarize` preserve the chain. `append`, `join`,
+`lookup`, `data`, another source, and a block boundary break it. A nested
+block must have its own topology feeder. Chained traversals share a feeder
+and its effective window. Put timeframe bounds on the feeder; a `traverse`
+with its own bounds is rejected.
+
+Explain output records each traversal's feeder path and effective window.
+Restricted disclosure puts the same facts only in private provenance. Both
+disclosures send identical effective DQL and return identical data.
+
+Topology uses source class `topology` and boundary policy `window_only`.
+Replay fences the query window. Smartscape records carry current field
+values, including a `lifetime.end` that may be later than virtual now.
+Later relationship changes can also affect an earlier query's graph or
+traversal destinations. These limits apply in both disclosures. A fenced
+window does not promise an exact historical snapshot, and dtctl does not
+reconstruct or suppress these values or relationships.
+
+Dynatrace documents [35-day Smartscape retention](https://docs.dynatrace.com/docs/platform/grail/smartscape-on-grail#data-retention).
+Nodes are deleted 35 days after `lifetime.end`, together with their static
+edges. Dynamic edges are cleaned up after 35 days. Older windows can still
+return long-lived nodes while other nodes and edges are missing.
+
+Topology has no coverage gate or result-time validation. The retention
+inspection reports topology coverage as not verified. This does not prove
+which records are missing. A query can return a partial graph, and dtctl
+does not verify or guarantee complete topology history. Prepare suitable
+recordings outside dtctl. Topology-dependent evaluations must finish within
+35 days of the earliest topology time they need.
 
 #### Partial overlap and non-overlap
 
@@ -1580,6 +1688,11 @@ does not execute if any source has a hard non-overlap.
 | Temporary | The range can be proven to overlap later, no later than `data_end`. | Only a realtime `wait query` or `query --live` loop retries. |
 | Permanent | The range can never overlap. | Hard error. No execution. |
 | Unknown | dtctl cannot prove either outcome. | Fail-closed hard error. No execution. |
+
+Topology adds one refinement to these classes: an empty intersection that
+would otherwise be temporary is permanent if its window can never reach
+60 seconds. Unknown endpoints stay unknown. This only turns temporary into
+permanent, never the reverse.
 
 A one-shot query rejects every non-overlap. Manual mode also rejects every
 non-overlap because its clock does not move by itself. At `data_end`, every
@@ -1710,14 +1823,18 @@ checks. The detailed reason and remedy are written to provenance first:
 
 | Category | Message |
 |---|---|
-| Hard non-overlap | `No data is available for the requested timeframe.` |
+| Hard non-overlap; includes a mixed hard failure with any permanently or unknown non-overlapping source, even when a narrow topology window is also present; includes an empty topology intersection that can never reach 60 seconds; includes an all-temporary mixed query rejected in one-shot or manual mode when not every rejected source is a narrow topology window | `No data is available for the requested timeframe.` |
 | Temporary realtime-loop non-overlap | `The requested timeframe is not available yet.` |
 | Blocked command or plugin, including failure to record its rejection | `this command is not available in this context` |
 | State readiness failure | `This environment is not currently able to serve queries. This is a setup issue that cannot be resolved by changing or retrying the query.` |
 | Preparation failure without approved guidance, or a masked permanent API failure | `The query could not be run as written.` |
 | Unsupported time expression | `The query's timeframe could not be interpreted. Use an absolute start and end timestamp.` |
 | Time alignment outside UTC | `The query's time alignment is not supported in this timezone. Use an absolute start and end timestamp.` |
-| Intersection leaves only one nanosecond | `No data can be returned for the requested timeframe.` |
+| Non-topology intersection leaves only one nanosecond | `No data can be returned for the requested timeframe.` |
+| Non-empty topology window shorter than 60 seconds: one-shot, manual, or a permanent, unknown, or terminal case; in a mixed query only when every permanent or unknown source is a narrow topology window; for an all-temporary decision in one-shot/manual mode, only when every rejected source is a narrow topology window | `The query could not be run as written.` |
+| Provably widening sub-minute topology window in realtime wait/live; only when every rejected source is a narrow topology window | `The requested timeframe is not available yet.` |
+| Unsupported topology edge selector | `The query uses an unsupported element: {construct}. Use only calls or runs_on edge types.` |
+| Traversal without a structural feeder | `The query uses an unsupported element: traverse. Place traverse after smartscapeNodes or smartscapeEdges through source-free pipeline commands.` |
 | Result-validation failure with an approved reason | `The query result failed a consistency check: {reason}.` |
 | Result-validation failure without approved guidance | `The query result could not be validated and was withheld.` |
 | Terminal finalization failure, provenance I/O failure, or a masked transient API failure | `The query failed and no result was returned.` |
@@ -1900,10 +2017,10 @@ and network restrictions outside dtctl.
 
 Replay does not support RUM tables, Dynatrace synthetic telemetry tables,
 security-event tables, any `timeseries shift:` form, or automatic
-`dt.davis.events` mapping. Topology, current entity enrichment, mutable lookup
-state, current schema state, and current or on-demand model and analyzer state
-are also rejected. Support requires separate evidence and a later design
-decision. No date is promised.
+`dt.davis.events` mapping. Current entity enrichment outside the topology
+contract, mutable lookup state, current schema state, and current or on-demand
+model and analyzer state are also rejected. Support requires separate evidence
+and a later design decision. No date is promised.
 
 ---
 

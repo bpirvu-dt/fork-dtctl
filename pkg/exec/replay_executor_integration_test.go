@@ -47,6 +47,8 @@ var (
 	replayRecordVirtual        = mustReplayTestTime("2026-08-10T10:55:02.718012207Z")
 	replayRecordDataEnd        = mustReplayTestTime("2026-08-10T11:05:02.718012207Z")
 	replayLoopDataStart        = mustReplayTestTime("2026-08-09T10:55:03Z")
+	replayLoopHistoryStart     = mustReplayTestTime("2026-08-09T09:54:03Z")
+	replayLoopVisibleStart     = mustReplayTestTime("2026-08-09T09:55:03Z")
 	replayLoopDataEnd          = mustReplayTestTime("2026-08-10T10:55:03Z")
 	replayMetricDataStart      = mustReplayTestTime("2026-08-09T10:36:06Z")
 	replayMetricDataEnd        = mustReplayTestTime("2026-08-10T10:50:06Z")
@@ -1173,7 +1175,7 @@ func TestDQLExecutorReplayTemporaryNonOverlapRecomputesAndThenExecutes(t *testin
 	api.originalBody = replayFixtureBody(t, "phase0b/fixtures/records/logs/00-discovery/parse.json")
 	api.validationBody = replayFixtureBody(t, "phase0b/fixtures/records/logs/00-discovery/validation-parse.json")
 	api.isOriginal = func(query string) bool { return query == replayLoopOriginal }
-	fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, session.ReplayDisclosureFull, replayLoopDataStart, replayLoopDataStart, replayLoopDataEnd, nil)
+	fixture := newReplayExecutorFixture(t, api, session.ReplayClockRealtime, session.ReplayDisclosureFull, replayLoopHistoryStart, replayLoopVisibleStart, replayLoopDataEnd, nil)
 	preparer := fixture.executor.preparer.(*ReplayQueryPreparer)
 	var waits []time.Duration
 	preparer.config.WaitFunc = func(_ context.Context, delay time.Duration) error {
@@ -1192,7 +1194,7 @@ func TestDQLExecutorReplayTemporaryNonOverlapRecomputesAndThenExecutes(t *testin
 		t.Fatalf("temporary attempt parse=%d execute=%d, want original parse only", parseCalls, executeCalls)
 	}
 	info, ok := ReplayErrorInfo(err)
-	if !ok || !info.VirtualNow.Equal(replayLoopDataStart) {
+	if !ok || !info.VirtualNow.Equal(replayLoopVisibleStart) {
 		t.Fatalf("temporary attempt info = %#v, %v", info, ok)
 	}
 	if waitErr := fixture.executor.WaitForNextAttempt(context.Background(), 5*time.Minute, &info, err); waitErr != nil {
@@ -1221,35 +1223,43 @@ func TestDQLExecutorReplayNonOverlapHardCasesNeverExecute(t *testing.T) {
 		start     time.Time
 		virtual   time.Time
 		end       time.Time
+		rewind    time.Duration
 		wantClass execreplay.OverlapClassification
 	}{
 		{
 			name: "one shot temporary range", query: replayLoopOriginal,
 			fixture:   "phase0b/fixtures/records/logs/00-discovery/parse.json",
 			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionOneShot,
-			start: replayLoopDataStart, virtual: replayLoopDataStart, end: replayLoopDataEnd,
+			start: replayLoopHistoryStart, virtual: replayLoopVisibleStart, end: replayLoopDataEnd,
 			wantClass: execreplay.OverlapTemporary,
 		},
 		{
 			name: "manual wait temporary range", query: replayLoopOriginal,
 			fixture:   "phase0b/fixtures/records/logs/00-discovery/parse.json",
 			clockMode: session.ReplayClockManual, mode: ReplayExecutionWait,
-			start: replayLoopDataStart, virtual: replayLoopDataStart, end: replayLoopDataEnd,
+			start: replayLoopHistoryStart, virtual: replayLoopVisibleStart, end: replayLoopDataEnd,
 			wantClass: execreplay.OverlapTemporary,
 		},
 		{
 			name: "permanent absolute range", query: replayPermanentQuery,
 			fixture:   "phase0/fixtures/07-fetch-explicit-timeframe/parse.json",
 			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionWait,
-			start: replayLoopDataStart, virtual: replayLoopDataStart, end: replayLoopDataEnd,
+			start: replayLoopHistoryStart, virtual: replayLoopVisibleStart, end: replayLoopDataEnd,
 			wantClass: execreplay.OverlapPermanent,
 		},
 		{
-			name: "unknown future alignment", query: replayUnknownQuery,
+			name: "unknown aligned range before replay history", query: topologyFixtureQuery(t, "nodes-aligned-past", "original.dql"),
+			fixture:   "topology/fixtures/nodes-aligned-past/parse.json",
+			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionLive,
+			start: mustReplayTestTime("2026-08-03T10:00:00Z"), virtual: mustReplayTestTime("2026-08-03T12:00:00Z"), end: mustReplayTestTime("2026-08-03T14:00:00Z"),
+			wantClass: execreplay.OverlapUnknown,
+		},
+		{
+			name: "host rollback before valid initial time", query: replayUnknownQuery,
 			fixture:   "phase0/fixtures/03-fetch-aligned-duration/parse.json",
 			clockMode: session.ReplayClockRealtime, mode: ReplayExecutionLive,
-			start: replayLoopDataStart, virtual: replayLoopDataStart, end: replayLoopDataEnd,
-			wantClass: execreplay.OverlapUnknown,
+			start: replayLoopDataStart, virtual: replayLoopDataStart.Add(time.Minute), end: replayLoopDataEnd,
+			rewind: time.Minute,
 		},
 		{
 			name: "terminal non-overlap remains permanent", query: replayPermanentQuery,
@@ -1265,12 +1275,25 @@ func TestDQLExecutorReplayNonOverlapHardCasesNeverExecute(t *testing.T) {
 			api.originalBody = replayFixtureBody(t, test.fixture)
 			api.isOriginal = func(query string) bool { return query == test.query }
 			fixture := newReplayExecutorFixture(t, api, test.clockMode, session.ReplayDisclosureFull, test.start, test.virtual, test.end, nil)
+			// A host-clock rollback can still empty the current visible range
+			// after a valid startup. The existing clock check must reject it.
+			fixture.clock.Add(-test.rewind)
 			_, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), test.query, DQLExecuteOptions{AgentMode: true, ReplayMode: test.mode})
 			var nonOverlap *execreplay.NonOverlapError
-			if err == nil || !errors.As(err, &nonOverlap) || nonOverlap.Classification != test.wantClass {
+			if test.rewind > 0 {
+				if err == nil || !strings.Contains(err.Error(), "Virtual now is earlier than virtual start") {
+					t.Fatalf("clock rollback error = %v", err)
+				}
+			} else if err == nil || !errors.As(err, &nonOverlap) || nonOverlap.Classification != test.wantClass {
 				t.Fatalf("error = %T %v, classification=%v; want %s", err, err, nonOverlap, test.wantClass)
 			}
-			if ReplayTemporaryNonOverlap(err) {
+			if test.wantClass == execreplay.OverlapUnknown {
+				if nonOverlap.NarrowWindow != nil || len(nonOverlap.Sources) != 1 || nonOverlap.Sources[0].Effective != nil ||
+					nonOverlap.Sources[0].Proof.Reason == "" || nonOverlap.Sources[0].Proof.Classification != execreplay.OverlapUnknown {
+					t.Fatalf("unknown empty-intersection proof=%#v", nonOverlap)
+				}
+			}
+			if ReplayTemporaryNonOverlap(err) || !ReplayLoopHardFailure(err) {
 				t.Fatal("hard non-overlap was marked retryable")
 			}
 			parseCalls, executeCalls, _ := api.counts()
@@ -1286,7 +1309,7 @@ func TestDQLExecutorReplayRestrictedHardNonOverlapIsGenericAndRecorded(t *testin
 	api.originalBody = replayFixtureBody(t, "phase0b/fixtures/records/logs/00-discovery/parse.json")
 	api.isOriginal = func(query string) bool { return query == replayLoopOriginal }
 	sink := &replayTestSink{}
-	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayLoopDataStart, replayLoopDataStart, replayLoopDataEnd, func(string) session.ProvenanceSink { return sink })
+	fixture := newReplayExecutorFixture(t, api, session.ReplayClockManual, session.ReplayDisclosureRestricted, replayLoopHistoryStart, replayLoopVisibleStart, replayLoopDataEnd, func(string) session.ProvenanceSink { return sink })
 	result, err := fixture.executor.ExecuteQueryDetailedWithContext(context.Background(), replayLoopOriginal, DQLExecuteOptions{AgentMode: true, ReplayMode: ReplayExecutionWait})
 	if result != nil || err == nil || err.Error() != restrictedNoDataMessage {
 		t.Fatalf("result=%#v err=%v", result, err)
@@ -1387,9 +1410,9 @@ func TestDQLExecutorReplaySourceSpecificRejectionsNeverExecute(t *testing.T) {
 			fixture: "phase0/fixtures/12-timeseries-shift/parse.json", want: "shift",
 		},
 		{
-			name:    "current topology enrichment",
-			query:   `fetch logs, from:toTimestamp("2026-08-10T09:54:05Z"), to:toTimestamp("2026-08-10T10:54:05Z") | limit 1 | append [ smartscapeNodes "*" | limit 1 ] | summarize count()`,
-			fixture: "phase0b/fixtures/current-state-rejection/01-smartscape-nodes/historical-context/parse.json", want: "current",
+			name:    "unverified topology edge selector",
+			query:   `smartscapeEdges "*"`,
+			fixture: "topology/fixtures/edges-wildcard/parse.json", want: "calls and runs_on",
 		},
 	}
 	for _, test := range tests {

@@ -218,8 +218,8 @@ func validateSemanticPlacements(ast *AST) error {
 		"DURATION":               {"EXPRESSION": {}, "PARAMETER_WITH_KEY": {}},
 		"CALENDAR_DURATION":      {"EXPRESSION": {}},
 	}
-	var walk func(*Node, *Node, string, bool) error
-	walk = func(node, parent *Node, command string, executable bool) error {
+	var walk func(*Node, *Node, string, bool, bool) error
+	walk = func(node, parent *Node, command string, executable, inParameter bool) error {
 		if parent != nil {
 			if parents, classified := allowedParents[node.Role]; classified {
 				if _, ok := parents[parent.Role]; !ok {
@@ -231,9 +231,20 @@ func validateSemanticPlacements(ast *AST) error {
 		}
 		if executable && node.Role == "COMMAND" {
 			command = strings.ToLower(ownCommandName(node))
+			inParameter = false
+		}
+		if node.Role == "EXECUTION_BLOCK" {
+			inParameter = false
+		}
+		if node.Role == "PARAMETER_WITH_KEY" {
+			inParameter = true
 		}
 		if executable {
 			switch node.Role {
+			case "SMARTSCAPE_NODE_TYPE", "SMARTSCAPE_NODE_PATTERN", "SMARTSCAPE_EDGE_PATTERN", "SMARTSCAPE_EDGE_TYPE":
+				if !isTopologyCommand(command) || !inParameter {
+					return replayError(ErrorASTContract, node, node.Role, "A Smartscape token appears outside a topology command parameter.", "Update dtctl if the server AST placement contract changed.")
+				}
 			case "DATA_OBJECT":
 				if command != "fetch" && command != "describe" && command != "fieldssnapshot" && command != "load" {
 					return replayError(ErrorASTContract, node, node.Role, "A data object appears outside an observed source-owning command.", "Remove the unclassified source-selection form.")
@@ -249,18 +260,18 @@ func validateSemanticPlacements(ast *AST) error {
 			}
 		}
 		for _, child := range node.Children {
-			if err := walk(child, node, command, executable); err != nil {
+			if err := walk(child, node, command, executable, inParameter); err != nil {
 				return err
 			}
 		}
 		for _, kind := range sortedAlternativeKinds(node.Alternatives) {
-			if err := walk(node.Alternatives[kind], node, command, executable && kind != AlternativeInfo); err != nil {
+			if err := walk(node.Alternatives[kind], node, command, executable && kind != AlternativeInfo, inParameter); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return walk(ast.Root, nil, "", true)
+	return walk(ast.Root, nil, "", true, false)
 }
 
 func compileSource(source *sourceAnalysis, context timeframeContext, input CompileInput) (SourceCompilation, error) {
@@ -282,6 +293,30 @@ func compileSource(source *sourceAnalysis, context timeframeContext, input Compi
 	effective, proof := ClassifyOverlap(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
 	compiled.Overlap = proof
 	if proof.Classification != OverlapPresent {
+		if source.Class == SourceTopology && proof.Classification == OverlapTemporary {
+			// v11 section 4.4: an empty topology intersection is temporary only
+			// if the window can reach 60 seconds at a later virtual time.
+			width := ClassifyTopologyWidth(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
+			if width.Classification != OverlapTemporary {
+				width.Reason = "the topology intersection is empty now; " + width.Reason
+				compiled.Overlap = width
+			}
+		}
+		return compiled, nil
+	}
+	if source.Class == SourceTopology {
+		// Preserve the computed window even when the topology width check fails.
+		// Restricted provenance needs it before any effective DQL is emitted.
+		compiled.Effective = cloneInterval(&effective)
+		compiled.PhysicalRange = cloneInterval(&effective)
+		if effective.End.Sub(effective.Start) < topologyMinimumWindow {
+			compiled.Overlap = ClassifyTopologyWidth(requested, input.VisibleInterval, input.ReplayInterval, input.VirtualNow)
+			cause := replayError(ErrorTimeframe, source.node, "topology timeframe",
+				fmt.Sprintf("Topology requires an effective window of at least 60 seconds; computed [%s, %s).", effective.Start.Format(time.RFC3339Nano), effective.End.Format(time.RFC3339Nano)),
+				"Request a window whose intersection with the visible replay interval is at least 60 seconds.").
+				withPublicMessage("The query could not be run as written.")
+			return compiled, &NonOverlapError{NarrowWindow: cause}
+		}
 		return compiled, nil
 	}
 	if effective.End.Sub(effective.Start) <= time.Nanosecond {
